@@ -163,6 +163,7 @@ Việc tiếp cho Codex: sửa, rồi để QA chấm lại đủ 11 bộ.
   - Hàng cuối chỉ có nhãn: không vào dataframe và không vào `notes`.
   - Bảng toàn chữ: hàng không có số bị coi là header, không có hàng data, không ra bảng.
 - PR #18: `blank:refined-header` chưa chặn đếm, cặp giá trị, lọc rồi tính, hiệu số năm trên bộ đo kín (mục PR #18). Sửa xong thì QA chấm lại đủ 11 bộ. Không sửa bằng luật gắn file, id, câu, hoặc tên cột. PR này không vào bản nộp.
+Với 6 tham số BTC, CSV ghi theo thứ tự `queries.json`, không theo file mẫu; Codex xác nhận lại với luật BTC trước 12:00 17/10.
 
 ## 8. Luật repo
 
