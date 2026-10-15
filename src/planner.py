@@ -1123,9 +1123,20 @@ def _order_year_change_columns(plan, body):
 
 
 def _col_year(col):
-    """The single 4-digit year in a column leaf, if it has exactly one."""
-    leaf = str(col).split(" | ")[-1]
-    found = re.findall(r"(?:19|20)\d{2}", leaf)
+    """The single 4-digit year in a column header, if it has exactly one.
+
+    A wildcard leaf (``Parent | 2018 | *``) is not a year. The year is the
+    header level above that leaf.
+    """
+    parts = str(col).split(" | ")
+    if parts and parts[-1] == "*":
+        parts = parts[:-1]
+    exact = [p.strip() for p in parts if re.fullmatch(r"(?:19|20)\d{2}", p.strip())]
+    if len(exact) == 1:
+        return exact[0]
+    found = []
+    for part in parts:
+        found.extend(re.findall(r"(?:19|20)\d{2}", part))
     return found[0] if len(found) == 1 else None
 
 
@@ -1188,6 +1199,29 @@ def _subset_missing(plan, original):
     return not (rows["paths"] or rows.get("scope") or rows.get("where") or rows.get("range"))
 
 
+def _wildcard_parent_groups(col, view):
+    """Parent header paths of the numeric columns a ``*`` ref sums.
+
+    ``None`` when ``col`` is a real column. A wildcard is one operand only
+    when every child shares one parent path (one sub-column group). Several
+    parent paths means the pattern covers more than one group.
+    """
+    name = str(col)
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    if name == "*":
+        kids = list(num)
+    elif name.endswith(" | *"):
+        pre = name[:-4]
+        kids = [c for c in num if str(c).startswith(pre + " | ")]
+    else:
+        return None
+    groups = set()
+    for kid in kids:
+        parts = str(kid).split(" | ")
+        groups.add(" | ".join(parts[:-1]) if len(parts) > 1 else "")
+    return groups
+
+
 def _operands_unique(plan, info):
     view = info["view"]
     op = plan["op"]
@@ -1197,8 +1231,21 @@ def _operands_unique(plan, info):
     if op == "diff":
         if _signed_year_change(plan, info):
             return True
+        # A 'Parent | Year | *' ref sums one sub-column group. It is one operand.
+        # A ref whose children sit under two parent headers is still ambiguous.
+        wild = []
+        for c in cols:
+            groups = _wildcard_parent_groups(c, view)
+            if groups is None:
+                continue
+            if len(groups) != 1:
+                return False
+            wild.append(c)
         pair_rows = len(paths) == 2 and len(cols) == 1
         pair_cols = len(paths) == 1 and len(cols) == 2
+        # No row is required when the two operands are already two header groups.
+        if len(cols) == 2 and len(wild) == 2 and len(paths) <= 1:
+            return True
         return (pair_rows or pair_cols) and _measure_unique(plan, info)
     if op == "nth":
         return bool(plan["args"].get("n")) and _measure_unique(plan, info) and (
@@ -1232,7 +1279,46 @@ def _guarded_op(plan, info, original):
     return False
 
 
+def _legacy_body(original):
+    """Wording main would see: the old keyword table, format examples removed."""
+    from .vi import is_vietnamese, translate
+    text = original
+    if is_vietnamese(text):
+        text, _ = translate(text, new_ops=False)
+    return strip_instruction(text, parse_instruction(text)).lower()
+
+
+_MAIN_RANK_RE = re.compile(
+    r"\brank\b|\bdescending\b|\bascending\b"
+    r"|\bfrom (?:most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to "
+    r"(?:fewest|least|lowest|smallest|most|highest|largest|greatest|biggest)\b"
+    r"|\bin (?:descending|ascending) order\b"
+)
+
+
+def _main_already_selects(plan, original):
+    """True when main's own cue already chooses this operation.
+
+    The guard is only for operations this branch added. A diff main emits
+    from 'change' or 'difference' keeps main's confidence, including when a
+    newer phrase such as 'by how much' is also in the question.
+    """
+    low = _legacy_body(original)
+    op = plan["op"]
+    if op == "diff":
+        return bool(re.search(_DIFF_LEGACY, low))
+    if op == "nth":
+        return _legacy_nth(low)
+    if op == "rank":
+        return bool(_MAIN_RANK_RE.search(low))
+    if op == "topk_agg":
+        return bool(re.search(r"\b(?:among|of) the \w+ (?:" + SUP_MAX + "|" + SUP_MIN + r")\b", low))
+    return False
+
+
 def _new_op_blocked(plan, info, original):
+    if _main_already_selects(plan, original):
+        return False
     triggered = _new_op_keyword_hit(original) or info.get("fresh_op")
     if not triggered or not _guarded_op(plan, info, original):
         return False

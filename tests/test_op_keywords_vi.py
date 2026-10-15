@@ -204,11 +204,82 @@ def test_signed_year_change_ignores_format_examples(tmp_path):
 
 
 def test_year_change_without_one_group_stays_blank(tmp_path):
+    # 'change' is a difference main already plans, so that wording is not
+    # abstained here. A newer phrase with no named berth still has no operand.
     path = _save(tmp_path, "berths.xlsx", ["Berth", "2018", "2019"], [
         ("Quill", 20, 50),
         ("Pax", 8, 9),
     ])
-    _blank(path, "By how much did crates change from 2018 to 2019?")
+    _blank(path, "By how much do the berth crates exceed?")
+
+
+def _yard_bands(tmp_path, name, year_order):
+    """Berth, then year, then two age bands. Numbers are this sheet's own.
+
+    year_order is the left-to-right year of each two-band block:
+    (quill_left, quill_right, pax_left, pax_right).
+    Quill 2018 is 10+4 and Quill 2019 is 3+6, so 2019 minus 2018 is -5.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"] = "Berth"
+    ws.merge_cells("A1:A3")
+    ws["B1"] = "Quill"
+    ws.merge_cells("B1:E1")
+    ws["F1"] = "Pax"
+    ws.merge_cells("F1:I1")
+    bands = {
+        2018: (10, 4),
+        2019: (3, 6),
+    }
+    pax = {
+        2018: (8, 1),
+        2019: (2, 9),
+    }
+    blocks = [
+        ("B", "C", year_order[0], bands),
+        ("D", "E", year_order[1], bands),
+        ("F", "G", year_order[2], pax),
+        ("H", "I", year_order[3], pax),
+    ]
+    for left, right, year, source in blocks:
+        ws[f"{left}2"] = year
+        ws.merge_cells(f"{left}2:{right}2")
+        ws[f"{left}3"] = "cubs"
+        ws[f"{right}3"] = "grown"
+        ws[f"{left}4"] = source[year][0]
+        ws[f"{right}4"] = source[year][1]
+    ws["A4"] = "yard"
+    path = tmp_path / name
+    wb.save(path)
+    return str(path)
+
+
+def test_wildcard_year_total_is_signed(tmp_path):
+    # One berth, two years, several age bands under each year. The total of
+    # that berth is one operand per year, later minus earlier.
+    path = _yard_bands(tmp_path, "yard.xlsx", (2018, 2019, 2018, 2019))
+    q = ("By how much did the total of Quill change from 2018 to 2019? "
+         "Answer with only the signed integer (e.g. -5 or 7).")
+    tables = load_tables(path)
+    planned = plan(q, tables, os.path.basename(path))
+    assert planned["op"] == "diff"
+    assert planned["columns"] == ["Quill | 2018 | *", "Quill | 2019 | *"]
+    assert planned["args"].get("signed_order") == "second_minus_first"
+    assert _ask(path, q) == "-5"
+    # Year blocks stored right-to-left still subtract 2018 from 2019.
+    path = _yard_bands(tmp_path, "yard_rev.xlsx", (2019, 2018, 2019, 2018))
+    tables = load_tables(path)
+    planned = plan(q, tables, os.path.basename(path))
+    assert planned["columns"] == ["Quill | 2018 | *", "Quill | 2019 | *"]
+    assert _ask(path, q) == "-5"
+
+
+def test_wildcard_over_two_parent_groups_stays_blank(tmp_path):
+    # 'Quill | *' covers both years, so the pattern is not one operand.
+    path = _yard_bands(tmp_path, "yard.xlsx", (2018, 2019, 2018, 2019))
+    _blank(path, "By how much does the total of Quill exceed?")
+    _blank(path, "By how much does the total of Quill exceed the total of Pax?")
 
 
 def test_sort_sentinel_can_return_that_column(tmp_path):
