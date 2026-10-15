@@ -19,9 +19,10 @@ def _load(name, attr):
         return None
 
 
-def code_plan(query, tables, file_name):
+def code_plan(query, tables, file_name, strict=None):
     fn = _load("code_planner", "plan")
-    return fn(query, tables, file_name) if fn else None  # TODO(KSP1)
+    # strict=False forces the no-key planner even when OPENROUTER_API_KEY is set.
+    return fn(query, tables, file_name, strict=strict) if fn else None  # TODO(KSP1)
 
 
 def execute(plan, tables, query):

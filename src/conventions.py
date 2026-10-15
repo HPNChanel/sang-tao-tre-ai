@@ -30,3 +30,23 @@ EXCLUDE_SUBTOTALS_IN_AGGREGATES = True
 # separator) unless the wording/format asks for exactly one result (singular 'which <noun>',
 # 'the ...', name/int format with no count) -> keep the first and log the tie to stderr.
 TIES_RETURN_ALL = True
+
+# Rule planner confidence below this -> code_planner.plan returns None (LLM fallback) instead of guessing.
+PLAN_CONFIDENCE_THRESHOLD = 0.5
+# Post-exec: blank the answer (-> fallback) if its shape contradicts the expected answer type.
+POST_EXEC_TYPE_CHECK = True
+# Any plan slot (table/column/row/op/number/words) chosen by guessing caps confidence here (below threshold).
+GUESS_CAP = 0.4
+
+# Strict evidence-based confidence (42d00ea). None = auto: active only when OPENROUTER_API_KEY is set
+# (an LLM can take over); without a key the default (b8f1082) behavior is kept byte-identical.
+STRICT_CONFIDENCE = None
+
+
+def strict_active(strict=None):
+    import os
+    if strict is not None:
+        return bool(strict)
+    if STRICT_CONFIDENCE is not None:
+        return bool(STRICT_CONFIDENCE)
+    return bool(os.getenv("OPENROUTER_API_KEY"))

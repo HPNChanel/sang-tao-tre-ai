@@ -186,7 +186,7 @@ def match_rows(view: View, q: Query, exclude=frozenset()):
 
 # ---------------------------------------------------------------- planning
 def strip_instruction(query, spec):
-    q = query
+    q = re.sub(r"\((?:e\.g\.|eg\.?|for example|i\.e\.)[^)]*\)", " ", query, flags=re.I)
     if spec.instruction:
         q = q.replace(spec.instruction, " ")
     q = re.sub(r"\b(Provide|Answer|Respond)\b[^.?!]*[.?!]?", " ", q)
@@ -194,6 +194,36 @@ def strip_instruction(query, spec):
 
 
 def plan_question(query: str, tables) -> dict:
+    return plan_with_confidence(query, tables)[0]
+
+
+def plan_with_confidence(query: str, tables, strict=None):
+    """-> (plan, confidence in [0,1], reasons). Vietnamese questions are keyword-translated first.
+    strict=None -> conventions.strict_active() (on only with an LLM key); strict=True -> evidence accounting (42d00ea)."""
+    from . import textmatch
+    st = C.strict_active(strict)
+    old = textmatch.STRICT_POSSESSIVE
+    textmatch.STRICT_POSSESSIVE = st
+    try:
+        return _plan_with_confidence(query, tables, st)
+    finally:
+        textmatch.STRICT_POSSESSIVE = old
+
+
+def _plan_with_confidence(query, tables, strict):
+    from .vi import is_vietnamese, translate
+    reasons = []
+    vi_factor = 1.0
+    if is_vietnamese(query):
+        query, hits = translate(query)
+        vi_factor = 0.9 if hits >= 2 else 0.6
+        reasons.append(f"vi:{hits}")
+    plan, info = _plan_core(query, tables, strict)
+    conf, r2 = (_confidence if strict else _confidence_legacy)(query, plan, info)
+    return plan, conf * vi_factor, reasons + r2
+
+
+def _plan_core(query: str, tables, strict=False):
     spec = parse_instruction(query)
     body = strip_instruction(query, spec)
     low = body.lower()
@@ -202,6 +232,7 @@ def plan_question(query: str, tables) -> dict:
 
     # ---- choose view
     best = None
+    vscores = []
     for vi, v in enumerate(views):
         cols, ccov = match_columns(v, q)
         rows, rcov = match_rows(v, q, frozenset(ccov))
@@ -214,9 +245,10 @@ def plan_question(query: str, tables) -> dict:
         if v.stacked:
             s += 0.5
         s += 0.01 * min(len(v.df), 50)
+        vscores.append((s, vi, bool(tm and s >= 10)))
         if best is None or s > best[0]:
-            best = (s, vi, v, cols, rows)
-    _, vi, view, cols, rows = best
+            best = (s, vi, v, cols, rows, set(ccov) | set(rcov))
+    _, vi, view, cols, rows, best_cov = best
     # a 'Total' sub-column chosen by preference is dropped when a specific sibling is also chosen
     names = [c for c, _ in cols]
     def _par(c):
@@ -264,9 +296,11 @@ def plan_question(query: str, tables) -> dict:
     if spec.kind == "yesno":
         plan["op"] = "compare"
         args["cmp"] = "<" if re.search(r"\b(less|lower|smaller|fewer|below|under)\b", low) else ">"
-    elif re.search(r"\brank\b|\bdescending\b|\bascending\b", low):
+    elif re.search(r"\brank\b|\bdescending\b|\bascending\b|\bfrom (most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to (fewest|least|lowest|smallest|most|highest|largest|greatest|biggest)\b|\bin (descending|ascending) order\b", low):
         plan["op"] = "rank"
-        args["order"] = "asc" if "ascending" in low else "desc"
+        asc = re.search(r"ascending|from (least|fewest|lowest|smallest) to", low)
+        args["order"] = "asc" if asc else "desc"
+        plan["rows"]["paths"] = []
         lm = re.search(r":\s*([^.?]+)", body)
         if lm:
             names = [n.strip() for n in re.split(r",\s*(?:and\s+)?|\s+and\s+", lm.group(1)) if n.strip()]
@@ -335,13 +369,38 @@ def plan_question(query: str, tables) -> dict:
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
+    if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
+            and not plan["rows"].get("scope"):
+        secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
+        hit = [x for x in secs if q.match(x)[0] == 1.0]
+        if len(hit) == 1:
+            plan["rows"]["scope"] = hit[0]
+    if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "topk_agg", "nth") and not plan["rows"]["where"]:
+        conds = _conditions(body, view, plan["columns"], num_cols)
+        if conds:
+            plan["rows"]["where"] = conds
+            cc = {w["column"] for w in conds}
+            rest = [c for c in plan["columns"] if c not in cc]
+            plan["columns"] = rest or plan["columns"]
+            plan["rows"]["paths"] = [p for p in plan["rows"]["paths"]] if plan["op"] not in ("max", "min", "mean", "sum") else plan["rows"]["paths"]
+    if view.stacked and plan["op"] in ("compare", "diff", "values", "ratio") and len(set(plan["rows"]["paths"])) == 1:
+        sheets = []
+        for sname in dict.fromkeys(view.df["_sheet"]):
+            m = re.search(rf"\b{re.escape(str(sname).lower())}\b", low)
+            if m:
+                sheets.append((m.start(), sname))
+        if len(sheets) >= 2:
+            p0 = plan["rows"]["paths"][0]
+            plan["rows"]["paths"] = [f"{sn}!{p0}" for _, sn in sorted(sheets)]
+            plan["table"]["sheet"] = None
     if plan["op"] in ("sum", "mean", "diff", "compare", "ratio", "share", "argmax", "argmin", "rank"):
         plan["columns"] = [c for c in plan["columns"] if c in num_cols or c.endswith(" | *") or c == "*"]
     if plan["op"] in ("lookup", "values") and (len(plan["rows"]["paths"]) * max(1, len(plan["columns"])) > 1 or spec.kind == "list"):
         plan["op"] = "values"
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
         plan["columns"] = ["*"]
-    return plan
+    return plan, {"view": view, "q": q, "rows": rows, "cols_cov": best_cov, "body": body,
+                  "views": views, "vscores": vscores, "vi": vi, "spec": spec}
 
 
 def _label_range(label):
@@ -400,17 +459,318 @@ def _choose_over(plan, view, rows, cols, low):
             plan["rows"]["paths"] = []
 
 
+_COND_PRE = {"at least": ">=", "no less than": ">=", "more than": ">", "greater than": ">", "over": ">", "above": ">",
+             "older than": ">", "at most": "<=", "no more than": "<=", "less than": "<", "fewer than": "<",
+             "below": "<", "under": "<", "younger than": "<"}
+
+
+def _condition_column(window, view, cols, num_cols):
+    if re.search(r"\b(aged?|old|older|young|younger|years? old)\b", window):
+        agec = [c for c in num_cols if re.search(r"\bage\b", str(c), re.I)]
+        if agec:
+            return agec[0]
+    m, _ = match_columns(view, Query(window))
+    m = [c for c, _ in m if c in num_cols]
+    if m:
+        return m[0]
+    c = [x for x in cols if x in num_cols]
+    return (c or num_cols[-1:] or [None])[0]
+
+
 def _conditions(body, view, cols, num_cols):
     out = []
-    m = re.search(r"\b(at least|no less than|more than|greater than|over|above|at most|no more than|less than|fewer than|below|under)\s+(-?\d+(?:\.\d+)?)", body.lower())
-    if m:
-        op = {"at least": ">=", "no less than": ">=", "more than": ">", "greater than": ">", "over": ">", "above": ">",
-              "at most": "<=", "no more than": "<=", "less than": "<", "fewer than": "<", "below": "<", "under": "<"}[m.group(1)]
-        c = [x for x in cols if x in num_cols] or num_cols[-1:]
+    low = body.lower()
+    pre = "|".join(sorted(_COND_PRE, key=len, reverse=True))
+    for m in re.finditer(rf"\b({pre})\s+(-?\d+(?:\.\d+)?)", low):
+        if m.group(1) == "over" and re.match(r"\s*(years?|and over)", low[m.end():]):
+            continue
+        w = low[max(0, m.start() - 40): m.end() + 20]
+        c = _condition_column(w, view, cols, num_cols)
         if c:
-            out.append({"column": c[0], "op": op, "value": float(m.group(2))})
+            out.append({"column": c, "op": _COND_PRE[m.group(1)], "value": float(m.group(2))})
+    for m in re.finditer(r"(-?\d+(?:\.\d+)?)\s+(?:[a-z]+\s+)?(?:or|and)\s+(higher|more|older|above|greater|over|up|lower|less|fewer|younger|below|under)\b", low):
+        op = ">=" if m.group(2) in ("higher", "more", "older", "above", "greater", "over", "up") else "<="
+        w = low[max(0, m.start() - 40): m.end() + 10]
+        c = _condition_column(w, view, cols, num_cols)
+        if c and not (len(m.group(1)) == 4 and m.group(1).startswith(("19", "20")) and c == m.group(1)):
+            out.append({"column": c, "op": op, "value": float(m.group(1))})
     y = re.search(r"\b(?:in|during|of)\s+((?:19|20)\d{2})\b", body)
     if y and view.date_cols():
         dc = [c for c in cols if c in view.date_cols()] or view.date_cols()
         out.append({"column": dc[0], "op": "year==", "value": int(y.group(1))})
     return out
+
+
+OP_WORDS = set("""total sum combined average mean highest lowest most least fewest largest smallest maximum minimum
+greater less more fewer higher lower exceed difference absolute change rank order descending ascending share
+proportion percentage percent ratio rate which who what how many much second third first youngest oldest earliest latest
+compare between across all both respectively value number answer""".split())
+
+
+GENERIC = set("""occupation industri industry worker person people relat servic sector group total all categor
+item count amount figur data dataset table sheet record entri row column number valu inform report statist infer
+calculat final consider show list give find tell determin base accord provid name integ decimal place round
+digit format sign unit comma separat space order without only exactly two three both respect
+summ individu non overlapp detail tabl contain absolut differenc averag chang
+had has have nam cua khong co la cac nhung va trong cho duoc theo nay do mot hai ba bao nhieu nao""".split())
+
+OP_CUES = {
+    "compare": r"\b(greater|more|higher|larger|exceed|exceeds|exceeded|less|lower|smaller|fewer|below|above|than)\b",
+    "diff": r"how (many|much) (more|less|fewer|higher|lower)|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b",
+    "sum": r"\bsumm?ing\b|\bsum\b|\btotal\b|\bcombined\b|\baltogether\b|\bin all\b|\bacross all\b",
+    "mean": r"\baverage\b|\bmean\b",
+    "count": r"\bhow many\b|\bnumber of\b|\bcount\b",
+    "rank": r"\brank\b|\bdescending\b|\bascending\b|\bfrom (most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to\b",
+    "share": r"\bshare\b|\bproportion\b|percentage of|what percent",
+    "ratio": r"/|\bratio\b|\brate\b",
+    "argmax": r"\b(" + SUP_MAX + r")\b", "argmin": r"\b(" + SUP_MIN + r")\b",
+    "max": r"\b(" + SUP_MAX + r")\b", "min": r"\b(" + SUP_MIN + r")\b",
+    "nth": r"\b(" + SUP_MAX + "|" + SUP_MIN + r")\b", "topk_agg": r"\b(" + SUP_MAX + "|" + SUP_MIN + r")\b",
+    "values": r".", "lookup": r".",
+}
+
+
+OP_STEMS = None
+
+
+def _op_stems():
+    global OP_STEMS
+    if OP_STEMS is None:
+        from .textmatch import stem
+        OP_STEMS = {stem(w) for w in OP_WORDS} | set(OP_WORDS)
+    return OP_STEMS
+
+
+def _view_vocab(view):
+    voc = set()
+    for c in view.columns + [view.label_name or ""]:
+        voc.update(tokens(str(c)))
+    for l in view.df["_row_path"].astype(str):
+        voc.update(tokens(l))
+    voc.update(tokens(view.title)); voc.update(tokens(view.meta))
+    for t in view.tables:
+        voc.update(tokens(" ".join(t.notes)))
+    voc.update(tokens(" ".join(map(str, dict.fromkeys(view.df["_sheet"])))))
+    return voc
+
+
+def _part_ok(q, part, quoted):
+    f, _ = q.match(part)
+    if f == 1.0:
+        return True
+    pt = tokens(part)
+    hit = [t for t in pt if q.positions(t)]
+    miss = [t for t in pt if not q.positions(t) and t not in GENERIC]
+    if hit and not miss:
+        return True
+    for qq in quoted:  # quoted phrase fully inside the label
+        qt = tokens(qq)
+        if qt and all(any(t == u or (len(t) >= 5 and (t.startswith(u) or u.startswith(t))) for u in pt) for t in qt):
+            return True
+    return False
+
+
+def evidence(query, plan, info):
+    """List of (slot, how) with how in {'exact','cue','convention','guess:<why>'}."""
+    view, q = info["view"], info["q"]
+    body, low = info["body"], info["body"].lower()
+    quoted = re.findall(r"['\"“‘]([^'\"”’]{2,})['\"”’]", body)
+    ev = []
+    allcols = view.columns
+    # --- table
+    vs = sorted(info["vscores"], reverse=True)
+    if len(vs) > 1 and not vs[0][2] and vs[1][0] >= vs[0][0] - 1.0 and not view.stacked:
+        ev.append(("table", "guess:several similar tables"))
+    else:
+        ev.append(("table", "exact"))
+    # --- columns
+    cols = plan["columns"]
+    num = view.numeric_cols()
+    needs_col = plan["op"] in ("lookup", "values", "compare", "diff", "sum", "mean", "max", "min", "rank", "ratio", "share") or (
+        plan["op"] in ("argmax", "argmin") and plan["args"].get("over") == "rows")
+    if needs_col and not cols and len(num) > 1:
+        single = False
+        if len(plan["rows"]["paths"]) == 1:
+            r_ = view.df[view.df["_row_path"] == plan["rows"]["paths"][0]]
+            single = len(r_) > 0 and int(r_[num].iloc[0].notna().sum()) == 1
+        if not single:
+            ev.append(("columns", "guess:no column named"))
+    def colscore(c):
+        ps = str(c).split(" | ")
+        return (sum(1 if _part_ok(q, p, quoted) else -1 for p in ps),
+                sum(1 for p in ps for t in tokens(p) if q.positions(t)))
+
+    def beats(o, c):
+        (oa, ob), (ca, cb) = colscore(o), colscore(c)
+        return oa > ca or (oa == ca and ob >= cb)
+    # columns spanned by an explicit range in the question ('Jan-Apr')
+    ranged = set()
+    for mm in re.finditer(r"\b([A-Za-z]{3,9}|\d{4})\s*(?:-|–|to|through)\s*([A-Za-z]{3,9}|\d{4})\b", body):
+        a, b = tokens(mm.group(1)), tokens(mm.group(2))
+        ia = [i for i, c in enumerate(allcols) if a and tokens(c) == a]
+        ib = [i for i, c in enumerate(allcols) if b and tokens(c) == b]
+        if ia and ib and ia[0] < ib[0]:
+            ranged |= set(allcols[ia[0]: ib[0] + 1])
+    if needs_col and not cols and len(num) > 1 and len(paths_rows := plan["rows"]["paths"]) == 1:
+        pass
+    for c in cols:
+        if c == "*":
+            ev.append((c, "cue" if re.search(r"across all|\ball\b|combined|total|in all", low) else "guess:all columns"))
+            continue
+        if c in ranged:
+            ev.append((c, "exact"))
+            continue
+        parts = str(c)[:-4].split(" | ") if str(c).endswith(" | *") else str(c).split(" | ")
+        okp = [_part_ok(q, p, quoted) for p in parts]
+        leaf_ok = okp[-1] or (C.PREFER_TOTAL_SUBCOLUMN and re.match(r"total\b", parts[-1], re.I) and len(parts) > 1 and okp[-2])
+        if not leaf_ok:
+            ev.append((c, "guess:column name not in question"))
+            continue
+        # parents: allowed partial when the leaf is unique among columns
+        same_leaf = [o for o in allcols if str(o).split(" | ")[-1] == parts[-1] and o != c]
+        if not all(okp[:-1]) and same_leaf:
+            ev.append((c, "guess:ambiguous parent header"))
+            continue
+        # another unrelated column matching at least as well
+        pre = " | ".join(parts[:-1])
+        sc = colscore(c)
+        rivals = [o for o in allcols if o not in cols and o != c and not (pre and str(o).startswith(pre + " | "))
+                  and beats(o, c) and sc[0] > 0 and _part_ok(q, str(o).split(" | ")[-1], quoted)]
+        if c in num:
+            rivals = [o for o in rivals if o in num]
+        rivals = [o for o in rivals if not (re.match(r"(grand )?total\b", str(o).split(" | ")[-1], re.I) and len(cols) > 1)]
+        rivals = [o for o in rivals if not any(str(o).startswith(str(k)[:-4]) for k in cols if str(k).endswith(" | *"))]
+        if rivals:
+            ev.append((c, f"guess:similar column {rivals[0]!r}"))
+        else:
+            ev.append((c, "exact"))
+    # --- rows
+    df = view.df
+    paths = plan["rows"]["paths"]
+    names = plan["args"].get("names") or []
+    for k, p in enumerate(paths):
+        pp = p.split("!", 1)[1] if ("!" in p and view.stacked) else p
+        parts = pp.split(" > ")
+        leaf = strip_footnotes(parts[-1])
+        f, _ = q.match(leaf)
+        head = leaf.split("(")[0]
+        ok = f == 1.0 or ("(" in leaf and q.match(head)[0] == 1.0) or _part_ok(q, leaf, quoted + names)
+        if not ok:
+            ev.append((pp, "guess:row label not in question"))
+            continue
+        same = set(df.loc[df["_label"] == leaf, "_row_path"]) - {pp}
+        if same:
+            anc_hit = any(q.match(a)[0] > 0 for a in parts[:-1])
+            totalish = bool(parts[:-1]) and re.match(r"(total|all)\b", parts[0], re.I) is not None
+            if not anc_hit and not totalish:
+                ev.append((pp, "guess:same label in several groups"))
+                continue
+            if not anc_hit and totalish:
+                ev.append((pp, "convention"))
+                continue
+        ev.append((pp, "exact"))
+    if plan["op"] in ("lookup", "values", "compare", "diff", "ratio") and not paths and len(df) > 1:
+        first = df["_label"].iloc[0]
+        if re.match(r"(total|all|grand total)\b", str(first), re.I) or df["_is_subtotal"].iloc[0]:
+            ev.append(("rows", "convention"))
+        elif re.search(r"\btotal\b|\ball\b|across", low):
+            ev.append(("rows", "cue"))
+        else:
+            ev.append(("rows", "guess:no row named"))
+    if plan["op"] in ("sum", "mean", "max", "min", "count", "argmax", "argmin", "rank") and not paths and not plan["rows"]["where"] \
+            and not plan["rows"]["range"] and not plan["rows"].get("scope") and (df["_is_subtotal"].sum() > 1):
+        if not re.search(r"\ball\b|across|every|each|total|table|contain", low):
+            ev.append(("rows", "guess:implicit row scope"))
+    secs = [x for x in dict.fromkeys(df["_section"]) if x]
+    if plan["op"] in ("sum", "mean", "max", "min", "count", "argmax", "argmin", "rank", "nth", "topk_agg") and len(secs) >= 2 \
+            and not paths and not plan["rows"].get("scope") and not plan["rows"]["range"] \
+            and not re.search(r"\ball\b|across|every|each|total|table", low):
+        ev.append(("rows", "guess:several sections, none named"))
+    if re.search(r"\b(rate|ratio|per cent|percentage|percent|share|proportion|per capita|average)\b", low) and \
+            plan["op"] not in ("ratio", "share", "mean") and not any(
+                re.search(r"\b(rate|ratio|percent|%|share|average|mean)", str(c), re.I) for c in cols):
+        ev.append(("op", "guess:rate/ratio asked but no such column or op"))
+    # --- op
+    op = plan["op"]
+    cue = OP_CUES.get(op, r".")
+    if op == "compare":
+        ev.append(("op", "cue" if re.search(cue, low) else "guess:yes/no without comparison"))
+    elif op in ("lookup", "values"):
+        ev.append(("op", "cue"))
+    else:
+        ev.append(("op", "cue" if re.search(cue, low) else f"guess:{op} without cue"))
+    # --- numbers in question
+    used = " ".join(map(str, cols + paths + [view.title, view.meta] + list(dict.fromkeys(df["_sheet"]))))
+    used += " " + json_dump(plan)
+    body_n = re.sub(r"\((?:e\.g\.|eg|for example|i\.e\.)[^)]*\)", " ", body, flags=re.I)
+    for m in re.finditer(r"\d+(?:\.\d+)?", body_n):
+        n = m.group()
+        if not re.search(rf"(?<![\d.]){re.escape(n)}(?:\.0)?(?![\d])", used):
+            ev.append((n, "guess:number in question not used"))
+    # --- content words
+    voc = _view_vocab(view)
+    unexpl = []
+    for t, pos in q.toks:
+        if t.isdigit() or t in _op_stems() or t in GENERIC or len(t) <= 2:
+            continue
+        if any(t == v or (len(t) >= 5 and len(v) >= 5 and (t.startswith(v) or v.startswith(t))) for v in voc):
+            continue
+        unexpl.append(t)
+    if len(unexpl) >= 3:
+        ev.append(("words", f"guess:unexplained words {unexpl[:4]}"))
+    elif unexpl:
+        ev.append(("words", f"weak:{unexpl}"))
+    return ev
+
+
+def json_dump(plan):
+    import json
+    return json.dumps(plan, default=str)
+
+
+def _confidence(query, plan, info):
+    from .answer_type import compatible, expected_type, plan_type
+    exp = expected_type(query, plan["format"])
+    got = plan_type(plan, info["view"])
+    if not compatible(exp, got):
+        return 0.0, [f"type:{exp}!={got}"]
+    ev = evidence(query, plan, info)
+    guesses = [f"{s}:{h}" for s, h in ev if h.startswith("guess")]
+    c = 1.0
+    if guesses:
+        c = min(c, C.GUESS_CAP)
+    c *= 0.9 ** sum(1 for _, h in ev if h.startswith("weak"))
+    return c, guesses + [f"{s}:{h}" for s, h in ev if h.startswith("weak")]
+
+
+def _confidence_legacy(query, plan, info):
+    """b8f1082 confidence (default when no LLM key): kept verbatim for byte-identical output."""
+    from .answer_type import compatible, expected_type, plan_type
+    view, q = info["view"], info["q"]
+    reasons, c = [], 1.0
+    exp = expected_type(query, plan["format"])
+    got = plan_type(plan, view)
+    if not compatible(exp, got):
+        return 0.0, [f"type:{exp}!={got}"]
+    op, cols, rows = plan["op"], plan["columns"], plan["rows"]
+    nnum = len(view.numeric_cols())
+    nrows = len(rows["paths"])
+    if op in ("lookup", "values"):
+        if not nrows and not cols:
+            c *= 0.3; reasons.append("lookup:no-match")
+        elif not cols and nnum > 1:
+            c *= 0.6; reasons.append("lookup:no-col")
+    if op in ("compare", "diff", "ratio"):
+        if max(nrows, 1) * max(len(cols), 1) < 2 and not any(str(x).endswith("*") for x in cols):
+            c *= 0.3; reasons.append(f"{op}:<2 values")
+    if op in ("argmax", "argmin") and (plan["args"].get("over") == "rows") and not cols and nnum > 1:
+        c *= 0.5; reasons.append("arg:no-col")
+    if op in ("mean", "max", "min") and not cols and nnum > 1:
+        c *= 0.6; reasons.append("agg:no-col")
+    content = [p for t, p in q.toks if t not in OP_WORDS and not t.isdigit() or t.isdigit()]
+    cov = info.get("cols_cov") or set()
+    if content:
+        ratio = len([p for p in content if p in cov]) / len(content)
+        if ratio < 0.2:
+            c *= 0.6; reasons.append(f"coverage:{ratio:.2f}")
+    return c, reasons

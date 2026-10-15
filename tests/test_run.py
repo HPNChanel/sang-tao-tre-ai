@@ -1,18 +1,27 @@
-import csv, json, subprocess, sys
+import csv, json, os, subprocess, sys
 from pathlib import Path
 import pytest
 ROOT = Path(__file__).resolve().parents[1]
-DATA = Path("/workspace/aiproj/data/Public data 1")
 
 
-@pytest.mark.skipif(not DATA.exists(), reason="round-1 data missing")
+def round1_data_dir():
+    """Round-1 public data: $AIPROJ_DATA_DIR, otherwise <repo>/data/Public data 1."""
+    env = os.environ.get("AIPROJ_DATA_DIR")
+    if env:
+        return Path(env)
+    return ROOT / "data" / "Public data 1"
+
+
 def test_cli_end_to_end(tmp_path, monkeypatch):
+    data = round1_data_dir()
+    if not data.is_dir():
+        pytest.skip("round-1 data missing; set AIPROJ_DATA_DIR or place it at data/Public data 1")
     out = tmp_path / "with space" / "submission.csv"
-    env = {k: v for k, v in __import__("os").environ.items() if k != "OPENROUTER_API_KEY"}
-    subprocess.run([sys.executable, str(ROOT / "run.py"), "--data", str(DATA), "--out", str(out)],
+    env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
+    subprocess.run([sys.executable, str(ROOT / "run.py"), "--data", str(data), "--out", str(out)],
                    check=True, env=env, cwd="/")
     rows = list(csv.reader(open(out, encoding="utf-8")))
-    sample = list(csv.reader(open(DATA / "sample_submission.csv", encoding="utf-8-sig")))
+    sample = list(csv.reader(open(data / "sample_submission.csv", encoding="utf-8-sig")))
     assert rows[0] == sample[0]
     assert [r[0] for r in rows[1:]] == [r[0] for r in sample[1:]]
     logs = [json.loads(l) for l in open(out.parent / "run_log.jsonl")]
