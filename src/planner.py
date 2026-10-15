@@ -446,7 +446,10 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
-    if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
+    # One named section is the row selection, whether or not strict evidence is on.
+    # The other sections are different cells (other sheets and row numbers). Leaving
+    # them in repeats the same labels. This is not a dedupe of those values.
+    if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
         secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
         hit = [x for x in secs if q.match(x)[0] == 1.0]

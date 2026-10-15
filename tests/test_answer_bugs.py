@@ -1,4 +1,7 @@
-"""Rule answers that must not depend on an LLM key. Duplicate surnames stay."""
+"""Rule answers that must not depend on an LLM key. Duplicate surnames stay.
+
+A named section is answered from that section only.
+"""
 import sys
 from pathlib import Path
 
@@ -14,6 +17,46 @@ from src.plan_executor import execute
 from src.xlsx_tables import load_tables
 
 
+def _industries_94(tmp_path):
+    """94 data rows, 20 distinct labels, several sections and sheets.
+
+    Males is one block of those 20 labels. The other 74 rows repeat the same
+    labels on other sheets and other row numbers.
+    """
+    labels = [f"Category number {i:02d} alpha" for i in range(20)]
+    wb = openpyxl.Workbook()
+    blocks = [
+        ("2020", [("All persons", labels), ("Males", labels)]),
+        ("2021", [("All persons", labels), ("Females", labels)]),
+        ("2022", [("Females", labels[:14])]),
+    ]
+    for s, (sheet, sections) in enumerate(blocks):
+        ws = wb.active if s == 0 else wb.create_sheet()
+        ws.title = sheet
+        ws.append(["Industry", "Count"])
+        for sec, chunk in sections:
+            ws.append([sec, None])
+            for label in chunk:
+                ws.append([label, 10])
+    path = tmp_path / "sections94.xlsx"
+    wb.save(path)
+    tables = load_tables(str(path))
+    assert sum(len(t.df) for t in tables) == 94
+    return labels, tables
+
+
+def test_named_section_listed_once(tmp_path):
+    labels, tables = _industries_94(tmp_path)
+    q = (
+        "Rank the industries in Males by count in descending order, "
+        "separated by a comma and one space."
+    )
+    ans = execute(plan(q, tables), tables, q)
+    assert ans == ", ".join(labels)
+    assert len(ans.split(", ")) == 20
+    assert len(ans) < 800
+
+
 def test_duplicate_surnames_stay(tmp_path):
     """Two different people may share a surname. The list keeps both."""
     wb = openpyxl.Workbook()
@@ -26,6 +69,7 @@ def test_duplicate_surnames_stay(tmp_path):
     path = tmp_path / "scorers.xlsx"
     wb.save(path)
     tables = load_tables(str(path))
+    assert len(tables[0].df) == len(set(tables[0].df["_row"]))
     q = (
         "Who are the three highest scorers? Give their last names from highest "
         "to lowest score, separated by a comma and one space."
