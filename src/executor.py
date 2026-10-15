@@ -91,6 +91,33 @@ def _has_children(df, i):
     return (df["_parent_row"] == df.at[i, "_row"]).any()
 
 
+def _where_ok(v, op, val):
+    if op == "year==":
+        return isinstance(v, (dt.date, dt.datetime)) and v.year == int(val)
+    if isinstance(v, str):
+        from .vi import fold
+        left = fold(v).casefold().strip()
+        right = fold(str(val)).casefold().strip()
+        if op == "==":
+            return left == right
+        if op == "!=":
+            return left != right
+        return False
+    if op == ">=":
+        return v >= val
+    if op == ">":
+        return v > val
+    if op == "<=":
+        return v <= val
+    if op == "<":
+        return v < val
+    if op == "==":
+        return v == val
+    if op == "!=":
+        return v != val
+    return False
+
+
 def _apply_where(view, idx, where):
     df = view.df
     for w in where or []:
@@ -98,13 +125,9 @@ def _apply_where(view, idx, where):
         keep = []
         for i in idx:
             v = df.at[i, col]
-            if op == "year==":
-                ok = isinstance(v, (dt.date, dt.datetime)) and v.year == int(val)
-            else:
-                if v is None or (isinstance(v, float) and math.isnan(v)):
-                    continue
-                ok = {">=": v >= val, ">": v > val, "<=": v <= val, "<": v < val, "==": v == val, "!=": v != val}[op]
-            if ok:
+            if v is None or (isinstance(v, float) and math.isnan(v)):
+                continue
+            if _where_ok(v, op, val):
                 keep.append(i)
         idx = keep
     return idx
@@ -277,6 +300,7 @@ def execute(plan, tables):
         else:
             idx = _aggregate_rows(view, plan, base)
             idx = _first_root_scope(view, idx) if r.get("scope") is None else idx
+            idx = _apply_where(view, idx, r.get("where"))
             c = cols[0] if cols else view.numeric_cols()[0]
             vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}
             vals = {i: v for i, v in vals.items() if isinstance(v, (int, float, np.floating)) and not math.isnan(v)}
