@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""python run.py --data D --out O/submission.csv [--log run_log.jsonl]"""
+"""Contest entrypoint.
+
+  python run.py --xlsx-dir DIR --queries FILE --output CSV \\
+      --openrouter-key KEY --openrouter-model MODEL --openrouter-base-url URL
+
+Legacy flags still work and map onto the same paths:
+  python run.py --data D --out O/submission.csv [--log run_log.jsonl]
+"""
 import argparse, csv, ctypes, gc, json, multiprocessing, os, pickle, signal, sys, tempfile, time
 from collections import OrderedDict
 from pathlib import Path
@@ -808,11 +815,86 @@ def _affected_queries(data, byid, execution, key):
     return count
 
 
+def _completions_url(base):
+    text = str(base).strip().rstrip("/")
+    if text.endswith("/chat/completions"):
+        return text
+    return text + "/chat/completions"
+
+
+def _apply_openrouter_cli(key, model, base_url):
+    """Take OpenRouter settings from CLI. Absent flags leave the process as-is."""
+    saved = {}
+    if key is not None:
+        saved["key"] = os.environ.get("OPENROUTER_API_KEY")
+        os.environ["OPENROUTER_API_KEY"] = key
+    if model is not None and str(model).strip():
+        saved["model"] = llm_client.MODEL
+        llm_client.MODEL = str(model).strip()
+    if base_url is not None and str(base_url).strip():
+        saved["url"] = llm_client.URL
+        llm_client.URL = _completions_url(base_url)
+    return saved
+
+
+def _restore_openrouter_cli(saved):
+    if "key" in saved:
+        if saved["key"] is None:
+            os.environ.pop("OPENROUTER_API_KEY", None)
+        else:
+            os.environ["OPENROUTER_API_KEY"] = saved["key"]
+    if "model" in saved:
+        llm_client.MODEL = saved["model"]
+    if "url" in saved:
+        llm_client.URL = saved["url"]
+
+
+def _read_queries(path):
+    path = Path(path)
+    if path.is_dir():
+        path = path / "queries.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        payload = payload.get("queries", [])
+    return _dedupe_queries(payload)
+
+
+class _StderrLog:
+    """JSONL log lines for the contest path. Nothing is written beside the CSV."""
+
+    def write(self, text):
+        sys.stderr.write(text)
+        return len(text)
+
+    def flush(self):
+        sys.stderr.flush()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.flush()
+        return False
+
+
+def _open_run_log(path):
+    if path is None:
+        return _StderrLog()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return open(path, "w", encoding="utf-8")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--log", default=None, help="JSONL log (default: <out dir>/run_log.jsonl)")
+    ap.add_argument("--data", default=None)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--xlsx-dir", default=None)
+    ap.add_argument("--queries", default=None)
+    ap.add_argument("--output", default=None)
+    ap.add_argument("--openrouter-key", default=None)
+    ap.add_argument("--openrouter-model", default=None)
+    ap.add_argument("--openrouter-base-url", default=None)
+    ap.add_argument("--log", default=None, help="JSONL log (legacy default: <out dir>/run_log.jsonl)")
     ap.add_argument("--query-timeout", type=float, default=None,
                     help="Seconds for one forked child (default 20, or DS2_QUERY_TIMEOUT). "
                          "The parent sends SIGTERM at this limit, then SIGKILL. "
@@ -835,21 +917,36 @@ def main(argv=None):
     ap.add_argument("--flush-every", type=int, default=1,
                     help="Rewrite the CSV every N finished queries.")
     a = ap.parse_args(argv)
-    data = Path(a.data)
-    queries = _dedupe_queries(json.loads((data / "queries.json").read_text(encoding="utf-8")))
+    btc_io = bool(a.xlsx_dir or a.queries or a.output)
+    xlsx_dir = a.xlsx_dir or a.data
+    queries_arg = a.queries or (str(Path(a.data) / "queries.json") if a.data else None)
+    output = a.output or a.out
+    if not xlsx_dir or not queries_arg or not output:
+        ap.error("need --xlsx-dir, --queries, and --output (or legacy --data and --out)")
+    data = Path(xlsx_dir)
+    queries = _read_queries(queries_arg)
     header, order = ["id", "answer"], [q["id"] for q in queries]
-    sample = data / "sample_submission.csv"
-    if sample.exists():
-        with open(sample, newline="", encoding="utf-8-sig") as f:
-            rows = list(csv.reader(f))
-        header = rows[0]
-        ids = _unique(r[0] for r in rows[1:] if r)
-        if set(ids) == set(order):
-            order = ids
+    if not btc_io:
+        sample = Path(a.data) / "sample_submission.csv"
+        if sample.exists():
+            with open(sample, newline="", encoding="utf-8-sig") as f:
+                rows = list(csv.reader(f))
+            header = rows[0]
+            ids = _unique(r[0] for r in rows[1:] if r)
+            if set(ids) == set(order):
+                order = ids
     byid = {q["id"]: q for q in queries}
-    out = Path(a.out)
+    out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    log = Path(a.log) if a.log else out.parent / "run_log.jsonl"
+    if a.log:
+        log_path = Path(a.log)
+    elif btc_io:
+        log_path = None
+    else:
+        log_path = out.parent / "run_log.jsonl"
+    openrouter_saved = _apply_openrouter_cli(
+        a.openrouter_key, a.openrouter_model, a.openrouter_base_url
+    )
     timeout = _timeout_setting(a.query_timeout)
     preload_timeout = _preload_setting(a.preload_timeout)
     use_fork = _want_fork(a.in_process)
@@ -867,7 +964,7 @@ def main(argv=None):
         run_deadline = None
         if not use_fork and timeout > 0:
             run_deadline = time.monotonic() + timeout * max(len(execution), 1)
-        with open(log, "w", encoding="utf-8") as lf:
+        with _open_run_log(log_path) as lf:
             for index, qid in enumerate(execution):
                 if run_deadline is not None and time.monotonic() >= run_deadline:
                     for rest in execution[index:]:
@@ -922,6 +1019,7 @@ def main(argv=None):
         signal.signal(signal.SIGTERM, previous_term)
         _kill_pid(_RUN.child)
         _RUN.child = None
+        _restore_openrouter_cli(openrouter_saved)
     return 0
 
 
