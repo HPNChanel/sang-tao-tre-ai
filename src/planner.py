@@ -340,9 +340,35 @@ def _plan_core(query: str, tables, strict=False):
         re.search(r"\bthe ()(youngest|oldest)\b(?! \w+ (?:people|persons))", low)
     _unused = re.search(r"\b(" + "|".join(ORD) + r"|\d+(?:st|nd|rd|th))[- ](" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
     topk = re.search(r"\b(?:among|of) the (\w+) (" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
+    # 'among the five oldest' is a subset aggregate; every other top/bottom-k is a ranked list
+    topn = None if topk else _top_n(low, view, spec, num_cols, row_paths)
+    if topn and topn["by"] and topn["by"] != "age" and topn["over"] == "rows":
+        cols = [topn["by"]] + [c for c in cols if c != topn["by"]]
+        plan["columns"] = cols
     if spec.kind == "yesno":
         plan["op"] = "compare"
         args["cmp"] = "<" if re.search(r"\b(less|lower|smaller|fewer|below|under)\b", low) else ">"
+    elif topn and _topn_lists(query, spec):
+        plan["op"] = "rank"
+        args["k"] = topn["k"]
+        args["order"] = _topn_order(query, topn["word"])
+        args["by"] = "age" if topn["word"] in ("oldest", "youngest") else topn["by"]
+        if topn["over"] == "columns":
+            args["over"] = "columns"
+        else:
+            plan["rows"]["paths"] = []
+        if topn["ret"]:
+            args["return"] = topn["ret"]
+        elif topn["values"] and topn["by"] and topn["by"] != "age":
+            args["return"] = topn["by"]
+        fmt = plan["format"]
+        if fmt.get("kind") not in ("list",):
+            fmt["kind"] = "list"
+            fmt["sep"] = fmt.get("sep") or ", "
+        if topn["values"]:
+            fmt["item_kind"] = "number"
+        elif not fmt.get("item_kind"):
+            fmt["item_kind"] = "name"
     elif re.search(r"\brank\b|\bdescending\b|\bascending\b|\bfrom (most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to (fewest|least|lowest|smallest|most|highest|largest|greatest|biggest)\b|\bin (descending|ascending) order\b", low):
         plan["op"] = "rank"
         asc = re.search(r"ascending|from (least|fewest|lowest|smallest) to", low)
@@ -422,7 +448,7 @@ def _plan_core(query: str, tables, strict=False):
         hit = [x for x in secs if q.match(x)[0] == 1.0]
         if len(hit) == 1:
             plan["rows"]["scope"] = hit[0]
-    if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "topk_agg", "nth") and not plan["rows"]["where"]:
+    if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "topk_agg", "nth", "rank") and not plan["rows"]["where"]:
         conds = _conditions(body, view, plan["columns"], num_cols)
         if conds:
             plan["rows"]["where"] = conds
@@ -430,6 +456,20 @@ def _plan_core(query: str, tables, strict=False):
             rest = [c for c in plan["columns"] if c not in cc]
             plan["columns"] = rest or plan["columns"]
             plan["rows"]["paths"] = [p for p in plan["rows"]["paths"]] if plan["op"] not in ("max", "min", "mean", "sum") else plan["rows"]["paths"]
+    if plan["op"] == "rank":
+        # '55 years and over' names a band already chosen as the sort column or the row, not a threshold.
+        # 'born in 1997' filters the birth column even when another date column is listed first.
+        band = " ".join([str(args.get("by") or "")] + list(plan["rows"]["paths"]))
+        wh = []
+        for w in plan["rows"]["where"]:
+            if _number_names_band(w.get("value"), band):
+                continue
+            if w.get("op") == "year==" and re.search(r"\bborn\b", low):
+                birth = [c for c in view.date_cols() if re.search(r"birth|born|dob", str(c), re.I)]
+                if birth:
+                    w = dict(w, column=birth[0])
+            wh.append(w)
+        plan["rows"]["where"] = wh
     if view.stacked and plan["op"] in ("compare", "diff", "values", "ratio") and len(set(plan["rows"]["paths"])) == 1:
         sheets = []
         for sname in dict.fromkeys(view.df["_sheet"]):
@@ -546,6 +586,116 @@ def _conditions(body, view, cols, num_cols):
         dc = [c for c in cols if c in view.date_cols()] or view.date_cols()
         out.append({"column": dc[0], "op": "year==", "value": int(y.group(1))})
     return out
+
+
+def _number_names_band(value, text):
+    """True when a comparison value is the number inside an age-band label, not a cutoff."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return False
+    return bool(re.search(rf"\b{n}\b", str(text)))
+
+
+def _topn_lists(query, spec):
+    """A top/bottom-k question that wants the k items, not one aggregate of them."""
+    if spec.kind in ("int", "decimal", "number", "yesno"):
+        return False
+    if spec.kind == "list":
+        return True
+    q = query.lower()
+    return bool(re.search(r"\b(list|who|which|name the|name all)\b", q) or "separated by" in q)
+
+
+def _topn_order(query, word):
+    q = query.lower()
+    if re.search(r"\bascending\b|lowest first|smallest first|fewest first|earliest first", q):
+        return "asc"
+    if re.search(r"\bdescending\b|highest first|largest first|most first|latest first", q):
+        return "desc"
+    if word == "oldest":
+        return "desc"
+    if word == "youngest":
+        return "asc"
+    return "desc" if word and re.fullmatch(SUP_MAX, word) else "asc"
+
+
+def _top_n(low, view, spec, num_cols, row_paths):
+    """'top 3 by score', 'the three highest', 'bottom 2', 'which 3 were admitted earliest'.
+
+    -> dict(k, word, ret, by, over, values) or None. k is a digit or an English number word
+    (Vietnamese cardinals are translated first). The returned column may differ from the sort column.
+    """
+    nw = "|".join(sorted(NUMW, key=len, reverse=True))
+    kpat = rf"(\d+|{nw})"
+    sup = SUP_MAX + "|" + SUP_MIN
+    edge = re.search(rf"\b(?:top|bottom)\s+{kpat}\b", low)
+    spread = None if edge else re.search(rf"\b(?:the\s+)?{kpat}(?:\s+\w+){{0,6}}?\s+({sup})\b", low)
+    m = edge or spread
+    if not m:
+        return None
+    raw = m.group(1)
+    if raw.isdigit() and len(raw) == 4 and raw.startswith(("19", "20")):
+        return None
+    k = int(raw) if raw.isdigit() else NUMW.get(raw)
+    if not k or k < 2:
+        return None
+    if edge:
+        word = "lowest" if edge.group(0).split()[0] == "bottom" else "highest"
+    else:
+        word = spread.group(2)
+    dates = view.date_cols()
+    if word in ("oldest", "youngest"):
+        by, over = "age", "rows"
+    else:
+        pool = dates if word in ("earliest", "latest") else list(dict.fromkeys(num_cols + dates))
+        by = _measure_column(low, m, view, pool)
+        many = len([c for c in num_cols if not _is_total_col(c)]) >= 2
+        over = "columns" if len(row_paths) == 1 and many and not by else "rows"
+    ret = None
+    if spec.instruction:
+        ic, _ = match_columns(view, Query(spec.instruction))
+        ic = [c for c, _ in ic if c not in num_cols and c not in dates]
+        ret = ic[0] if ic else None
+    values = _wants_measure_values(low)
+    return {"k": k, "word": word, "ret": ret, "by": by, "over": over, "values": values}
+
+
+def _measure_column(low, match, view, pool):
+    """Column the k items are ordered by: 'by score', a named measure, or scorer~score."""
+    by_m = re.search(r"\bby\s+([a-z][a-z ]{2,40}?)(?:\b|[?.!,])", low)
+    if by_m:
+        hit = _pool_match(view, by_m.group(1), pool)
+        if hit:
+            return hit[0]
+    window = low[max(0, match.start() - 30): match.end() + 80]
+    hit = _pool_match(view, window, pool)
+    if hit:
+        return hit[0]
+    words = [re.sub(r"(ers|er|ors|or|rs)$", "", w) for w in re.findall(r"[a-z]{4,}", window)]
+    stems = [w[:4] for w in re.findall(r"[a-z]{5,}", low) if len(w) >= 5]
+    for c in pool:
+        leaf = tokens(str(c).split(" | ")[-1])
+        if any(len(w) >= 4 and any(t.startswith(w) or w.startswith(t) for t in leaf) for w in words):
+            return c
+        if any(len(t) >= 4 and t[:4] in stems for t in leaf):
+            return c
+    return None
+
+
+def _pool_match(view, text, pool):
+    found, _ = match_columns(view, Query(text))
+    return [c for c, _ in found if c in pool]
+
+
+def _wants_measure_values(low):
+    """'top 3 scores' / '3 lowest scores' lists the measure, not the row labels."""
+    nw = "|".join(sorted(NUMW, key=len, reverse=True))
+    sup = SUP_MAX + "|" + SUP_MIN
+    unit = r"(scores?|values?|numbers?|amounts?)"
+    if re.search(rf"\b(?:top|bottom)\s+(?:\d+|{nw})\s+{unit}\b", low):
+        return True
+    return bool(re.search(rf"\b(?:\d+|{nw})\s+{unit}\s+(?:{sup})\b", low))
 
 
 OP_WORDS = set("""total sum combined average mean highest lowest most least fewest largest smallest maximum minimum

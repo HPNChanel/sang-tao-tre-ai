@@ -22,6 +22,21 @@ def is_vietnamese(q: str) -> bool:
     return bool(_VI_HINT.search(q)) or len(_VI_WORDS.findall(fold(q).lower())) >= 2
 
 
+# Cardinals count the following noun. 'năm người' is five people: the next word is a noun.
+# 'năm 1997' is not (a year is digits, not a noun). 'của nam từ' is not (từ is a function word).
+_CARD = {"mot": "one", "hai": "two", "ba": "three", "bon": "four", "nam": "five",
+         "sau": "six", "bay": "seven", "tam": "eight", "chin": "nine", "muoi": "ten"}
+_NOT_NOUN = (
+    "tu|den|toi|tro|cua|va|la|co|trong|cho|voi|o|duoc|theo|nay|do|nao|nhat|hon|hay|hoac|"
+    "cac|nhung|tai|ve|khi|neu|thi|se|da|dang|roi|nua|qua|rat|cung|khong|bao|nhieu|"
+    "in|of|and|the|to|for|from|by|with|on|at|or|dai|so|gioi|nam"
+)
+
+
+def _card_repl(m):
+    return _CARD[m.group(1).lower()] + " " + m.group(2)
+
+
 # (folded Vietnamese regex, English replacement). Order matters: longer phrases first.
 KEYWORDS = [
     # instructions
@@ -33,6 +48,13 @@ KEYWORDS = [
     (r"chi (tra loi|ghi) (so )?nam", " Answer with only the 4-digit year."),
     (r"(tra loi|ghi) theo dinh dang yyyy-mm-dd", " Answer in YYYY-MM-DD format."),
     (r"phan cach (boi|bang) dau phay( va mot dau cach)?", " separated by a comma and one space"),
+    (r"\bliet ke\b", " list "),
+    # 'năm' + noun (not a 4-digit year, not a function word) is the cardinal five; same for other cardinals
+    (rf"\b(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+(?!(?:{_NOT_NOUN})\b)([a-z]{{2,}})\b", _card_repl),
+    (r"\btrong\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+nguoi\s+(?:lon tuoi|gia)\s+nhat\b",
+     r" among the \1 oldest "),
+    (r"\btrong\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+nguoi\s+(?:tre|nho tuoi)\s+nhat\b",
+     r" among the \1 youngest "),
     # common nouns/phrases (general statistics vocabulary; works with or without diacritics)
     (r"\bty le that nghiep\b|\bti le that nghiep\b", " unemployment rate "),
     (r"\bthat nghiep\b", " unemployed "),
@@ -88,6 +110,8 @@ KEYWORDS = [
     (r"\bnhieu hon bao nhieu\b", " how many more "),
     (r"\bchenh lech\b|\bhieu so\b|\bkhoang cach\b", " absolute difference between "),
     (r"\bthay doi\b", " change "),
+    (r"\btu cao den thap\b|\bgiam dan\b", " descending "),
+    (r"\btu thap den cao\b|\btang dan\b", " ascending "),
     (r"\btang\b", " increase "),
     (r"\bgiam\b", " decrease "),
     (r"\bcao nhat\b|\blon nhat\b|\bnhieu nhat\b", " highest "),
@@ -102,8 +126,6 @@ KEYWORDS = [
     (r"\btrung binh\b|\bbinh quan\b", " average "),
     (r"\bty le\b|\bti le\b|\bty trong\b", " share "),
     (r"\bxep hang\b|\bsap xep\b", " rank "),
-    (r"\btu cao den thap\b|\bgiam dan\b", " descending "),
-    (r"\btu thap den cao\b|\btang dan\b", " ascending "),
     (r"\bnhieu hon\b|\bcao hon\b|\blon hon\b|\bvuot\b", " greater than "),
     (r"\bit hon\b|\bthap hon\b|\bnho hon\b", " less than "),
     (r"\bso sanh\b", " compare "),

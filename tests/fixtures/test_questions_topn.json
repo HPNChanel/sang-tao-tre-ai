@@ -1,0 +1,62 @@
+[
+  {
+    "id": "tn01",
+    "file_name": "p4_t01.xlsx",
+    "query": "Who are the three highest scorers? Give their last names from highest to lowest score, separated by a comma and one space.",
+    "expected": "Ngo, Ngo, Vu"
+  },
+  {
+    "id": "tn02",
+    "file_name": "p4_t01.xlsx",
+    "query": "Name the bottom 2 people by score. Answer with their first names, lowest first, separated by a comma and one space.",
+    "expected": "Nam, An"
+  },
+  {
+    "id": "tn03",
+    "file_name": "p4_t01.xlsx",
+    "query": "List the top 3 scores in the table, highest first, separated by a comma and one space.",
+    "expected": "99, 98, 94"
+  },
+  {
+    "id": "tn05",
+    "file_name": "p4_t01.xlsx",
+    "query": "Which 3 people were admitted earliest? Answer with their first names in order of admission, separated by a comma and one space.",
+    "expected": "An, Nga, Phuc"
+  },
+  {
+    "id": "tn06",
+    "file_name": "p4_t01.xlsx",
+    "query": "Among people born in 1997, who are the top 5 by score? Answer with their last names, highest score first, separated by a comma and one space.",
+    "expected": "Ngo, Hoang, Pham"
+  },
+  {
+    "id": "tn07",
+    "file_name": "p4_t01.xlsx",
+    "query": "Ba điểm thấp nhất trong bảng là bao nhiêu? Liệt kê từ thấp đến cao, phân cách bằng dấu phẩy và một dấu cách.",
+    "expected": "58, 60, 61"
+  },
+  {
+    "id": "tn08",
+    "file_name": "p4_t01.xlsx",
+    "query": "Trong năm người lớn tuổi nhất, điểm cao nhất là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "94"
+  },
+  {
+    "id": "tn09",
+    "file_name": "p4_t01.xlsx",
+    "query": "Liệt kê 4 điểm cao nhất của những người sinh năm 2005, từ cao đến thấp, phân cách bằng dấu phẩy và một dấu cách.",
+    "expected": "92, 61"
+  },
+  {
+    "id": "tn10",
+    "file_name": "p4_t05.xlsx",
+    "query": "Which three industries employed the most people aged 16 to 19 years? Answer with the industry names, largest first, separated by a comma and one space.",
+    "expected": "Leisure and hospitality, Wholesale and retail trade, Education and health services"
+  },
+  {
+    "id": "tn11",
+    "file_name": "p4_t05.xlsx",
+    "query": "Hai ngành nào có nhiều người từ 55 tuổi trở lên có việc làm nhất? Chỉ trả lời tên ngành, theo thứ tự giảm dần, phân cách bằng dấu phẩy và một dấu cách.",
+    "expected": "Education and health services, Professional and business services"
+  }
+]
