@@ -375,6 +375,13 @@ def _leading_cardinal(text):
     return _vi_cardinal(" ".join(toks))
 
 
+def _opens_range(value, rest):
+    """'từ' / 'đến' before a number starts a span, not a filter value."""
+    if value not in ("tu", "den"):
+        return False
+    return bool(re.match(rf"\s+(?:\d+(?:\.\d+)?|{_NUMWORD})\b", rest))
+
+
 def _clause(text, start, end):
     """The phrase that holds a threshold, cut at a comma or sentence boundary."""
     left = max(text.rfind(ch, 0, start) for ch in ",.;?")
@@ -420,9 +427,19 @@ def filter_constraints(question: str):
     for m in _SHIFT.finditer(text):
         add("shift", m.group(1))
     for m in _TYPED.finditer(text):
-        add(m.group(1), m.group(2))
+        val = m.group(2).lower()
+        # 'của nhóm từ 55' — 'từ' opens an age band, it is not a group name.
+        if _opens_range(val, text[m.end():]):
+            continue
+        add(m.group(1), val)
     for m in _ROLE_VALUE.finditer(text):
-        add(m.group(1), m.group(2))
+        val = m.group(2).lower()
+        # 'ở nhóm nữ giới' is the women section. Translation already says women.
+        if val in ("gioi_nam", "nam", "nu") and re.match(r"\s+gioi\b", text[m.end():]):
+            continue
+        if _opens_range(val, text[m.end():]):
+            continue
+        add(m.group(1), val)
     type_words = set()
     for phrase in _TYPES.split("|"):
         type_words.update(phrase.split())
@@ -431,7 +448,7 @@ def filter_constraints(question: str):
         if tok in type_words:
             continue
         add(None, "nam" if tok == "gioi_nam" else tok, force=tok in ("gioi_nam", "nam", "nu"))
-    for m in re.finditer(r"\b(?:nguoi|nhom)\s+(gioi_nam|nu)\b", text):
+    for m in re.finditer(r"\b(?:nguoi|nhom)\s+(gioi_nam|nu)\b(?!\s+gioi\b)", text):
         add(None, "nu" if m.group(1) == "nu" else "nam", force=True)
     nums = []
     covered = []
@@ -548,7 +565,7 @@ def _amount_after(text, end):
     if value is None:
         return None
     m3 = re.match(
-        r"\s*(" + r"[\s.,;:!?]*".join(re.escape(t) for t in toks) + r")[\s.,;:!?]*",
+        r"\s*(" + r"[\s.,;:!?]*".join(re.escape(t) for t in toks) + r")",
         text[start:],
     )
     if not m3:

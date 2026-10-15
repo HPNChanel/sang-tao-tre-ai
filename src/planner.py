@@ -2012,7 +2012,8 @@ def _attach_vi_filters(plan, info, original):
     for item in spec["nums"]:
         col = _bind_threshold(view, item, wider)
         year_where = None
-        years = list(dict.fromkeys(_question_years(original)))
+        # A year outside this clause belongs to the row or column matcher.
+        years = list(dict.fromkeys(re.findall(r"\b((?:19|20)\d{2})\b", item.get("window") or "")))
         if len(years) == 1:
             year = years[0]
             measure, year_where = _measure_and_year(view, year)
@@ -2022,10 +2023,27 @@ def _attach_vi_filters(plan, info, original):
                 col = measure
             elif col is None:
                 col = measure
+            already = plan.get("columns") or []
             if col is not None and not _year_applied(view, col, year, year_where) and _table_mentions_year(view, year):
+                if not (already and all(year in str(name) for name in already)):
+                    failed = True
+                    continue
+        # 'từ 55 tuổi trở lên' is the row band the translator already rewrote
+        # ('aged 55 years and over'). It is not a cutoff on the measure.
+        # One numeric age column still takes the comparison. If the band is
+        # not a label either, the condition was not attached: leave it blank.
+        if _spoken_age_band(item):
+            age_cols = _age_columns(view)
+            if len(age_cols) == 1:
+                col = age_cols[0]
+            elif _band_is_a_label(view, item):
+                continue
+            else:
                 failed = True
                 continue
         if col is None:
+            if _plan_has_threshold(plan, item):
+                continue
             failed = True
             continue
         if year_where:
@@ -2088,8 +2106,8 @@ def _attach_vi_filters(plan, info, original):
         merged.append(item)
     if merged:
         plan["rows"]["where"] = merged
-    # A code fragment of a filter value must not become the selected row.
-    # The row whose name is exactly the value stays.
+    # A row named the same as a filter value, or a scrap of that value,
+    # must not become the only row. The where clause is the subset.
     values = [item.get("value") for item in merged]
     plan["rows"]["paths"] = [
         path for path in plan["rows"]["paths"]
@@ -2121,9 +2139,50 @@ def _group_scope(view, value):
     return None
 
 
-def _question_years(question):
-    from .vi import fold
-    return re.findall(r"\b((?:19|20)\d{2})\b", fold(str(question)))
+def _plan_has_threshold(plan, item):
+    """The planner already applied this same cutoff."""
+    try:
+        value = float(item.get("value"))
+    except (TypeError, ValueError):
+        return False
+    for where in (plan.get("rows") or {}).get("where") or []:
+        try:
+            if where.get("op") == item.get("op") and float(where.get("value")) == value:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _spoken_age_band(item):
+    """'từ 55 tuổi trở lên', the phrase translated into an age-band row label.
+
+    'tuổi lớn hơn' plus a number is a column comparison and is not this phrase.
+    """
+    window = item.get("window") or ""
+    return bool(re.search(r"\btu\s+\d+(?:\.\d+)?\s+tuoi\s+tro\s+(?:len|xuong)\b", window))
+
+
+def _age_columns(view):
+    return [col for col in view.numeric_cols() if _col_in_family(col, "age")]
+
+
+def _band_is_a_label(view, item):
+    """The band number is already a row label or a column header."""
+    try:
+        number = int(float(item.get("value")))
+    except (TypeError, ValueError):
+        return False
+    texts = []
+    df = view.df
+    if "_label" in df:
+        texts.extend(str(v) for v in df["_label"].dropna())
+    if "_row_path" in df:
+        texts.extend(str(v) for v in df["_row_path"].dropna())
+    if "_section" in df:
+        texts.extend(str(v) for v in df["_section"].dropna() if str(v).strip())
+    texts.extend(str(col) for col in view.columns)
+    return any(re.search(rf"\b{number}\b", _norm_token(text)) for text in texts)
 
 
 def _measure_and_year(view, year):
@@ -2177,9 +2236,10 @@ def _year_applied(view, col, year, year_where):
 
 
 def _label_overlaps_value(path, values):
-    """True when a row label is only a fragment of a category value.
+    """True when a row label repeats a column-filter value.
 
-    An exact row name stays. 'K' inside the code 'K7' does not.
+    The where clause is the subset. A row named the same as the shift or the
+    code, or a one-letter fragment of a code, must not become the only row.
     """
     leaf = str(path).split("!")[-1].split(" > ")[-1]
     leaf_n = _norm_token(leaf)
@@ -2189,8 +2249,10 @@ def _label_overlaps_value(path, values):
         if not isinstance(value, str):
             continue
         val_n = _norm_token(value)
-        if not val_n or leaf_n == val_n:
+        if not val_n:
             continue
+        if leaf_n == val_n:
+            return True
         if len(leaf_n) <= 2 and leaf_n in val_n:
             return True
         shared = set(tokens(leaf)) & set(tokens(value))

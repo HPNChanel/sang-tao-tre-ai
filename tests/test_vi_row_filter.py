@@ -193,10 +193,10 @@ def test_number_words_and_row_labels(tmp_path):
     wb = openpyxl.Workbook()
     people = wb.active
     people.title = "People"
-    people.append(["Name", "Shift", "City", "Score"])
-    people.append(["An", "evening", "K4", 99])
-    people.append(["Bo", "evening", "K4", 10])
-    people.append(["Cy", "day", "K7", 99])
+    people.append(["Ma", "Kip", "Kho", "KhoiLuong"])
+    people.append(["An", "dem", "K4", 72])
+    people.append(["Bo", "dem", "K4", 10])
+    people.append(["Cy", "ngay", "K7", 72])
     sales = wb.create_sheet("Sales")
     sales.append(["Region", "Sales"])
     sales.append(["South", 12])
@@ -205,7 +205,7 @@ def test_number_words_and_row_labels(tmp_path):
     wb.save(path)
     counted, conf, reasons, _planned = _ask(
         str(path),
-        "Đếm số người làm ca evening đạt đúng chín mươi chín điểm Score. Chỉ trả lời bằng số nguyên.",
+        "Kiện thuộc kip dem với KhoiLuong đúng bằng bảy mươi hai thì có mấy kiện? Viết một chữ số.",
     )
     assert counted == "1", (counted, conf, reasons)
     region, conf, reasons, planned = _ask(
@@ -475,6 +475,93 @@ def test_gender_section_ranks_inside_the_group(tmp_path):
     names = [part.strip() for part in str(got).split(",")]
     assert names == ["Bo", "An"], (got, conf, reasons, None if not planned else planned["rows"])
     assert "Cy" not in names
+
+
+def test_shift_word_does_not_pin_one_row(tmp_path):
+    """A row named like the shift must not shrink a count that also has a threshold."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("B1:C1")
+    ws["B1"] = "Record"
+    for col, name in enumerate(["Ten", "Age", "Ca"], 1):
+        ws.cell(2, col, name)
+    rows = [
+        ("sang", 55, "sang"),
+        ("An", 60, "sang"),
+        ("Bo", 51, "sang"),
+        ("Cy", 40, "sang"),
+        ("Di", 70, "toi"),
+    ]
+    for r, row in enumerate(rows, 3):
+        for c, value in enumerate(row, 1):
+            ws.cell(r, c, value)
+    path = _save(wb, tmp_path, "crew.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Những dòng làm ca sang mà tuổi lớn hơn năm mươi, đếm giúp mấy dòng? Ghi chữ số.",
+    )
+    assert got == "3", (got, conf, reasons, None if not planned else planned["rows"])
+    assert planned["op"] == "count"
+    assert "sang" not in [str(p).split(" > ")[-1].lower() for p in planned["rows"]["paths"]]
+
+
+def test_age_band_row_is_not_blocked(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("A1:C1")
+    ws["A1"] = "Bang"
+    ws["A2"] = "Group"
+    ws["B2"] = "Employed"
+    ws["C2"] = "Hours"
+    ws["A3"] = "55 years and over"
+    ws["B3"] = 10
+    ws["C3"] = 3
+    ws["A4"] = "25 to 54"
+    ws["B4"] = 4
+    ws["C4"] = 9
+    path = _save(wb, tmp_path, "bands.xlsx")
+    got, conf, reasons, _planned = _ask(
+        path,
+        "Tổng Employed của nhóm từ 55 tuổi trở lên là bao nhiêu? Ghi chữ số.",
+    )
+    assert got == "10", (got, conf, reasons)
+
+
+def test_women_section_phrase_is_not_blocked(tmp_path):
+    """'nữ giới' is the women row. It must not be read as a missing column filter."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("A1:B1")
+    ws["A1"] = "Bang"
+    ws["A2"] = "Group"
+    ws["B2"] = "Score"
+    ws["A3"] = "Women"
+    ws["B3"] = 8
+    ws["A4"] = "Men"
+    ws["B4"] = 30
+    path = _save(wb, tmp_path, "groups.xlsx")
+    got, conf, reasons, _planned = _ask(
+        path,
+        "Ở nhóm nữ giới, tổng điểm Score là bao nhiêu? Ghi chữ số.",
+    )
+    assert got == "8", (got, conf, reasons)
+
+
+def test_age_column_band_still_filters(tmp_path):
+    """'từ 40 tuổi trở lên' on a numeric age column is a real cutoff, not a row label."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Ten", "Tuoi", "Ca"])
+    ws.append(["An", 60, "sang"])
+    ws.append(["Bo", 40, "sang"])
+    ws.append(["Cy", 30, "toi"])
+    path = _save(wb, tmp_path, "ages.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Có mấy người từ 40 tuổi trở lên? Ghi chữ số.",
+    )
+    assert got == "2", (got, conf, reasons, None if not planned else planned["rows"])
+    assert planned["op"] == "count"
 
 
 def test_row_after_o_is_not_blocked(tmp_path):
