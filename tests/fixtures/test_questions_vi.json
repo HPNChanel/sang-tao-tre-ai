@@ -1,0 +1,80 @@
+[
+  {
+    "id": "fv01",
+    "file_name": "p4_t10.xlsx",
+    "query": "Tổng số người đi làm của nam giới từ 20 đến 24 tuổi là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "7146"
+  },
+  {
+    "id": "fv02",
+    "file_name": "p4_t10.xlsx",
+    "query": "Tong so nguoi di lam cua nu tu 55 tuoi tro len la bao nhieu? Chi tra loi bang so nguyen.",
+    "expected": "16265"
+  },
+  {
+    "id": "fv03",
+    "file_name": "p4_t06.xlsx",
+    "query": "Trong ngành nông nghiệp, phụ nữ từ 18 đến 19 tuổi có bao nhiêu lao động gia đình không lương? Chỉ trả lời bằng số nguyên.",
+    "expected": "5"
+  },
+  {
+    "id": "fv04",
+    "file_name": "p4_t06.xlsx",
+    "query": "Có bao nhiêu đàn ông từ 65 tuổi trở lên làm việc trong nông nghiệp (cột Total)? Chỉ trả lời bằng số nguyên.",
+    "expected": "281"
+  },
+  {
+    "id": "fv05",
+    "file_name": "p4_t06.xlsx",
+    "query": "Đối với nam, số lao động gia đình không lương ngoài nông nghiệp (phi nông nghiệp) ở nhóm tuổi 35 đến 44 là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "2"
+  },
+  {
+    "id": "fv06",
+    "file_name": "p4_t04.xlsx",
+    "query": "Tỷ lệ thất nghiệp của nam có bằng sau đại học (Advanced degree) là bao nhiêu? Chỉ trả lời bằng số, làm tròn đến 1 chữ số thập phân.",
+    "expected": "1.9"
+  },
+  {
+    "id": "fv07",
+    "file_name": "p4_t04.xlsx",
+    "query": "Ở nhóm nữ giới có bằng cao đẳng (Associate degree), số người thất nghiệp là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "214"
+  },
+  {
+    "id": "fv08",
+    "file_name": "p4_t01.xlsx",
+    "query": "Trong số những người sinh năm 1997, điểm cao nhất là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "89"
+  },
+  {
+    "id": "fv09",
+    "file_name": "p4_t01.xlsx",
+    "query": "Người lớn tuổi nhất trong bảng được bao nhiêu điểm? Chỉ trả lời bằng số nguyên.",
+    "expected": "60"
+  },
+  {
+    "id": "fv10",
+    "file_name": "p4_t01.xlsx",
+    "query": "Người trẻ nhất nhập học vào ngày nào? Trả lời theo định dạng YYYY-MM-DD.",
+    "expected": "2024-07-13"
+  },
+  {
+    "id": "fv11",
+    "file_name": "p4_t10.xlsx",
+    "query": "Số giờ làm việc trung bình (Average hours, Total at work) của nam năm 2023 là bao nhiêu? Chỉ trả lời bằng số, làm tròn đến 1 chữ số thập phân.",
+    "expected": "40.3"
+  },
+  {
+    "id": "fv12",
+    "file_name": "p4_t08.xlsx",
+    "query": "Trong ngành nông nghiệp, có bao nhiêu người làm việc từ 15 đến 29 giờ? Chỉ trả lời bằng số nguyên.",
+    "expected": "269"
+  },
+  {
+    "id": "fv13",
+    "file_name": "p4_t06.xlsx",
+    "query": "Ở phụ nữ, nhóm tuổi nào có đông người làm nông nghiệp nhất (cột Total)? Chỉ trả lời tên nhóm tuổi.",
+    "expected": "35 to 44 years"
+  }
+]

@@ -65,13 +65,35 @@ def build_views(tables):
 
 
 # ---------------------------------------------------------------- matching
+# Header fillers. 'total' is not one: it is often the column the question names.
+_COL_FILLER = {"relat", "industri", "industry", "sector"}
+
+
+def _col_part_match(q: Query, part: str, exclude=frozenset()):
+    """Like Query.match, but filler words do not dilute a specific hit.
+
+    'agriculture' therefore matches 'Agriculture and related industries'."""
+    pt = tokens(part)
+    if not pt:
+        return 0.0, set()
+    specific = [t for t in pt if t not in _COL_FILLER]
+    use = specific or pt
+    pos, hit = set(), 0
+    for t in use:
+        ps = q.positions(t, exclude)
+        if ps:
+            hit += 1
+            pos |= ps
+    return hit / len(use), pos
+
+
 def match_columns(view: View, q: Query, exclude=frozenset()):
     """Greedy cover of query tokens by column keys (prefix of 'A | B | C' parts)."""
     cands = {}
     allcols = view.columns + ([view.label_name] if view.label_name else [])
     for ci, col in enumerate(allcols):
         parts = str(col).split(" | ")
-        fr = [q.match(p, exclude) for p in parts]
+        fr = [_col_part_match(q, p, exclude) for p in parts]
         strong = [i for i, (f, _) in enumerate(fr) if f >= 0.5]
         if not strong:
             continue
@@ -145,6 +167,30 @@ def _is_total_col(c):
     return bool(re.match(r"(grand )?total\b", str(c).split(" | ")[-1], re.I))
 
 
+def _prefer_universe_age(df, q: Query, kept):
+    """A bare 'Men' row under a section the question never names loses to 'Men, 16 years and over'.
+
+    The longer label is the group total; the number in it is the table's age universe, not a
+    different group. A parent the question does name (for example White) keeps the bare row."""
+    universe = {}
+    for i in range(len(df)):
+        path = str(df["_row_path"].iat[i])
+        leaf = strip_footnotes(path.split(" > ")[-1]).strip()
+        m = re.fullmatch(r"(.+), \d+ years and over", leaf, re.I)
+        if m:
+            universe.setdefault(m.group(1).lower(), path)
+    out = []
+    for path, pos, i in kept:
+        leaf = strip_footnotes(path.split(" > ")[-1]).strip()
+        anc = tokens(" ".join(path.split(" > ")[:-1]))
+        uni = universe.get(leaf.lower()) if len(tokens(leaf)) == 1 else None
+        if uni and uni != path and not any(q.positions(t) for t in anc):
+            out.append((uni, pos, i))
+        else:
+            out.append((path, pos, i))
+    return out
+
+
 def match_rows(view: View, q: Query, exclude=frozenset()):
     df = view.df
     cands = []
@@ -181,6 +227,7 @@ def match_rows(view: View, q: Query, exclude=frozenset()):
         return min(u or k[1])
     fk = {id(k): first_unique(k) for k in kept}
     kept.sort(key=lambda k: fk[id(k)])
+    kept = _prefer_universe_age(df, q, kept)
     return [(p, pos) for p, pos, _ in kept], covered
 
 
