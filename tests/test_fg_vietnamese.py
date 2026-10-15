@@ -2,6 +2,7 @@
 
 Workbooks are the public data pack: $AIPROJ_DATA_DIR, otherwise
 <data>/Public data 1, with files in xlsx_files/ or the pack root.
+Every case is a hard assertion.
 The set is skipped only when that directory is absent.
 """
 import json
@@ -21,38 +22,8 @@ _CASES = json.loads(
     (Path(__file__).resolve().parent / "fixtures" / "test_questions_vi.json").read_text(encoding="utf-8")
 )
 
-# Gaps in the general planner, not per-question rules in src.
-# fv08: "sinh năm 1997" becomes "born in 1997". year== is emitted only when
-# date_cols() is non-empty, and only after the op is already max/min/mean/sum/
-# argmax/argmin/nth. A numeric birth year is not a date column. "điểm cao nhất
-# là bao nhiêu" becomes "score highest what is the value", which takes the
-# argmax branch (a row label) rather than max of the score over filtered rows.
-# fv10: "người trẻ nhất" becomes "the youngest" and is planned as nth with
-# by="age" and order="asc". _ages uses a numeric column named age, or
-# reference_date - birth_date when both are date columns — not the latest
-# birth date. The return column is the first match that is not age/birth/born;
-# "nhập học" is not mapped onto the enrollment-date column.
-_XFAIL = {
-    "fv08": (
-        "year== only applies to date columns, and 'score highest what is the value' "
-        "is argmax of a label rather than max of the score over rows filtered by a numeric birth year"
-    ),
-    "fv10": (
-        "youngest is nth by='age' ascending (smallest age, or reference date minus birth date), "
-        "not latest birth date then the enrollment-date column"
-    ),
-}
-
-
 def _params():
-    params = []
-    for case in _CASES:
-        marks = []
-        reason = _XFAIL.get(case["id"])
-        if reason:
-            marks.append(pytest.mark.xfail(strict=False, reason=reason))
-        params.append(pytest.param(case, id=case["id"], marks=marks))
-    return params
+    return [pytest.param(case, id=case["id"]) for case in _CASES]
 
 
 def _pack_dir():

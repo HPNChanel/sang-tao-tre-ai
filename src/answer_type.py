@@ -51,6 +51,8 @@ def plan_type(plan: dict, view=None) -> str:
         return "list"
     if op == "nth":
         ret = a.get("return")
+        if view is not None and ret and ret in view.date_cols():
+            return "date"
         if view is not None and ret and ret in view.numeric_cols():
             return "number"
         return "label"

@@ -2,7 +2,7 @@
 
 Workbooks are the public data pack: $AIPROJ_DATA_DIR, otherwise
 <data>/Public data 1, with files in xlsx_files/ or the pack root.
-tn08 is xfail(strict=False); every other case is a hard assertion.
+Every case is a hard assertion.
 The set is skipped only when that directory is absent.
 """
 import json
@@ -22,26 +22,8 @@ _CASES = json.loads(
     (Path(__file__).resolve().parent / "fixtures" / "test_questions_topn.json").read_text(encoding="utf-8")
 )
 
-# QA on the public pack: 9/10 pass. tn08 returns 83, the score of the 5th-oldest person,
-# instead of 94, the max Score over that five-person subset.
-_XFAIL = {
-    "tn08": (
-        "got 83, expected 94; 83 is the score of the 5th-oldest person, so the "
-        "top-k subset by birth date then max of Score returns the k-th row's value "
-        "instead of aggregating over the subset"
-    ),
-}
-
-
 def _params():
-    params = []
-    for case in _CASES:
-        marks = []
-        reason = _XFAIL.get(case["id"])
-        if reason:
-            marks.append(pytest.mark.xfail(strict=False, reason=reason))
-        params.append(pytest.param(case, id=case["id"], marks=marks))
-    return params
+    return [pytest.param(case, id=case["id"]) for case in _CASES]
 
 
 def _pack_dir():

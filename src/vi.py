@@ -76,6 +76,7 @@ KEYWORDS = [
     (r"\bnhom tuoi\b", " age group "),
     (r"\bnganh\b", " industry "),
     (r"\bdiem\b", " score "),
+    (r"\bnhap hoc\b", " admission "),
     (r"\btat ca moi nguoi\b|\bmoi nguoi\b", " all people "),
     (r"\bnguoi lon tuoi nhat\b|\b(?:ai|nguoi nao) (?:lon tuoi|gia) nhat\b", " who is the oldest person "),
     (r"\bnguoi tre nhat\b|\b(?:ai|nguoi nao) (?:tre|nho tuoi) nhat\b", " who is the youngest person "),
