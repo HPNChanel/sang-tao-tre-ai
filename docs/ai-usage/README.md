@@ -1,37 +1,46 @@
-# Khai báo dùng AI (điều kiện 6)
+Đã che id/đáp án bộ đo. Bản nguyên văn giữ ngoài repo, bàn giao riêng cho chủ dự án.
 
-Solver mặc định là code. Model chỉ là fallback.
+# Khai báo dùng AI
 
-- **Model lúc chạy:** `qwen/qwen3.7-flash` qua OpenRouter.
-- **Khi nào gọi:** chỉ khi biến môi trường `OPENROUTER_API_KEY` được đặt. Không có key thì không có lời gọi mạng.
-- **Model làm gì:** chỉ phát một plan JSON. Đáp án do code tính (`src/executor.py`), không do model tính.
-- **Prompt lúc chạy:** nằm trong `src/prompts/`.
-- **Chưa chạy với model thật:** chưa có lần gọi API OpenRouter nào. Mọi test LLM dùng transport giả trong `tests/fake_llm.py` (không mạng, không key thật).
+Solver mặc định là code. Model chỉ là fallback. Không huấn luyện.
 
-## Prompt KSP2 trong PR này
+## #16
 
-| Prompt | Mục đích |
-|---|---|
-| `src/prompts/plan_system.txt` | System prompt: chuyển câu hỏi thành đúng một JSON plan, không tính đáp án, không viết code, không giải thích. PR này thêm năm quy tắc: tên cột `Parent \| Child` và `Parent \| *`, cột `["*"]`, đường dẫn dòng `Sheet!path`, `args.ties` (`all` / `first`), `args.by` (kể cả `"age"`) và `args.return`. |
-| `src/prompts/plan_user.txt` | User prompt: nhét schema, tóm tắt bảng và câu hỏi vào một mẫu. File này không đổi trong PR này. |
+Đã merge, nằm trên main `19eb2670b42131553b87ff38a9c75b1197e7f92e`.
 
-Schema trên đĩa `src/plan_schema.json` không bị sửa. Lúc gửi, `compact_schema` bỏ `description`, `$schema`, `$id` và `title` rồi nén JSON. Ràng buộc còn lại giữ nguyên. `reasoning` gửi đi với `{"enabled": false}`. Log chi phí tách `completion_tokens` và `reasoning_tokens` theo từng attempt.
+Bảy prompt, Cursor cloud agent (model mặc định). Cả bảy đã chạy. Mục đích: guard để trống khi hình dạng câu trả lời sai hoặc thiếu cột xếp hạng.
 
-## Khai báo theo từng PR
+## #18
 
-Model trên mọi PR: `qwen/qwen3.7-flash` qua OpenRouter. Không PR nào đã chạy với model thật.
+Draft. Không vào bản nộp. QA FAIL tại `6f82333464824bd8c8170eb9480fc6faf529b703`.
 
-| PR | Trạng thái | Prompt | Ghi chú |
-|---|---|---|---|
-| #1 | merged, `e1ab186` | Không thêm prompt mới. Prompt có sẵn nằm trong `src/prompts/`. | Chưa chạy với model thật |
-| #2 | KSP1, merged, `c02777d` | `src/prompts/plan_system.txt`, `src/prompts/plan_user.txt`, `src/plan_schema.json` | Synth v3 là Python thuần điền template, không gọi LLM. Đổi code thêm duy nhất: `os.environ.get` thành `os.getenv`. Chưa chạy với model thật |
-| #3 | KSP1, fix-groups, CLOSED, không merge | Không sửa `src/prompts/` | Đóng vì điểm v2 giảm. Chưa chạy với model thật |
-| #4 | KSP1, fg-vietnamese | Không sửa `src/prompts/` | Code do Cursor cloud agent viết theo chỉ đạo của KSP1. Model `qwen/qwen3.7-flash` qua OpenRouter chỉ dùng làm fallback cho `plan(strict=False)`. Chưa chạy với model thật |
-| #5 | KSP2, PR này | Prompt chính và fake LLM ghi trong file này | Nén schema chỉ lúc gửi (`plan_schema.json` trên đĩa không đổi), parser vững, tắt reasoning, tách log chi phí, fake LLM và test. Model `qwen/qwen3.7-flash` qua OpenRouter. Chưa chạy với model thật |
-| PR nhỏ của KSP1 | từng PR | Mỗi PR ghi prompt chính của chính nó. PM gom trước khi zip. | Chưa chạy với model thật |
+- Prompt 1: loader bỏ dòng tiêu đề phía trên header thật. Đã chạy.
+- Prompt 2: rebase. Đã chạy.
+- Prompt 3: huỷ, không vào code.
+- Prompt 4: đánh dấu bảng và lý do `blank:refined-header`. Đã chạy, không vào bản nộp.
 
-PR #4 (fg-vietnamese) được miễn điều kiện 2 (số câu sai-mà-tự-tin trên v2 không giảm): lý do là không bộ nào tụt điểm và bộ test độc lập fv tăng từ 0/13 lên 11/13. Theo luật merge mới: không bộ nào tụt + có cải thiện đo được trên bộ test độc lập thì được merge.
+## #17
 
-## Bai hoc tu 6 nhom loi & synth v5 (KSP1)
+KSP2, head `d4d83acd040285956de1d78e31ca849e165c1508`.
 
-Nội dung nằm ở [`ksp1-lessons.md`](ksp1-lessons.md).
+Tám prompt, cả tám đã chạy. Mục đích: lọc dòng theo điều kiện tiếng Việt.
+
+Nguyên văn đã che của 8 prompt #17 sẽ bổ sung sau.
+
+## PR adapter
+
+KSP2, nhánh `ksp2/submission-adapter`.
+
+Một prompt, đã chạy. Dockerfile ở root và sáu đối số cuộc thi. Không đổi logic trả lời. SHA: #20 merge `47c1e20`.
+
+## #19
+
+Bàn giao, KSP1. Prompt viết `docs/HANDOVER_CODEX.md` và các prompt cập nhật file đó. Đã chạy. Chỉ tài liệu.
+
+## LLM lúc chạy
+
+Chỉ `qwen/qwen3.7-flash` qua OpenRouter, chỉ làm fallback khi `plan(strict=False)`. Không training.
+
+## Bộ v3 niêm phong
+
+sha256 `45d652ccb2860bfdb7a81f5a2177621c299d97cd63ec53bd09622cd4306375d5`. 39 câu. Chưa mở.
