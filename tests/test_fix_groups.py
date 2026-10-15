@@ -83,3 +83,32 @@ def test_thousands_separator(tmp_path):
     f = tmp_path / "u.xlsx"; wb.save(f)
     assert _ans(f, "How many units did Alpha sell? Answer with the number formatted with commas.") == "1,234,567"
     assert _ans(f, "How many units did Alpha sell? Answer with only the integer.") == "1234567"
+
+
+# ---- cross-sheet / cross-column direction
+@pytest.fixture
+def years(tmp_path):
+    wb = openpyxl.Workbook(); wb.remove(wb.active)
+    for y, vals in (("2021", [100, 50, 70]), ("2022", [90, 80, 75])):
+        ws = wb.create_sheet(y); ws.append(["Product", "Value"])
+        for p, v in zip(["Tea", "Salt", "Corn"], vals):
+            ws.append([p, v])
+    f = tmp_path / "y.xlsx"; wb.save(f); return f
+
+
+def test_grow_from_to(years):
+    assert _ans(years, "Did Tea grow from 2021 to 2022? Answer with only Yes or No.") == "No"
+    assert _ans(years, "Did Salt grow from 2021 to 2022? Answer with only Yes or No.") == "Yes"
+
+
+def test_biggest_increase_sheets(years):
+    assert _ans(years, "Which product had the biggest increase from 2021 to 2022? Answer with only the product name.") == "Salt"
+
+
+def test_biggest_increase_columns(tmp_path):
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["Region", "Sales 2021", "Sales 2022"])
+    for r in [("North", 10, 30), ("South", 50, 55), ("East", 20, 25)]:
+        ws.append(list(r))
+    f = tmp_path / "c.xlsx"; wb.save(f)
+    assert _ans(f, "Which region had the largest increase in sales from 2021 to 2022? Answer with only the region name.") == "North"

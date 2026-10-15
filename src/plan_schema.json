@@ -224,6 +224,15 @@
       "first"
      ],
      "description": "argmax/argmin ties: all tied labels (table order) or first only"
+    },
+    "delta": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "argmax/argmin of change: [earlier sheet or column, later sheet or column]"
     }
    }
   },

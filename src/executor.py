@@ -259,6 +259,20 @@ def execute(plan, tables):
                 v = _col_values(view, c, [i]).iloc[0]
                 per[df.at[i, "_sheet"]] = v
             val = _pick(list(per), lambda s: sign * tf(per[s]), plan, "sheets")
+        elif args.get("delta"):
+            # change between two periods (sheets of a stacked view, or two columns): later minus earlier
+            a_, b_ = args["delta"]
+            c = cols[0] if cols else view.numeric_cols()[0]
+            if view.stacked and a_ in set(df["_sheet"].astype(str)):
+                base_idx = df.index[df["_sheet"].astype(str) == a_]
+                late = {df.at[i, "_label"]: _col_values(view, c, [i]).iloc[0] for i in df.index[df["_sheet"].astype(str) == b_]}
+                vals = {df.at[i, "_label"]: late.get(df.at[i, "_label"]) - _col_values(view, c, [i]).iloc[0]
+                        for i in base_idx if late.get(df.at[i, "_label"]) is not None}
+            else:
+                idx = _first_root_scope(view, _aggregate_rows(view, plan, base))
+                vals = {df.at[i, "_label"]: _col_values(view, b_, [i]).iloc[0] - _col_values(view, a_, [i]).iloc[0] for i in idx}
+            vals = {k: v for k, v in vals.items() if isinstance(v, (int, float, np.floating)) and not math.isnan(v)}
+            val = _pick(list(vals), lambda k: sign * tf(vals[k]), plan, "rows")
         else:
             idx = _aggregate_rows(view, plan, base)
             idx = _first_root_scope(view, idx) if r.get("scope") is None else idx

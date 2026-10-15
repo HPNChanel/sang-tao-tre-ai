@@ -304,6 +304,12 @@ def _plan_core(query: str, tables, strict=False):
     if spec.kind == "yesno":
         plan["op"] = "compare"
         args["cmp"] = "<" if re.search(r"\b(less|lower|smaller|fewer|below|under)\b", low) else ">"
+        if re.search(r"\bfrom\b.+\bto\b", low) and not re.search(r"\bthan\b", low):
+            # 'did X grow from A to B' compares B against A (first-mentioned value is A)
+            if re.search(r"\b(grow|grew|grown|increase[sd]?|rise|rose|risen|go up|went up|climb(ed)?|gain(ed)?)\b", low):
+                args["cmp"] = "<"
+            elif re.search(r"\b(decline[sd]?|decrease[sd]?|fall|fell|fallen|drop(ped)?|go down|went down|shrink|shrank)\b", low):
+                args["cmp"] = ">"
     elif re.search(r"\brank\b|\bdescending\b|\bascending\b|\bfrom (most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to (fewest|least|lowest|smallest|most|highest|largest|greatest|biggest)\b|\bin (descending|ascending) order\b", low):
         plan["op"] = "rank"
         asc = re.search(r"ascending|from (least|fewest|lowest|smallest) to", low)
@@ -390,6 +396,9 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
+    if plan["op"] in ("argmax", "argmin") and args.get("over") == "rows" and \
+            re.search(r"\b(increase|growth|rise|gain|change|decrease|decline|drop|fall)\b", low):
+        _set_delta(plan, view, low)
     if plan["op"] in ("argmax", "argmin") and args.get("over") == "rows" and spec.instruction and not args.get("return"):
         # 'Answer with the last names ...' -> return that column instead of the row label
         ic, _ = match_columns(view, Query(spec.instruction))
@@ -429,6 +438,29 @@ def _plan_core(query: str, tables, strict=False):
         plan["columns"] = ["*"]
     return plan, {"view": view, "q": q, "rows": rows, "cols_cov": best_cov, "body": body,
                   "views": views, "vscores": vscores, "vi": vi, "spec": spec}
+
+
+def _set_delta(plan, view, low):
+    """'biggest increase from 2023 to 2024' -> argmax of (2024 - 2023) over sheets or columns named by period."""
+    m = re.search(r"\b(?:from|between)\s+(\S+)\s+(?:to|and)\s+(\S+?)[?.,]?(?:\s|$)", low)
+    if not m:
+        return
+    a, b = m.group(1).strip("?.,"), m.group(2).strip("?.,")
+    if view.stacked:
+        sheets = {str(s).lower(): str(s) for s in dict.fromkeys(view.df["_sheet"])}
+        if a in sheets and b in sheets:
+            plan["args"]["delta"] = [sheets[a], sheets[b]]
+            plan["table"]["sheet"] = None
+            if re.search(r"\b(decrease|decline|drop|fall)\b", low) and plan["op"] == "argmax":
+                plan["op"] = "argmin"
+        return
+    ca = [c for c in view.numeric_cols() if re.search(rf"\b{re.escape(a)}\b", str(c).lower())]
+    cb = [c for c in view.numeric_cols() if re.search(rf"\b{re.escape(b)}\b", str(c).lower())]
+    if len(ca) == 1 and len(cb) == 1 and ca != cb:
+        plan["args"]["delta"] = [ca[0], cb[0]]
+        plan["columns"] = []
+        if re.search(r"\b(decrease|decline|drop|fall)\b", low) and plan["op"] == "argmax":
+            plan["op"] = "argmin"
 
 
 _SHARE_TIE = re.compile(r"\bshare (the|a) (same|top|highest|lowest|first|maximum|minimum)\b")
