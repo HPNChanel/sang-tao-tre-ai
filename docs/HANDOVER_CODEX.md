@@ -93,7 +93,9 @@ python3 run.py --data "<thư mục có queries.json>" --out "<thư mục>/submis
 
 Log tiến độ, timeout, cảnh báo LLM/executor ghi stderr. Khóa tùy chọn, không ghi vào source: `OPENROUTER_API_KEY`. Có thể đặt `COST_CAP_USD`, `QWEN_PRICE_IN_PER_M`, `QWEN_PRICE_OUT_PER_M`.
 
-PR #19 (KSP2, submission adapter, đang làm) chưa có trên origin lúc viết file này: không có PR số 19, không có nhánh tương ứng. Theo chỉ đạo bàn giao, PR đó sẽ thêm Dockerfile và sáu đối số cuộc thi `--xlsx-dir --queries --output --openrouter-key --openrouter-model --openrouter-base-url`, log stderr, và giữ `--data` / `--out`. Image: `docker build --platform=linux/amd64`, rồi `docker run` với đúng sáu đối số đó. Chưa có SHA để trỏ.
+Adapter nộp bài (KSP2, đang làm) chưa có nhánh trên origin và chưa có SHA. Chỉ đạo bàn giao gọi việc đó là PR #19, nhưng số #19 trên GitHub là PR tài liệu này (`ksp1/handover-codex`), không phải adapter. Đừng tìm Dockerfile trong PR #19.
+
+Việc adapter, khi được mở PR riêng, sẽ thêm Dockerfile và sáu đối số cuộc thi `--xlsx-dir --queries --output --openrouter-key --openrouter-model --openrouter-base-url`, log stderr, và giữ `--data` / `--out`. Image: `docker build --platform=linux/amd64`, rồi `docker run` với đúng sáu đối số đó.
 
 Gói thử dataset 2, không gọi LLM: `scripts/dry_run_dataset2.sh INPUT OUTPUT_DIR`. Zip chỉ chứa `submission.csv` ở gốc; `scripts/check_zip.sh` kiểm tra.
 
@@ -126,7 +128,7 @@ Mỗi PR:
 - **#16 đã merge**, SHA `19eb2670b42131553b87ff38a9c75b1197e7f92e`, nhánh `ksp1/blank-guards`. Guard còn lại: hình dạng đáp án (`blank:shape`) và cột xếp hạng khi nth từ hạng 2 mà thiếu `by` (`blank:nth-column`). Plan đã đủ cột đo và hướng thì guard không chạy. Guard top-N và guard lookup không phạm vi dòng chuyển backlog. Pytest trên SHA này: 146 passed, 24 skipped.
 - **#18 đang QA**, chưa merge. Nhánh `ksp1/title-row-header`, head `be4787f9b54b4e6b9b23ff1a2b97024c5da0b4bd`, đã rebase lên `19eb267`. Loader bỏ hàng caption phía trên header thật. QA xem trước trên #16: loader lộ 9 câu sai tự tin trên variant-check-1610 (4 câu đếm, 3 cặp giá trị, 1 hiệu năm, 1 tập con); 7 câu thành trống nhờ guard #16; còn 2 câu sai tự tin. Hai câu còn lại là planner yếu sau khi header thật được đọc. Đếm và tập con nằm trong phạm vi #17; cặp giá trị nằm trong vùng #16. Không mở thư mục bộ đó.
 - **#17 đang mở**, KSP2, nhánh `ksp2/vi-filter-fix`, head `d4d83acd040285956de1d78e31ca849e165c1508`. Lọc dòng tiếng Việt: nhận ra điều kiện mà không gắn được đúng một cột và một giá trị thì để trống. Mô tả PR ghi nhánh vẫn dựa trên `cf37c01`, chưa rebase lên `19eb267`.
-- **#19** chưa có trên origin. Xem mục 3.
+- **Adapter nộp bài (KSP2)** chưa có nhánh, chưa có SHA. Số GitHub #19 là PR tài liệu này, không phải adapter. Sáu đối số và Docker nằm ở mục 3.
 
 ## 7. Việc còn dở
 
