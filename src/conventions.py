@@ -35,3 +35,5 @@ TIES_RETURN_ALL = True
 PLAN_CONFIDENCE_THRESHOLD = 0.5
 # Post-exec: blank the answer (-> fallback) if its shape contradicts the expected answer type.
 POST_EXEC_TYPE_CHECK = True
+# Any plan slot (table/column/row/op/number/words) chosen by guessing caps confidence here (below threshold).
+GUESS_CAP = 0.4

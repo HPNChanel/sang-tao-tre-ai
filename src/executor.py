@@ -210,6 +210,8 @@ def execute(plan, tables):
         if len(vals) < 2:
             raise PlanError(f"{op} needs two values, got {vals}")
         a, b = float(vals[0]), float(vals[1])
+        if op == "ratio" and b == 0:
+            raise PlanError("ratio: division by zero")
         if op == "compare":
             val = {">": a > b, "<": a < b, ">=": a >= b, "<=": a <= b, "==": a == b}[args.get("cmp", ">")]
         elif op == "diff":
@@ -302,6 +304,8 @@ def execute(plan, tables):
             par = df.at[g[0], "_parent_row"]
             w = df.index[df["_row"] == par].tolist()
         whole = _col_values(view, c, w[:1]).sum()
+        if not whole or (isinstance(whole, float) and math.isnan(whole)):
+            raise PlanError("share: zero or missing total")
         val = part / whole * (100 if args.get("percent", True) else 1)
     else:
         raise PlanError(f"unknown op {op}")
