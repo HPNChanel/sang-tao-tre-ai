@@ -30,6 +30,8 @@ Model trên mọi PR: `qwen/qwen3.7-flash` qua OpenRouter. Không PR nào đã c
 | PR #5 (KSP2): schema compaction (send-time only; disk plan_schema.json unchanged), robust parser, reasoning off, split cost log, fake LLM + tests; model qwen/qwen3.7-flash via OpenRouter, never run with a real model. | PR này | Prompt chính và fake LLM ghi trong file này | Chưa chạy với model thật |
 | PR nhỏ của KSP1 | từng PR | Mỗi PR ghi prompt chính của chính nó. PM gom trước khi zip. | Chưa chạy với model thật |
 
+PR #4 (fg-vietnamese) duoc mien dieu kien 2 (so cau sai-ma-tu-tin tren v2 khong giam): ly do la khong bo nao tut diem va bo test doc lap fv tang tu 0/13 len 11/13. Theo luat merge moi: khong bo nao tut + co cai thien do duoc tren bo test doc lap thi duoc merge.
+
 ## Bai hoc tu 6 nhom loi & synth v5 (KSP1)
 
 Nội dung nằm ở [`ksp1-lessons.md`](ksp1-lessons.md).
