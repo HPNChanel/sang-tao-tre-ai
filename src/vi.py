@@ -37,6 +37,58 @@ def _card_repl(m):
     return _CARD[m.group(1).lower()] + " " + m.group(2)
 
 
+_ORD_VI = {"nhat": "first", "hai": "second", "nhi": "second", "ba": "third", "tu": "fourth",
+           "nam": "fifth", "sau": "sixth", "bay": "seventh", "tam": "eighth", "chin": "ninth", "muoi": "tenth"}
+_SUP_VI = {"cao": "highest", "thap": "lowest", "lon": "largest", "nho": "smallest", "nhieu": "most", "it": "least"}
+
+
+def _ord_en(tok: str) -> str:
+    if str(tok).isdigit():
+        n = int(tok)
+        words = ["", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"]
+        return words[n] if 1 <= n < len(words) else f"{n}th"
+    return _ORD_VI.get(tok, tok)
+
+
+def _sup_then_ord(m):
+    return _ord_en(m.group(2)) + " " + _SUP_VI[m.group(1)]
+
+
+def _hang_ord(m):
+    return _ord_en(m.group(1)) + " highest"
+
+
+def _ranks_ord(m):
+    return "ranks " + _ord_en(m.group(1))
+
+
+def _top_vi_card(m):
+    return m.group(1) + " " + _CARD[m.group(2)]
+
+
+def _vi_card_sup(m):
+    return _CARD[m.group(1)] + " " + _SUP_VI[m.group(2)]
+
+
+# Operation phrases added for paraphrases. Longer forms stay ahead of the generic
+# cardinal/superlative swaps. new_ops=False leaves these out.
+NEW_OP_KEYWORDS = [
+    (r"\b(cao|thap|lon|nho|nhieu|it)\s+nhat\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", _sup_then_ord),
+    (r"\b(cao|thap|lon|nho|nhieu|it)\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", _sup_then_ord),
+    (r"\bhang\s+(nhat|nhi|ba|tu|nam|sau|bay|tam|chin|muoi)\b", _hang_ord),
+    (r"\b(?:dung|xep)\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", _ranks_ord),
+    (r"\bhon\b(.{0,50}?)\bbao nhieu\b", r" how many more \1 "),
+    (r"\bchenh nhau\b|\bkhac nhau\b|\bkhac biet\b", " difference between "),
+    (r"\bhieu giua\b|\bhieu cua\b", " difference between "),
+    (r"\btru\b", " minus "),
+    (r"\blan luot\b", " respectively "),
+    (r"\bca hai\b", " both "),
+    (r"\bcap\s+(diem|gia tri|so lieu|ket qua)\b", r" pair of \1 "),
+    (r"\b(top|bottom)\s+(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b", _top_vi_card),
+    (r"\b(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+(cao|thap|lon|nho|nhieu|it)\s+nhat\b", _vi_card_sup),
+]
+
+
 # (folded Vietnamese regex, English replacement). Order matters: longer phrases first.
 KEYWORDS = [
     # instructions
@@ -143,11 +195,16 @@ KEYWORDS = [
 ]
 
 
-def translate(q: str) -> tuple[str, int]:
-    """Return (rewritten query, number of keyword hits). Entity names keep their original form."""
+def translate(q: str, new_ops: bool = True) -> tuple[str, int]:
+    """Return (rewritten query, number of keyword hits). Entity names keep their original form.
+
+    new_ops=False skips the operation phrases added for paraphrases (rank, difference,
+    top-N number words, pair). Callers use that when those phrases did not resolve.
+    """
     s = fold(q)
     hits = 0
-    for pat, rep in KEYWORDS:
+    patterns = (NEW_OP_KEYWORDS + KEYWORDS) if new_ops else KEYWORDS
+    for pat, rep in patterns:
         s, n = re.subn(pat, rep, s, flags=re.I)
         hits += n
     s = re.sub(r"\s+", " ", s).strip()

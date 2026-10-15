@@ -233,10 +233,25 @@ def match_rows(view: View, q: Query, exclude=frozenset()):
 
 # ---------------------------------------------------------------- planning
 def strip_instruction(query, spec):
-    q = re.sub(r"\((?:e\.g\.|eg\.?|for example|i\.e\.)[^)]*\)", " ", query, flags=re.I)
+    """Drop answer-format text before operand, year, and N extraction.
+
+    Numbers inside 'Answer with only ...', a parenthetical '(e.g. ...)',
+    'for example ...', or the Vietnamese 'ví dụ' / 'chỉ trả lời' are examples
+    of how to write the answer, not operands.
+    """
+    q = query
+    q = re.sub(
+        r"\((?:e\.g\.|eg\.?|for example|i\.e\.|ví\s*dụ|vi\s*du)[^)]*\)",
+        " ", q, flags=re.I)
+    # 'e.g.' ends on a dot, so it cannot demand a trailing word boundary.
+    q = re.sub(
+        r"(?:\bfor example\b|\be\.g\.|\beg\.?|\bví\s*dụ\b|\bvi\s*du\b)[^.;?!]*",
+        " ", q, flags=re.I)
     if spec.instruction:
         q = q.replace(spec.instruction, " ")
-    q = re.sub(r"\b(Provide|Answer|Respond)\b[^.?!]*[.?!]?", " ", q)
+    q = re.sub(
+        r"\b(?:Provide|Answer|Respond|Chỉ\s+trả\s+lời|Chi\s+tra\s+loi)\b[^.?!]*[.?!]?",
+        " ", q, flags=re.I)
     return q
 
 
@@ -259,13 +274,24 @@ def plan_with_confidence(query: str, tables, strict=None):
 
 def _plan_with_confidence(query, tables, strict):
     from .vi import is_vietnamese, translate
+    original = query
     reasons = []
     vi_factor = 1.0
+    hits = hits_base = 0
     if is_vietnamese(query):
-        query, hits = translate(query)
+        query, hits = translate(query, new_ops=True)
+        _, hits_base = translate(original, new_ops=False)
         vi_factor = 0.9 if hits >= 2 else 0.6
         reasons.append(f"vi:{hits}")
     plan, info = _plan_core(query, tables, strict)
+    # A new operation phrase only keeps its confidence when column, row, operand and N
+    # each resolve once. Otherwise abstain, so a former blank stays blank.
+    if _new_op_blocked(plan, info, original):
+        return plan, 0.0, reasons + ["op:ambiguous"]
+    if is_vietnamese(original) and not _new_op_committed(plan, info, original):
+        vi_factor = 0.9 if hits_base >= 2 else 0.6
+    if info.get("abstain"):
+        return plan, 0.0, reasons + ["op:abstain"]
     conf, r2 = (_confidence if strict else _confidence_legacy)(query, plan, info)
     return plan, conf * vi_factor, reasons + r2
 
@@ -360,7 +386,8 @@ def _plan_core(query: str, tables, strict=False):
 
     # numeric range filter for rows ('aged 25 to 64') when no row matched those numbers
     rm = re.search(r"\b(\d+)\s*(?:to|-|–)\s*(\d+)\b", body)
-    if rm and not (len(rm.group(1)) == 4 and len(rm.group(2)) == 4) and not any(re.search(rf"\b{rm.group(1)}\b.*\b{rm.group(2)}\b", p.split(" > ")[-1]) for p in row_paths):
+    named_span = any(re.search(rf"\b{rm.group(1)}\b.*\b{rm.group(2)}\b", str(p).split(" > ")[-1]) for p in list(row_paths) + list(cols)) if rm else False
+    if rm and not (len(rm.group(1)) == 4 and len(rm.group(2)) == 4) and not named_span:
         lo, hi = float(rm.group(1)), float(rm.group(2))
         if any(_label_range(l) for l in view.df["_label"]):
             plan["rows"]["range"] = [lo, hi]
@@ -370,21 +397,21 @@ def _plan_core(query: str, tables, strict=False):
         plan["rows"]["leaf_only"] = True
 
     # ---- operation
-    sup_max, sup_min = re.search(rf"\b({SUP_MAX})\b", low), re.search(rf"\b({SUP_MIN})\b", low)
-    which = re.search(r"\b(which|who|identify|name the|in what|list all|name all)\b", low)
-    nth = re.search(r"\b(" + "|".join(ORD) + r"|\d+(?:st|nd|rd|th))[- ](" + SUP_MAX + "|" + SUP_MIN + r")\b", low) or \
-        re.search(r"\bthe ()(youngest|oldest)\b(?! \w+ (?:people|persons))", low)
-    _unused = re.search(r"\b(" + "|".join(ORD) + r"|\d+(?:st|nd|rd|th))[- ](" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
-    topk = re.search(r"\b(?:among|of) the (\w+) (" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
+    # op_low folds Vietnamese operation phrases (with or without dấu) onto the English cues.
+    op_low = _canon_op(low)
+    sup_max, sup_min = re.search(rf"\b({SUP_MAX})\b", op_low), re.search(rf"\b({SUP_MIN})\b", op_low)
+    which = re.search(r"\b(which|who|identify|name the|in what|list all|name all)\b", op_low)
+    nth = _nth_match(op_low)
+    topk = re.search(r"\b(?:among|of) the (\w+) (" + SUP_MAX + "|" + SUP_MIN + r")\b", op_low)
     # 'among the five oldest' is a subset aggregate; every other top/bottom-k is a ranked list
-    topn = None if topk else _top_n(low, view, spec, num_cols, row_paths)
+    topn = None if topk else _top_n(op_low, view, spec, num_cols, row_paths)
     if topn and topn["by"] and topn["by"] != "age" and topn["over"] == "rows":
         cols = [topn["by"]] + [c for c in cols if c != topn["by"]]
         plan["columns"] = cols
     if spec.kind == "yesno":
         plan["op"] = "compare"
         args["cmp"] = "<" if re.search(r"\b(less|lower|smaller|fewer|below|under)\b", low) else ">"
-    elif topn and _topn_lists(query, spec):
+    elif topn and _commit_topn(query, spec, topn, view, body):
         plan["op"] = "rank"
         args["k"] = topn["k"]
         args["order"] = _topn_order(query, topn["word"])
@@ -398,7 +425,8 @@ def _plan_core(query: str, tables, strict=False):
         elif topn["values"] and topn["by"] and topn["by"] != "age":
             args["return"] = topn["by"]
         fmt = plan["format"]
-        if fmt.get("kind") not in ("list",):
+        # a lone integer/yes-no instruction is not a list; type check then abstains
+        if fmt.get("kind") not in ("list", "int", "decimal", "number", "yesno"):
             fmt["kind"] = "list"
             fmt["sep"] = fmt.get("sep") or ", "
         if topn["values"]:
@@ -432,23 +460,24 @@ def _plan_core(query: str, tables, strict=False):
             if a and b:
                 plan["columns"] = [a[0][0], b[0][0]]
     elif nth:
-        g = nth.group(1)
+        g, word = nth
         args["n"] = ORD.get(g) or (int(re.match(r"\d+", g).group()) if g else 1)
-        _order_args(args, nth.group(2), view, cols + label_cols)
+        _order_args(args, word, view, cols + label_cols)
+        _prefer_measure_return(args, plan, op_low, view)
         plan["op"] = "nth"
     elif topk and (topk.group(1) in NUMW or topk.group(1).isdigit()):
         args["k"] = NUMW.get(topk.group(1)) or int(topk.group(1))
         _order_args(args, topk.group(2), view, cols)
         # 'among the k oldest' is the birth column; the later aggregate is a different column
         _order_birth_subset(args, topk.group(2), view)
-        rest = low[topk.end():]
+        rest = op_low[topk.end():]
         args["agg"] = "max" if re.search(rf"\b({SUP_MAX})\b", rest) else "min" if re.search(rf"\b({SUP_MIN})\b", rest) else "mean" if re.search(r"average|mean", rest) else "sum"
         plan["op"] = "topk_agg"
     elif (sup_max or sup_min) and which and spec.kind == "name":
         plan["op"] = "argmax" if sup_max and not (sup_min and sup_min.start() < sup_max.start()) else "argmin"
         args["abs"] = bool(re.search(r"absolute", low))
         _choose_over(plan, view, rows, cols, low)
-    elif re.search(r"how (many|much) (more|less|fewer|higher|lower)|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b", low):
+    elif re.search(_DIFF_SRC, op_low):
         plan["op"] = "diff"
         args["abs"] = bool(re.search(r"absolute|\bdifference between\b", low)) and not re.search(r"\bsigned\b", query.lower())
         args["signed_order"] = "second_minus_first" if re.search(r"\bchange\b|\bfrom\b.*\bto\b|increase|decrease", low) else "first_minus_second"
@@ -466,8 +495,8 @@ def _plan_core(query: str, tables, strict=False):
             plan["columns"] = view.date_cols()[:1]
     elif re.search(r"\bsumm?ing\b|\bsum\b|\btotal\b|\bcombined\b|\baltogether\b|\bin all\b|\bacross all\b", low) and not re.search(r"^\s*how many\b(?!.*\b(total|sum|combined)\b)", low):
         plan["op"] = "sum"
-    elif re.search(r"\bhow many\b", low):
-        conds = _conditions(body, view, cols, num_cols)
+    elif re.search(r"\bhow many\b", op_low):
+        conds = _drop_label_filters(_conditions(body, view, cols, num_cols), row_paths, cols)
         countish = bool(conds) or plan["rows"]["leaf_only"] or any(c not in num_cols for c in cols) or (
             cols == [] and not row_paths) or (view.label_name and q.match(view.label_name)[0] > 0 and not any(c in num_cols for c in cols))
         if countish:
@@ -499,6 +528,10 @@ def _plan_core(query: str, tables, strict=False):
     if plan["rows"]["where"]:
         # 'born in 1990' filters the birth column (date year or numeric year), not whichever date is listed first
         plan["rows"]["where"] = _aim_born_year(plan["rows"]["where"], view, low)
+        # a number that only names the chosen row, scope, or sort column is not also a threshold
+        band = " ".join([str(plan["rows"].get("scope") or ""), str(args.get("by") or "")]
+                        + list(plan["rows"]["paths"]) + list(plan["columns"]))
+        plan["rows"]["where"] = _drop_label_filters(plan["rows"]["where"], [], [band])
     ambiguous_rank_scope = False
     if plan["op"] == "rank":
         # '55 years and over' names a band already chosen as the sort column or the row, not a threshold.
@@ -527,13 +560,29 @@ def _plan_core(query: str, tables, strict=False):
             plan["table"]["sheet"] = None
     if plan["op"] in ("sum", "mean", "diff", "compare", "ratio", "share", "argmax", "argmin", "rank"):
         plan["columns"] = [c for c in plan["columns"] if c in num_cols or c.endswith(" | *") or c == "*"]
+    _order_year_change_columns(plan, body)
     if plan["op"] in ("lookup", "values") and (len(plan["rows"]["paths"]) * max(1, len(plan["columns"])) > 1 or spec.kind == "list"):
         plan["op"] = "values"
+    if plan["op"] == "values" and re.search(r"\b(pair|respectively|both)\b", op_low):
+        fmt = plan["format"]
+        if fmt.get("kind") not in ("list",):
+            fmt["kind"] = "list"
+            fmt["sep"] = fmt.get("sep") or ", "
+        if not fmt.get("item_kind"):
+            fmt["item_kind"] = "number"
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
         plan["columns"] = ["*"]
+    abstain = _unhandled_op(op_low, plan)
+    # A refused top-N (scalar number, or a count that is also a stored value) keeps
+    # the older max/lookup. That leftover phrase is not an unparsed operation.
+    if abstain and topn and plan["op"] in ("lookup", "values", "sum", "count") \
+            and not _commit_topn(query, spec, topn, view, body):
+        abstain = False
+    fresh = _fresh_op(plan, low, op_low, topn, _topn_lists(query, spec))
     return plan, {"view": view, "q": q, "rows": rows, "cols_cov": best_cov, "body": body,
                   "ambiguous_rank_scope": ambiguous_rank_scope,
-                  "views": views, "vscores": vscores, "vi": vi, "spec": spec}
+                  "views": views, "vscores": vscores, "vi": vi, "spec": spec, "abstain": abstain,
+                  "fresh_op": fresh}
 
 
 def _label_range(label):
@@ -754,30 +803,570 @@ def _topn_order(query, word):
     return "desc" if word and re.fullmatch(SUP_MAX, word) else "asc"
 
 
+def _canon_op(low: str) -> str:
+    """English operation cues, plus folded Vietnamese (dấu or not) that translation left behind."""
+    from .vi import _CARD, _SUP_VI, _ord_en, fold
+    s = fold(low).lower()
+
+    def sup_ord(m):
+        return _ord_en(m.group(2)) + " " + _SUP_VI[m.group(1)]
+
+    s = re.sub(r"\b(cao|thap|lon|nho|nhieu|it)\s+(?:nhat\s+)?thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", sup_ord, s)
+    s = re.sub(r"\bhang\s+(nhat|nhi|ba|tu|nam|sau|bay|tam|chin|muoi)\b", lambda m: _ord_en(m.group(1)) + " highest", s)
+    s = re.sub(r"\b(?:dung|xep)\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", lambda m: "ranks " + _ord_en(m.group(1)), s)
+    s = re.sub(r"\bhon\b(.{0,50}?)\bbao nhieu\b", r" how many more \1 ", s)
+    s = re.sub(r"\bchenh nhau\b|\bkhac nhau\b|\bkhac biet\b|\bhieu giua\b|\bhieu cua\b", " difference between ", s)
+    s = re.sub(r"\btru\b", " minus ", s)
+    s = re.sub(r"\blan luot\b", " respectively ", s)
+    s = re.sub(r"\bca hai\b", " both ", s)
+    s = re.sub(r"\b(top|bottom)\s+(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b", lambda m: m.group(1) + " " + _CARD[m.group(2)], s)
+    s = re.sub(r"\b(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+((?:cao|thap|lon|nho|nhieu|it)\s+nhat)\b",
+               lambda m: _CARD[m.group(1)] + " " + m.group(2), s)
+    ord_en = "|".join(sorted(ORD, key=len, reverse=True)) + r"|\d+(?:st|nd|rd|th)"
+    s = re.sub(rf"\b(cao|thap|lon|nho|nhieu|it|{SUP_MAX}|{SUP_MIN})\s+({ord_en})\b",
+               lambda m: _ord_en(m.group(2)) + " " + _SUP_VI.get(m.group(1), m.group(1)), s)
+    s = re.sub(r"\bcao nhat\b|\blon nhat\b|\bnhieu nhat\b", " highest ", s)
+    s = re.sub(r"\bthap nhat\b|\bit nhat\b|\bnho nhat\b", " lowest ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _nth_match(low):
+    """(ordinal word, superlative word) or None. Either order, plus 'ranks second'."""
+    ord_alt = "|".join(sorted(ORD, key=len, reverse=True)) + r"|\d+(?:st|nd|rd|th)"
+    sup_alt = SUP_MAX + "|" + SUP_MIN
+    m = re.search(rf"\b({ord_alt})[- ]({sup_alt})\b", low)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.search(rf"\branks?\s+({ord_alt})\b", low)
+    if m:
+        sup_min = re.search(rf"\b({SUP_MIN})\b", low)
+        sup_max = re.search(rf"\b({SUP_MAX})\b", low)
+        word = "lowest" if sup_min and (not sup_max or sup_min.start() < sup_max.start()) else "highest"
+        return m.group(1), word
+    m = re.search(rf"\b({ord_alt})\s+(scores?|values?|numbers?|amounts?)\b", low)
+    if m and not re.search(rf"\b({sup_alt})\b", low):
+        return m.group(1), "highest"
+    m = re.search(r"\bthe ()(youngest|oldest)\b(?! \w+ (?:people|persons))", low)
+    if m:
+        return "", m.group(2)
+    return None
+
+
+def _prefer_measure_return(args, plan, low, view):
+    """'the second highest score' is the number. 'which person' stays the label.
+
+    A sort key that is not a real column (an age ordering, for example) cannot be
+    the returned measure. Any column that is the sort key can, including one whose
+    name happens to be a sort sentinel.
+    """
+    by = args.get("by")
+    if not by or by not in view.df.columns:
+        return
+    asks_label = re.search(r"\b(who|whom|which|whose|name the|person|people|names)\b", low)
+    kind = plan["format"]["kind"]
+    if kind in ("int", "decimal", "number", "date") and not asks_label:
+        args["return"] = by
+    elif kind == "text" and not asks_label and re.search(r"\b(scores?|values?|numbers?|amounts?)\b", low):
+        args["return"] = by
+
+
+def _label_phrases(view):
+    seen, out = set(), []
+    cols = list(view.columns)
+    labels = list(view.df["_label"].astype(str)) if "_label" in view.df else []
+    for lab in cols + labels:
+        key = str(lab)
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def _covered_by_label(low, start, end, view):
+    """True when this number sits inside a row or column label the question quotes."""
+    from .vi import fold
+    text = fold(low).lower()
+    if text != low:
+        return False
+    for lab in _label_phrases(view):
+        parts = re.findall(r"[a-z]+|\d+(?:\.\d+)?", fold(str(lab)).lower())
+        if len(parts) < 2 or not any(p[:1].isdigit() for p in parts):
+            continue
+        pat = r"\b" + r"\W+".join(re.escape(p) for p in parts) + r"\b"
+        for m in re.finditer(pat, text):
+            if m.start() <= start and m.end() >= end:
+                return True
+    return False
+
+
+def _k_marked(low, start, end, raw, kind, view):
+    """A number is k only when the wording counts items, not when it names a label."""
+    if _covered_by_label(low, start, end, view):
+        return False
+    if kind == "edge":
+        return True
+    after = low[end:]
+    if re.match(r"\s+(?:years?|tuoi|ages?|aged|to|-|–|or|and)\b", after):
+        return False
+    before = low[:start]
+    if kind == "rev" or re.search(r"\b(?:top|bottom|which|what|list|the)\s+$", before):
+        return True
+    if not str(raw).isdigit():
+        return True
+    sup = SUP_MAX + "|" + SUP_MIN
+    unit = r"(?:scores?|values?|numbers?|amounts?|people|persons?|names?|items?|groups?|industr\w*)"
+    if re.match(rf"\s+(?:{sup})\b", after) or re.match(rf"\s+{unit}\s+(?:{sup})\b", after):
+        return True
+    return False
+
+
+def _drop_label_filters(where, paths, cols):
+    """Drop a threshold whose number is already inside a chosen row or column label."""
+    blob = " ".join(str(x) for x in list(paths) + list(cols))
+    kept = []
+    for w in where:
+        if w.get("op") == "year==":
+            kept.append(w)
+            continue
+        if _number_names_band(w.get("value"), blob):
+            continue
+        kept.append(w)
+    return kept
+
+
+_DIFF_LEGACY = (
+    r"how (?:many|much) (?:more|less|fewer|higher|lower)"
+    r"|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b"
+)
+_DIFF_SRC = (
+    r"how (?:many|much) (?:more|less|fewer|higher|lower|greater|bigger|smaller)\b"
+    r"|how (?:many|much) (?:is|was|were|are|did|does|do)\b.{0,40}?\b(?:more|higher|greater|bigger|less|lower|smaller|fewer)\b"
+    r"|by how much"
+    r"|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b"
+    r"|\bexceed(?:s|ed)?\b|\bminus\b|\bsubtract(?:ed|ing)?\b"
+    r"|\bchenh(?: lech| nhau)?\b|\bhieu so\b|\bkhac nhau\b|\bkhac biet\b"
+)
+# Phrases this PR added. A hit is not enough: the column, row, operand and N must each be unique.
+_NEW_OP_CUE_RE = re.compile(
+    r"\b(cao|thap|lon|nho|nhieu|it)\s+(?:nhat\s+)?thu\s+(?:nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b"
+    r"|\bhang\s+(?:nhat|nhi|ba|tu|nam|sau|bay|tam|chin|muoi)\b"
+    r"|\b(?:dung|xep)\s+thu\s+(?:nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b"
+    r"|\bhon\b.{0,50}?\bbao nhieu\b"
+    r"|\bchenh nhau\b|\bkhac nhau\b|\bkhac biet\b|\bhieu giua\b|\bhieu cua\b"
+    r"|\btru\b|\blan luot\b|\bca hai\b"
+    r"|\bcap\s+(?:diem|gia tri|so lieu|ket qua)\b"
+    r"|\b(?:top|bottom)\s+(?:mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b"
+    r"|\b(?:mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+(?:cao|thap|lon|nho|nhieu|it)\s+nhat\b"
+    r"|\branks?\s+(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\b"
+    r"|by how much|\bexceed(?:s|ed)?\b|\bminus\b|\bsubtract(?:ed|ing)?\b"
+    r"|how (?:many|much) (?:greater|bigger|smaller)\b"
+    r"|\b(?:highest|lowest|largest|smallest|most|least)\s+(?:two|three|four|five|six|seven|eight|nine|ten|\d+)\b"
+    r"|\brespectively\b|\bpair of\b"
+)
+
+
+def _unhandled_op(op_low, plan):
+    """Lookup/sum/count chosen while a more specific operation is still sitting in the wording."""
+    op = plan["op"]
+    if op not in ("lookup", "values", "sum", "count"):
+        return False
+    ord_alt = "|".join(sorted(ORD, key=len, reverse=True)) + r"|\d+(?:st|nd|rd|th)"
+    sup_alt = SUP_MAX + "|" + SUP_MIN
+    if re.search(rf"\b({ord_alt})[- ]({sup_alt})\b", op_low) or re.search(rf"\b({sup_alt})[- ]({ord_alt})\b", op_low):
+        return True
+    if re.search(rf"\branks?\s+({ord_alt})\b", op_low):
+        return True
+    if re.search(r"\bby how much\b|\bminus\b|\bexceed(?:s|ed)?\b|\bdifference between\b|\bgap between\b", op_low):
+        return True
+    nw = "|".join(sorted(NUMW, key=len, reverse=True))
+    if re.search(rf"\b(?:top|bottom)\s+(?:\d+|{nw})\b", op_low):
+        return True
+    if re.search(rf"\b(?:\d+|{nw})\s+(?:{sup_alt})\b", op_low):
+        return True
+    # 'highest three', but not the threshold 'at least 60' / 'at most 3'
+    if re.search(rf"(?<!at )(?:{sup_alt})\s+(?:\d+|{nw})\b", op_low):
+        return True
+    cells = len(plan["rows"]["paths"]) * max(1, len(plan["columns"]))
+    if re.search(r"\b(pair|respectively)\b", op_low) and cells < 2:
+        return True
+    return False
+
+
+def _legacy_nth(low):
+    m = re.search(r"\b(" + "|".join(ORD) + r"|\d+(?:st|nd|rd|th))[- ](" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
+    if m:
+        return True
+    return bool(re.search(r"\bthe ()(youngest|oldest)\b(?! \w+ (?:people|persons))", low))
+
+
+def _fresh_op(plan, low, op_low, topn, lists):
+    """True when this plan used an operation path that main did not have."""
+    op = plan["op"]
+    if op == "rank" and topn and (not lists or topn.get("via") == "rev"):
+        return True
+    if op == "nth" and not _legacy_nth(low):
+        return True
+    if op == "diff" and not re.search(_DIFF_LEGACY, low):
+        return True
+    if op == "values" and re.search(r"\b(pair|respectively|both)\b", op_low):
+        return True
+    return False
+
+
+def _fold_q(text):
+    from .vi import fold
+    return fold(text).lower()
+
+
+def _new_op_keyword_hit(original):
+    return bool(_NEW_OP_CUE_RE.search(_fold_q(original)))
+
+
+def _schema_tokens(view):
+    labs = list(view.columns)
+    if "_label" in view.df:
+        labs.extend(str(x) for x in view.df["_label"])
+    out = set()
+    for lab in labs:
+        out.update(re.findall(r"[a-z0-9]+", _fold_q(lab)))
+    return out
+
+
+# Only the operation words themselves. Text that sits between 'hơn' and 'bao nhiêu'
+# names an operand, not the operation, and must not count as a header collision.
+_CUE_WORDS = {
+    "cao", "thap", "lon", "nho", "nhieu", "it", "thu", "hang", "dung", "xep",
+    "hon", "chenh", "khac", "biet", "hieu", "tru", "luot", "cap", "nhat", "nhi",
+    "top", "bottom", "rank", "ranks", "exceed", "exceeds", "exceeded", "minus",
+    "subtract", "subtracted", "subtracting", "respectively", "highest", "lowest",
+    "largest", "smallest", "most", "least", "pair", "greater", "bigger", "smaller",
+}
+
+
+def _cue_tokens(original):
+    text = _fold_q(original)
+    out = set()
+    for m in _NEW_OP_CUE_RE.finditer(text):
+        out.update(re.findall(r"[a-z0-9]+", m.group(0)))
+    return {t for t in out if t in _CUE_WORDS}
+
+
+def _cue_in_schema(original, view):
+    """The operation phrase is also a header or a row label, so it may name that field."""
+    return bool(_cue_tokens(original) & _schema_tokens(view))
+
+
+def _named_numeric(body, view):
+    found, _ = match_columns(view, Query(body))
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    return [c for c, _ in found if c in num]
+
+
+def _commit_topn(query, spec, topn, view, body):
+    """Take a ranked list only when that reading is the one the question asks for.
+
+    A lone integer or number is the later max/min, not a list. A top-N shape main
+    already ranked is kept. A new shape (reversed 'highest 3', or a count with no
+    list wording) is kept only when one measure is named and the count is not also
+    a stored value; otherwise the older reading stands.
+    """
+    if spec.kind in ("int", "decimal", "number"):
+        return False
+    lists = _topn_lists(query, spec)
+    fresh = (not lists) or topn.get("via") == "rev"
+    if not fresh:
+        return True
+    by = "age" if topn.get("word") in ("oldest", "youngest") else topn.get("by")
+    fake = {"op": "rank", "args": {"k": topn.get("k"), "by": by},
+            "columns": [by] if by and by in view.df.columns else [], "rows": {"paths": []}}
+    if _digit_could_be_value(fake, view, query):
+        return False
+    return _measure_unique(fake, {"view": view, "body": body})
+
+
+def _measure_unique(plan, info):
+    """One measure column, or exactly one column the question names."""
+    view = info["view"]
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    by = plan["args"].get("by")
+    # A sort key that is not a column is already chosen. It is one reading when the
+    # table has a single date column or a birth column; several dates and no birth
+    # column are still ambiguous.
+    if by and by not in view.df.columns:
+        return len(view.date_cols()) == 1 or _birth_column(view) is not None
+    if len(num) <= 1:
+        return True
+    named = _named_numeric(info.get("body") or "", view)
+    if len(named) != 1:
+        return False
+    if by in (None, named[0]):
+        return True
+    cols = [c for c in plan["columns"] if c in num]
+    return cols == [named[0]] or by == named[0]
+
+
+def _order_year_change_columns(plan, body):
+    """Put YEAR_A then YEAR_B so a signed change is value(YEAR_B) - value(YEAR_A)."""
+    if plan["op"] != "diff" or plan["args"].get("signed_order") != "second_minus_first":
+        return
+    m = re.search(r"\bfrom\s+((?:19|20)\d{2})\s+to\s+((?:19|20)\d{2})\b", body or "", re.I)
+    if not m:
+        return
+    y1, y2 = m.group(1), m.group(2)
+    located = {}
+    for c in plan["columns"]:
+        y = _col_year(c)
+        if y:
+            located[y] = c
+    if set(located) == {y1, y2} and len(plan["columns"]) == 2:
+        plan["columns"] = [located[y1], located[y2]]
+
+
+def _col_year(col):
+    """The single 4-digit year in a column header, if it has exactly one.
+
+    A wildcard leaf (``Parent | 2018 | *``) is not a year. The year is the
+    header level above that leaf.
+    """
+    parts = str(col).split(" | ")
+    if parts and parts[-1] == "*":
+        parts = parts[:-1]
+    exact = [p.strip() for p in parts if re.fullmatch(r"(?:19|20)\d{2}", p.strip())]
+    if len(exact) == 1:
+        return exact[0]
+    found = []
+    for part in parts:
+        found.extend(re.findall(r"(?:19|20)\d{2}", part))
+    return found[0] if len(found) == 1 else None
+
+
+def _signed_year_change(plan, info):
+    """'change from YEAR_A to YEAR_B' over one group is one signed difference.
+
+    The two columns are the two periods of the same aggregate, value(YEAR_B)
+    minus value(YEAR_A). They are not two competing measures.
+    """
+    if plan.get("op") != "diff" or plan["args"].get("abs"):
+        return False
+    if plan["args"].get("signed_order") != "second_minus_first":
+        return False
+    body = info.get("body") or ""
+    m = re.search(r"\bfrom\s+((?:19|20)\d{2})\s+to\s+((?:19|20)\d{2})\b", body, re.I)
+    if not m:
+        return False
+    years = {m.group(1), m.group(2)}
+    cols = plan["columns"]
+    got = [_col_year(c) for c in cols]
+    if len(cols) != 2 or set(got) != years:
+        return False
+    rows = plan["rows"]
+    if len(rows["paths"]) == 1:
+        return True
+    return not rows["paths"] and bool(rows.get("scope") or rows.get("where"))
+
+
+def _digit_could_be_value(plan, view, original):
+    """A digit used as N also occurs as a stored value, so it may not be a count."""
+    k = plan["args"].get("k")
+    if k is None:
+        return False
+    try:
+        k = int(k)
+    except (TypeError, ValueError):
+        return False
+    bare = strip_instruction(original, parse_instruction(original))
+    if not re.search(rf"\b{k}\b", _fold_q(bare)):
+        return False
+    for col in view.numeric_cols():
+        for v in view.df[col]:
+            try:
+                if float(v) == float(k):
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+def _subset_missing(plan, original):
+    """The wording asks for a group, and no row subset was resolved."""
+    if plan["op"] not in ("rank", "topk_agg", "nth"):
+        return False
+    if plan["op"] == "topk_agg" and plan["args"].get("by") and plan["args"].get("k"):
+        return False
+    if not re.search(r"\b(among|within|inside|subset|nhom)\b", _fold_q(original)):
+        return False
+    rows = plan["rows"]
+    return not (rows["paths"] or rows.get("scope") or rows.get("where") or rows.get("range"))
+
+
+def _wildcard_parent_groups(col, view):
+    """Parent header paths of the numeric columns a ``*`` ref sums.
+
+    ``None`` when ``col`` is a real column. A wildcard is one operand only
+    when every child shares one parent path (one sub-column group). Several
+    parent paths means the pattern covers more than one group.
+    """
+    name = str(col)
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    if name == "*":
+        kids = list(num)
+    elif name.endswith(" | *"):
+        pre = name[:-4]
+        kids = [c for c in num if str(c).startswith(pre + " | ")]
+    else:
+        return None
+    groups = set()
+    for kid in kids:
+        parts = str(kid).split(" | ")
+        groups.add(" | ".join(parts[:-1]) if len(parts) > 1 else "")
+    return groups
+
+
+def _operands_unique(plan, info):
+    view = info["view"]
+    op = plan["op"]
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    cols = [c for c in plan["columns"] if c in num or str(c).endswith(" | *") or c == "*"]
+    paths = plan["rows"]["paths"]
+    if op == "diff":
+        if _signed_year_change(plan, info):
+            return True
+        # A 'Parent | Year | *' ref sums one sub-column group. It is one operand.
+        # A ref whose children sit under two parent headers is still ambiguous.
+        wild = []
+        for c in cols:
+            groups = _wildcard_parent_groups(c, view)
+            if groups is None:
+                continue
+            if len(groups) != 1:
+                return False
+            wild.append(c)
+        pair_rows = len(paths) == 2 and len(cols) == 1
+        pair_cols = len(paths) == 1 and len(cols) == 2
+        # No row is required when the two operands are already two header groups.
+        if len(cols) == 2 and len(wild) == 2 and len(paths) <= 1:
+            return True
+        return (pair_rows or pair_cols) and _measure_unique(plan, info)
+    if op == "nth":
+        return bool(plan["args"].get("n")) and _measure_unique(plan, info) and (
+            plan["args"].get("by") or len(num) == 1)
+    if op == "rank":
+        return bool(plan["args"].get("k")) and _measure_unique(plan, info)
+    if op == "topk_agg":
+        return bool(plan["args"].get("k") and plan["args"].get("by")) and _measure_unique(plan, info)
+    if op == "values":
+        cells = len(paths) * max(1, len(plan["columns"]))
+        return cells == 2 and _measure_unique(plan, info)
+    return False
+
+
+def _new_op_resolved(plan, info, original):
+    if _cue_in_schema(original, info["view"]):
+        return False
+    if _digit_could_be_value(plan, info["view"], original):
+        return False
+    if _subset_missing(plan, original):
+        return False
+    return _operands_unique(plan, info)
+
+
+def _guarded_op(plan, info, original):
+    op = plan["op"]
+    if op in ("nth", "rank", "diff", "topk_agg"):
+        return True
+    if op == "values" and re.search(r"\b(pair|respectively|both)\b", _fold_q(original) + " " + _fold_q(info.get("body") or "")):
+        return True
+    return False
+
+
+def _legacy_body(original):
+    """Wording main would see: the old keyword table, format examples removed."""
+    from .vi import is_vietnamese, translate
+    text = original
+    if is_vietnamese(text):
+        text, _ = translate(text, new_ops=False)
+    return strip_instruction(text, parse_instruction(text)).lower()
+
+
+_MAIN_RANK_RE = re.compile(
+    r"\brank\b|\bdescending\b|\bascending\b"
+    r"|\bfrom (?:most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to "
+    r"(?:fewest|least|lowest|smallest|most|highest|largest|greatest|biggest)\b"
+    r"|\bin (?:descending|ascending) order\b"
+)
+
+
+def _main_already_selects(plan, original):
+    """True when main's own cue already chooses this operation.
+
+    The guard is only for operations this branch added. A diff main emits
+    from 'change' or 'difference' keeps main's confidence, including when a
+    newer phrase such as 'by how much' is also in the question.
+    """
+    low = _legacy_body(original)
+    op = plan["op"]
+    if op == "diff":
+        return bool(re.search(_DIFF_LEGACY, low))
+    if op == "nth":
+        return _legacy_nth(low)
+    if op == "rank":
+        return bool(_MAIN_RANK_RE.search(low))
+    if op == "topk_agg":
+        return bool(re.search(r"\b(?:among|of) the \w+ (?:" + SUP_MAX + "|" + SUP_MIN + r")\b", low))
+    return False
+
+
+def _new_op_blocked(plan, info, original):
+    if _main_already_selects(plan, original):
+        return False
+    triggered = _new_op_keyword_hit(original) or info.get("fresh_op")
+    if not triggered or not _guarded_op(plan, info, original):
+        return False
+    return not _new_op_resolved(plan, info, original)
+
+
+def _new_op_committed(plan, info, original):
+    triggered = _new_op_keyword_hit(original) or info.get("fresh_op")
+    return bool(triggered and _guarded_op(plan, info, original) and _new_op_resolved(plan, info, original))
+
+
 def _top_n(low, view, spec, num_cols, row_paths):
     """'top 3 by score', 'the three highest', 'bottom 2', 'which 3 were admitted earliest'.
 
-    -> dict(k, word, ret, by, over, values) or None. k is a digit or an English number word
-    (Vietnamese cardinals are translated first). The returned column may differ from the sort column.
+    -> dict(k, word, ret, by, over, values) or None. k is a digit or a number word
+    (Vietnamese 'ba'/'năm'/'mười' are canonicalised first). A number inside a quoted
+    row or column label is not k.
     """
+    from .vi import fold
+    low = fold(low).lower()
     nw = "|".join(sorted(NUMW, key=len, reverse=True))
     kpat = rf"(\d+|{nw})"
     sup = SUP_MAX + "|" + SUP_MIN
-    edge = re.search(rf"\b(?:top|bottom)\s+{kpat}\b", low)
-    spread = None if edge else re.search(rf"\b(?:the\s+)?{kpat}(?:\s+\w+){{0,6}}?\s+({sup})\b", low)
-    m = edge or spread
-    if not m:
+    cands = []
+    for m in re.finditer(rf"\b(?:top|bottom)\s+{kpat}\b", low):
+        cands.append((m, "edge", m.start(1), m.end(1), m.group(1), "lowest" if m.group(0).split()[0] == "bottom" else "highest"))
+    for m in re.finditer(rf"\b(?:the\s+)?{kpat}(?:\s+\w+){{0,6}}?\s+({sup})\b", low):
+        cands.append((m, "spread", m.start(1), m.end(1), m.group(1), m.group(2)))
+    for m in re.finditer(rf"\b({sup})\s+(\d+|{nw})\b", low):
+        if re.search(r"\bat\s+$", low[:m.start()]):
+            continue  # 'at least 60' is a threshold, not a count of items
+        cands.append((m, "rev", m.start(2), m.end(2), m.group(2), m.group(1)))
+    chosen = None
+    via = None
+    for m, kind, start, end, raw, word in cands:
+        if raw.isdigit() and len(raw) == 4 and raw.startswith(("19", "20")):
+            continue
+        k = int(raw) if raw.isdigit() else NUMW.get(raw)
+        if not k or k < 2:
+            continue
+        if not _k_marked(low, start, end, raw, kind, view):
+            continue
+        chosen = (k, word, m)
+        via = kind
+        break
+    if not chosen:
         return None
-    raw = m.group(1)
-    if raw.isdigit() and len(raw) == 4 and raw.startswith(("19", "20")):
-        return None
-    k = int(raw) if raw.isdigit() else NUMW.get(raw)
-    if not k or k < 2:
-        return None
-    if edge:
-        word = "lowest" if edge.group(0).split()[0] == "bottom" else "highest"
-    else:
-        word = spread.group(2)
+    k, word, m = chosen
     dates = view.date_cols()
     if word in ("oldest", "youngest"):
         by, over = "age", "rows"
@@ -792,7 +1381,7 @@ def _top_n(low, view, spec, num_cols, row_paths):
         ic = [c for c, _ in ic if c not in num_cols and c not in dates]
         ret = ic[0] if ic else None
     values = _wants_measure_values(low)
-    return {"k": k, "word": word, "ret": ret, "by": by, "over": over, "values": values}
+    return {"k": k, "word": word, "ret": ret, "by": by, "over": over, "values": values, "via": via}
 
 
 def _measure_column(low, match, view, pool):
@@ -823,13 +1412,17 @@ def _pool_match(view, text, pool):
 
 
 def _wants_measure_values(low):
-    """'top 3 scores' / '3 lowest scores' lists the measure, not the row labels."""
+    """'top 3 scores' / '3 lowest scores' / 'three highest scores' lists the measure."""
     nw = "|".join(sorted(NUMW, key=len, reverse=True))
     sup = SUP_MAX + "|" + SUP_MIN
     unit = r"(scores?|values?|numbers?|amounts?)"
     if re.search(rf"\b(?:top|bottom)\s+(?:\d+|{nw})\s+{unit}\b", low):
         return True
-    return bool(re.search(rf"\b(?:\d+|{nw})\s+{unit}\s+(?:{sup})\b", low))
+    if re.search(rf"\b(?:\d+|{nw})\s+{unit}\s+(?:{sup})\b", low):
+        return True
+    if re.search(rf"\b(?:\d+|{nw})\s+(?:{sup})\s+{unit}\b", low):
+        return True
+    return bool(re.search(rf"\b(?:{sup})\s+(?:\d+|{nw})\s+{unit}\b", low))
 
 
 OP_WORDS = set("""total sum combined average mean highest lowest most least fewest largest smallest maximum minimum
@@ -846,17 +1439,18 @@ summ individu non overlapp detail tabl contain absolut differenc averag chang
 had has have nam cua khong co la cac nhung va trong cho duoc theo nay do mot hai ba bao nhieu nao""".split())
 
 OP_CUES = {
-    "compare": r"\b(greater|more|higher|larger|exceed|exceeds|exceeded|less|lower|smaller|fewer|below|above|than)\b",
-    "diff": r"how (many|much) (more|less|fewer|higher|lower)|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b",
-    "sum": r"\bsumm?ing\b|\bsum\b|\btotal\b|\bcombined\b|\baltogether\b|\bin all\b|\bacross all\b",
-    "mean": r"\baverage\b|\bmean\b",
-    "count": r"\bhow many\b|\bnumber of\b|\bcount\b",
-    "rank": r"\brank\b|\bdescending\b|\bascending\b|\bfrom (most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to\b",
-    "share": r"\bshare\b|\bproportion\b|percentage of|what percent",
+    "compare": r"\b(greater|more|higher|larger|exceed|exceeds|exceeded|less|lower|smaller|fewer|below|above|than|lon hon|nho hon|cao hon|thap hon|so sanh)\b",
+    "diff": _DIFF_SRC,
+    "sum": r"\bsumm?ing\b|\bsum\b|\btotal\b|\bcombined\b|\baltogether\b|\bin all\b|\bacross all\b|\btong\b|\bcong lai\b",
+    "mean": r"\baverage\b|\bmean\b|\btrung binh\b|\bbinh quan\b",
+    "count": r"\bhow many\b|\bnumber of\b|\bcount\b|\bbao nhieu\b|\bso luong\b",
+    "rank": r"\brank\b|\bdescending\b|\bascending\b|\btop\b|\bbottom\b|\bxep hang\b|\bfrom (most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to\b",
+    "share": r"\bshare\b|\bproportion\b|percentage of|what percent|\bty le\b|\bti le\b|\bty trong\b",
     "ratio": r"/|\bratio\b|\brate\b",
     "argmax": r"\b(" + SUP_MAX + r")\b", "argmin": r"\b(" + SUP_MIN + r")\b",
     "max": r"\b(" + SUP_MAX + r")\b", "min": r"\b(" + SUP_MIN + r")\b",
-    "nth": r"\b(" + SUP_MAX + "|" + SUP_MIN + r")\b", "topk_agg": r"\b(" + SUP_MAX + "|" + SUP_MIN + r")\b",
+    "nth": r"\b(" + SUP_MAX + "|" + SUP_MIN + r"|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)|thu\s+\d+)\b",
+    "topk_agg": r"\b(" + SUP_MAX + "|" + SUP_MIN + r")\b",
     "values": r".", "lookup": r".",
 }
 
