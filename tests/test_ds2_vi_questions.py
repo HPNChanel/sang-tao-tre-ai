@@ -3,9 +3,8 @@
 The pack is generated with the fixed seed in scripts/gen_fake_dataset2.py.
 Each expected answer is computed from those rows with pandas. The same
 aggregations are computed again from the workbook the generator writes.
-The rule planner answers the top-N total and the signed Sales difference;
-those two are compared with plan/execute. City and Shift are text filters
-the rule planner does not apply, so those three stay on the recomputed rows.
+The signed Sales difference is also compared with plan/execute. The other
+four questions are checked by recomputing the generated rows.
 """
 import json
 import random
@@ -25,7 +24,7 @@ from src.plan_executor import execute  # noqa: E402
 from src.xlsx_tables import load_tables  # noqa: E402
 
 _NEW = ("d2q06", "d2q07", "d2q08", "d2q09", "d2q10")
-_RULE = ("d2q07", "d2q08")
+_RULE = ("d2q08",)
 
 
 def _rebuild(seed, n):
@@ -92,11 +91,21 @@ def test_vi_questions_recomputed_from_seed_and_workbook(tmp_path):
     queries = json.loads((pack / "queries.json").read_text(encoding="utf-8"))
     by_id = {q["id"]: q["query"] for q in queries}
     assert [q["id"] for q in queries] == [f"d2q{i:02d}" for i in range(1, 11)]
-    assert "lấy 2025 trừ 2023" in by_id["d2q08"]
-    assert "năm người lớn tuổi nhất" in by_id["d2q07"]
-    assert "chín mươi chín" in by_id["d2q10"]
-    assert "C3" in by_id["d2q06"] and "night" in by_id["d2q06"]
-    assert "C5" in by_id["d2q09"]
+    assert by_id["d2q06"] == (
+        "Chỉ xét những người làm ca night ở thành phố C3, tổng điểm Score của nhóm này là bao nhiêu? Ghi một số nguyên."
+    )
+    assert by_id["d2q07"] == (
+        "Lấy 5 người có ngày sinh sớm nhất trong bảng People rồi cộng điểm Score của họ, kết quả bằng mấy? Ghi một số nguyên."
+    )
+    assert by_id["d2q08"] == (
+        "Doanh số Sales của vùng South năm 2025 cao hơn hay thấp hơn năm 2023 bao nhiêu? Ghi số nguyên có dấu, lấy 2025 trừ 2023."
+    )
+    assert by_id["d2q09"] == (
+        "Trong danh sách People, những ai thuộc City C5 mà Score chưa tới 50 thì tổng cộng là mấy người?"
+    )
+    assert by_id["d2q10"] == (
+        "Đếm số người làm ca evening đạt đúng chín mươi chín điểm Score. Ghi một số nguyên."
+    )
 
     built = _answers(*_rebuild(SEED, PEOPLE_ROWS))
     written = _answers(*_from_workbook(pack / "xlsx_files" / XLSX_NAME))

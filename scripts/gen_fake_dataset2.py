@@ -139,23 +139,23 @@ def _queries():
         ),
         (
             "d2q06",
-            "Tổng điểm Score của những người có City bằng C3 và Shift bằng night là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+            "Chỉ xét những người làm ca night ở thành phố C3, tổng điểm Score của nhóm này là bao nhiêu? Ghi một số nguyên.",
         ),
         (
             "d2q07",
-            "Trong năm người lớn tuổi nhất, tổng điểm Score là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+            "Lấy 5 người có ngày sinh sớm nhất trong bảng People rồi cộng điểm Score của họ, kết quả bằng mấy? Ghi một số nguyên.",
         ),
         (
             "d2q08",
-            "Doanh số Sales của vùng South thay đổi từ năm 2023 đến năm 2025 là bao nhiêu? lấy 2025 trừ 2023. Chỉ trả lời bằng số nguyên.",
+            "Doanh số Sales của vùng South năm 2025 cao hơn hay thấp hơn năm 2023 bao nhiêu? Ghi số nguyên có dấu, lấy 2025 trừ 2023.",
         ),
         (
             "d2q09",
-            "Có bao nhiêu người có City bằng C5 và điểm Score từ 49 trở xuống? Chỉ trả lời bằng số nguyên.",
+            "Trong danh sách People, những ai thuộc City C5 mà Score chưa tới 50 thì tổng cộng là mấy người?",
         ),
         (
             "d2q10",
-            "Có bao nhiêu người có Shift bằng evening và điểm Score từ chín mươi chín trở lên? Chỉ trả lời bằng số nguyên.",
+            "Đếm số người làm ca evening đạt đúng chín mươi chín điểm Score. Ghi một số nguyên.",
         ),
     ]
     return [{"id": i, "file_name": fname, "query": q} for i, q in items]
