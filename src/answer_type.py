@@ -75,8 +75,10 @@ def compatible(expected: str, got: str) -> bool:
     return False
 
 
-def answer_ok(expected: str, ans: str, fmt: dict) -> bool:
+def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan: dict | None = None) -> bool:
     if ans is None or str(ans).strip() == "":
+        return False
+    if not _answer_counts(ans, fmt, query, plan):
         return False
     a = str(ans).strip()
     num = re.fullmatch(r"-?\d+(\.\d+)?", a) is not None
@@ -93,3 +95,45 @@ def answer_ok(expected: str, ans: str, fmt: dict) -> bool:
     if expected == "label":
         return not num or fmt.get("kind") == "list"
     return True
+
+
+def _answer_counts(ans: str, fmt: dict, query: str | None, plan: dict | None) -> bool:
+    """Pair answers need two elements. A top-N list needs exactly N. Shape mismatches blank."""
+    from . import blank_guards as G
+    fmt = fmt or {}
+    if G.pair_demanded(fmt, query) and G.item_count(ans, fmt) != 2:
+        return False
+    k = _topn_answer_k(fmt, query, plan)
+    if k is not None and G.item_count(ans, fmt) != k:
+        return False
+    blob = query or ""
+    if G.asks_single_number(blob, fmt) and G.label_list(ans, fmt):
+        return False
+    if G.asks_list(blob, fmt) and G.single_number(ans) and _aggregate_answer(plan):
+        return False
+    return True
+
+
+def _topn_answer_k(fmt: dict, query: str | None, plan: dict | None):
+    """N for a top-N list. Other rank plans are left to their own count."""
+    if not plan or plan.get("op") != "rank":
+        return None
+    fmt = fmt or {}
+    if fmt.get("kind") in ("int", "decimal", "number"):
+        return None
+    try:
+        k = int((plan.get("args") or {}).get("k") or 0)
+    except (TypeError, ValueError):
+        return None
+    if k < 2:
+        return None
+    from . import blank_guards as G
+    signal = G.topn_signal([query or ""])
+    if signal == k or fmt.get("count") == k:
+        return k
+    return None
+
+
+def _aggregate_answer(plan: dict | None) -> bool:
+    op = (plan or {}).get("op")
+    return op in {"sum", "mean", "count", "max", "min", "topk_agg"}

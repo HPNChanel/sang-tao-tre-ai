@@ -292,8 +292,192 @@ def _plan_with_confidence(query, tables, strict):
         vi_factor = 0.9 if hits_base >= 2 else 0.6
     if info.get("abstain"):
         return plan, 0.0, reasons + ["op:abstain"]
+    blocked = _blank_reasons(original, query, plan, info)
+    if blocked:
+        return plan, 0.0, reasons + blocked
     conf, r2 = (_confidence if strict else _confidence_legacy)(query, plan, info)
     return plan, conf * vi_factor, reasons + r2
+
+
+def _blank_reasons(original, translated, plan, info):
+    """Confidence 0 when a generic guard says this plan would be confidently wrong."""
+    from . import blank_guards as G
+    texts = [original or "", translated or ""]
+    reasons = []
+    if _unscoped_lookup(plan, info):
+        reasons.append("blank:lookup-row")
+    if _topn_must_blank(plan, info, texts):
+        reasons.append("blank:topn")
+    if G.shape_mismatch(plan, texts):
+        reasons.append("blank:shape")
+    if G.nth_signal(original, translated) and not _nth_column_resolved(plan, info, texts):
+        reasons.append("blank:nth-column")
+    return reasons
+
+
+def _unscoped_lookup(plan, info):
+    """Single-cell lookup with no row path and no where on a multi-row table."""
+    if plan.get("op") != "lookup":
+        return False
+    rows = plan.get("rows") or {}
+    if rows.get("paths") or rows.get("where") or rows.get("scope") or rows.get("range"):
+        return False
+    view = info.get("view")
+    if view is None:
+        return False
+    return len(view.df) > 1
+
+
+def _topn_must_blank(plan, info, texts):
+    from . import blank_guards as G
+    signal = G.topn_signal(texts)
+    if signal is None:
+        return False
+    if signal == "ambiguous":
+        return True
+    if _topn_plan_resolved(plan, info, texts, signal):
+        return False
+    if _scalar_extreme_ok(plan, info, texts):
+        return False
+    return True
+
+
+def _topn_plan_resolved(plan, info, texts, k):
+    from . import blank_guards as G
+    op = plan.get("op")
+    if op not in ("rank", "topk_agg"):
+        return False
+    args = plan.get("args") or {}
+    try:
+        got = int(args.get("k"))
+    except (TypeError, ValueError):
+        return False
+    if got != int(k):
+        return False
+    if G.direction(texts) is None or not _direction_matches(plan, texts):
+        return False
+    if not _guard_column_resolved(plan, info, texts):
+        return False
+    fmt = plan.get("format") or {}
+    blob = " ".join(texts)
+    if op == "topk_agg" and G.asks_list(blob, fmt) and not G.asks_single_number(blob, fmt):
+        return False
+    if op == "rank" and G.asks_single_number(blob, fmt):
+        return False
+    return True
+
+
+def _scalar_extreme_ok(plan, info, texts):
+    """'highest 3 ... integer' stays the max of that column. A list request does not."""
+    from . import blank_guards as G
+    fmt = plan.get("format") or {}
+    if plan.get("op") not in ("max", "min"):
+        return False
+    if fmt.get("kind") not in ("int", "decimal", "number"):
+        return False
+    blob = " ".join(texts)
+    if G.asks_list(blob, fmt):
+        return False
+    if G.direction(texts) is None or not _direction_matches(plan, texts):
+        return False
+    return _guard_column_resolved(plan, info, texts)
+
+
+def _direction_matches(plan, texts):
+    from . import blank_guards as G
+    want = G.direction(texts)
+    if want is None:
+        return False
+    op = plan.get("op")
+    order = (plan.get("args") or {}).get("order")
+    if op == "max":
+        return want == "desc"
+    if op == "min":
+        return want == "asc"
+    if _birth_rank_order(plan, texts):
+        return True
+    if order in ("asc", "desc"):
+        return order == want
+    return True
+
+
+def _birth_rank_order(plan, texts):
+    """Oldest ranks a birth date ascending; youngest ranks it descending.
+
+    'highest' on the value taken from that subset is a different direction and
+    must not blank a resolved age ranking.
+    """
+    args = plan.get("args") or {}
+    by = args.get("by")
+    order = args.get("order")
+    if order not in ("asc", "desc"):
+        return False
+    if not (by == "age" or _birth_name(by)):
+        return False
+    blob = " ".join(texts)
+    oldest = bool(re.search(r"\boldest\b", blob, re.I))
+    youngest = bool(re.search(r"\byoungest\b", blob, re.I))
+    if oldest and not youngest:
+        return order == "asc"
+    if youngest and not oldest:
+        return order == "desc"
+    return False
+
+
+def _guard_column_resolved(plan, info, texts):
+    """One ranking column: the only measure, a named one, or an age ordering."""
+    view = info.get("view")
+    if view is None:
+        return False
+    by = (plan.get("args") or {}).get("by")
+    blob = " ".join(texts)
+    age = by == "age" or bool(re.search(r"\b(oldest|youngest)\b", blob, re.I))
+    if age:
+        return _birth_column(view) is not None or len(view.date_cols()) == 1
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    if len(num) <= 1:
+        return True
+    hits = _named_measures(view, blob)
+    if len(hits) == 1:
+        return by in (None, hits[0], "age") or by == hits[0]
+    if len(hits) > 1:
+        best = _dominant_measure(hits, blob)
+        if best is None:
+            return False
+        return by in (None, best) or by == best
+    return False
+
+
+def _named_measures(view, text):
+    q = Query(text)
+    hits = []
+    for c in view.numeric_cols():
+        if _is_total_col(c):
+            continue
+        parts = [p for p in str(c).split(" | ") if p and p != "*"]
+        if any(q.match(p)[0] >= 0.5 for p in parts):
+            hits.append(c)
+    return hits
+
+
+def _dominant_measure(hits, text):
+    q = Query(text)
+    scored = []
+    for c in hits:
+        parts = [p for p in str(c).split(" | ") if p and p != "*"]
+        score = sum(1 for p in parts if q.match(p)[0] >= 0.5)
+        scored.append((score, c))
+    if not scored:
+        return None
+    best = max(s for s, _ in scored)
+    top = [c for s, c in scored if s == best]
+    return top[0] if len(top) == 1 and best > 0 else None
+
+
+def _nth_column_resolved(plan, info, texts):
+    if plan.get("op") != "nth":
+        return False
+    return _guard_column_resolved(plan, info, texts)
 
 
 def _named_rank_scope(view, q, matched_rows):
