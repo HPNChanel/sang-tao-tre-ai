@@ -18,15 +18,16 @@ from src.xlsx_tables import load_tables
 
 
 def _industries_94(tmp_path):
-    """94 data rows, 20 distinct labels, several sections and sheets.
+    """94 data rows and 20 distinct labels, on several sheets and sections.
 
-    Males is one block of those 20 labels. The other 74 rows repeat the same
-    labels on other sheets and other row numbers.
+    Males lists those labels in its own row order. The other sections list
+    them in a different order, on other sheets and other row numbers.
     """
     labels = [f"Category number {i:02d} alpha" for i in range(20)]
+    males = list(reversed(labels))
     wb = openpyxl.Workbook()
     blocks = [
-        ("2020", [("All persons", labels), ("Males", labels)]),
+        ("2020", [("All persons", labels), ("Males", males)]),
         ("2021", [("All persons", labels), ("Females", labels)]),
         ("2022", [("Females", labels[:14])]),
     ]
@@ -42,19 +43,19 @@ def _industries_94(tmp_path):
     wb.save(path)
     tables = load_tables(str(path))
     assert sum(len(t.df) for t in tables) == 94
-    return labels, tables
+    return males, tables
 
 
 def test_named_section_listed_once(tmp_path):
-    labels, tables = _industries_94(tmp_path)
+    """The answer is the queried section, in that section's order."""
+    males, tables = _industries_94(tmp_path)
     q = (
         "Rank the industries in Males by count in descending order, "
         "separated by a comma and one space."
     )
     ans = execute(plan(q, tables), tables, q)
-    assert ans == ", ".join(labels)
-    assert len(ans.split(", ")) == 20
-    assert len(ans) < 800
+    assert ans == ", ".join(males)
+    assert ans.split(", ") == males
 
 
 def test_duplicate_surnames_stay(tmp_path):
