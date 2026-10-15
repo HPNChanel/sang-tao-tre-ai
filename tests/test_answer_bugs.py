@@ -76,6 +76,70 @@ def test_rank_missing_k_stops_at_format_count(tmp_path):
     assert listed.count("Industry 00") == 6
 
 
+def _scoped_industries(tmp_path):
+    """Same industry names under three sections. Food is the global top value three times."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Industry", "Count"])
+    blocks = {
+        "Services": {"Food": 300, "Steel": 10, "Wood": 9},
+        "Trade": {"Food": 200, "Steel": 8, "Wood": 7},
+        "Manufacturing": {"Food": 100, "Steel": 40, "Wood": 30},
+    }
+    for sec, counts in blocks.items():
+        ws.append([sec, None])
+        for name, count in counts.items():
+            ws.append([name, count])
+    path = tmp_path / "scoped.xlsx"
+    wb.save(path)
+    return load_tables(str(path))
+
+
+def test_rank_named_section_before_count(tmp_path):
+    """Top 3 inside the named section, not the three highest rows in the workbook."""
+    tables = _scoped_industries(tmp_path)
+    q = (
+        "Rank the industries in Manufacturing by count in descending order. "
+        "Answer with the three industry names, separated by a comma and one space."
+    )
+    built = plan(q, tables)
+    assert built["rows"]["scope"] == "Manufacturing"
+    assert built["args"]["k"] == 3
+    assert execute(built, tables, q) == "Food, Steel, Wood"
+
+    unnamed = (
+        "Rank the industries by count in descending order. "
+        "Answer with the three industry names, separated by a comma and one space."
+    )
+    wide = execute(plan(unnamed, tables), tables, unnamed)
+    assert wide == "Food, Food, Food"
+
+    both = (
+        "Rank the industries in Manufacturing and Trade by count in descending order. "
+        "Answer with the three industry names, separated by a comma and one space."
+    )
+    assert plan(both, tables) is None
+
+
+def test_rank_named_range_before_count(tmp_path):
+    """An age band in the question limits the rows before the top-3 cut."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Age group", "People"])
+    for label, n in [("0 to 15", 1), ("16 to 24", 9), ("25 to 34", 3),
+                     ("35 to 44", 8), ("45 to 54", 2), ("55 to 64", 7)]:
+        ws.append([label, n])
+    path = tmp_path / "ages.xlsx"
+    wb.save(path)
+    tables = load_tables(str(path))
+    q = (
+        "Rank the age groups from 25 to 54 by people in descending order. "
+        "Answer with the three age group names, separated by a comma and one space."
+    )
+    ans = execute(plan(q, tables), tables, q)
+    assert ans == "35 to 44, 25 to 34, 45 to 54"
+
+
 def test_duplicate_surnames_stay(tmp_path):
     """Two different people may share a surname. The list keeps both."""
     wb = openpyxl.Workbook()
