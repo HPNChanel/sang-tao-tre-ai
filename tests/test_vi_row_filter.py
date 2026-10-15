@@ -635,3 +635,85 @@ def test_row_after_o_is_not_blocked(tmp_path):
         "Doanh số Sales ở Hue là bao nhiêu? Ghi chữ số.",
     )
     assert got == "12", (got, conf, reasons, None if not planned else planned["rows"])
+
+
+def test_function_word_rows_do_not_shrink_a_filtered_count(tmp_path):
+    """Rows named like 'có' or 'làm' must not be the only rows a filtered count sees.
+
+    Both the shift and the word threshold have to apply. The intersection is 3.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Ten", "Nang", "Ca"])
+    rows = [
+        ("Lam", 80, "sang"),
+        ("Co", 90, "toi"),
+        ("An", 75, "sang"),
+        ("Bo", 73, "sang"),
+        ("Cy", 20, "sang"),
+        ("Di", 90, "toi"),
+    ]
+    for row in rows:
+        ws.append(list(row))
+    path = _save(wb, tmp_path, "lots.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Có mấy kiện làm ca sang khi cột Nang vượt bảy mươi hai? Viết một chữ số.",
+    )
+    assert got == "3", (got, conf, reasons, None if not planned else planned["rows"])
+    assert planned["op"] == "count"
+    wheres = planned["rows"]["where"]
+    assert len(wheres) == 2, wheres
+    assert {item["op"] for item in wheres} == {"==", ">"}
+    leaves = [str(p).split(" > ")[-1].lower() for p in planned["rows"]["paths"]]
+    assert "lam" not in leaves and "co" not in leaves
+
+
+def test_one_unbound_condition_does_not_count_one(tmp_path):
+    """Two numeric columns and no named threshold: do not count the shift alone."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Ten", "Nang", "Phu", "Ca"])
+    for row in [("Lam", 80, 1, "sang"), ("Co", 90, 2, "toi"), ("An", 75, 3, "sang"), ("Bo", 73, 4, "sang")]:
+        ws.append(list(row))
+    path = _save(wb, tmp_path, "two-num.xlsx")
+    got, conf, reasons, _planned = _ask(
+        path,
+        "Hãy đếm máy thuộc ca sang vượt mức bảy mươi hai. Trả về một số nguyên.",
+    )
+    assert got is None, (got, conf, reasons)
+    assert got != "1"
+    assert conf == 0
+
+
+def test_yes_no_keeps_the_base_comparison(tmp_path):
+    """A shift cue that cannot bind must not blank a Yes/No comparison."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Region", "Sales"])
+    ws.append(["K4", 40])
+    ws.append(["K7", 12])
+    path = _save(wb, tmp_path, "yesno.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Doanh số Sales của K4 có lớn hơn K7 không? Làm ca sang. Chỉ trả lời Yes hoặc No.",
+    )
+    assert got == "Yes", (got, conf, reasons, None if not planned else planned["rows"])
+    assert planned["op"] == "compare"
+    assert conf >= 0.5
+
+
+def test_value_list_keeps_both_numbers(tmp_path):
+    """An unbound shift cue must not blank a list of two values."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Name", "Amount"])
+    ws.append(["Bo", 1200])
+    ws.append(["Cy", 3400])
+    path = _save(wb, tmp_path, "pair.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Liệt kê Amount của Bo và Cy, phân cách bởi dấu phẩy và một dấu cách. Thuộc kip dem.",
+    )
+    assert got == "1200, 3400", (got, conf, reasons, None if not planned else planned)
+    assert conf >= 0.5

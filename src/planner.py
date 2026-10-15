@@ -1936,6 +1936,72 @@ def _asks_row_count(low, original):
     return bool(re.search(r"\b(?:may|bao nhieu)\b", folded))
 
 
+# Words that introduce a count or a comparison. A row whose whole label is
+# one of these is the grammar of the question, not the population to count.
+_COUNT_PATH_NOISE = frozenset({
+    "co", "lam", "may", "nguoi", "tuoi", "trong", "so", "nhan", "vien",
+    "cua", "ma", "voi", "khi", "thi", "hay", "va", "cho", "cac", "nhung",
+    "viec", "theo", "lon", "hon", "dong", "bao", "nhieu", "greater",
+    "than", "how", "many", "people", "number", "ghi", "chu", "viet",
+    "mot", "hai", "ba", "bon", "tu", "sau", "bay", "tam", "chin", "muoi",
+    "tram", "nghin", "ngan", "fiveword", "len", "xuong", "tro", "dat",
+    "dung", "bang", "chua", "muc", "la", "duoc", "nao", "gi",
+    "nay", "rat", "cung", "khong", "nhat", "qua", "diem", "score",
+    "tong", "cao", "thap", "it", "vuot", "tren", "duoi", "thuoc", "tai", "o",
+})
+
+
+def _incidental_count_path(path):
+    """A row label that only repeats function words, not the group being counted."""
+    leaf = str(path).split("!")[-1].split(" > ")[-1]
+    parts = tokens(leaf)
+    return bool(parts) and all(part in _COUNT_PATH_NOISE for part in parts)
+
+
+def _list_asks_a_count(original):
+    """A values plan is a count only when the question itself asks how many.
+
+    'kip đêm' contains the same folded token as 'đếm'. That shift word does
+    not turn a list of values into a count.
+    """
+    from .vi import fold
+    folded = fold(original).lower()
+    if re.search(r"\b(?:la|bang|duoc)\s+bao nhieu\b", folded):
+        return False
+    if re.search(r"\bhon\b.{0,40}\bbao nhieu\b", folded):
+        return False
+    if re.search(r"\b(?:may|bao nhieu)\b", folded):
+        return True
+    if re.search(r"(?:^|[.?!]\s*)dem\b|\bdem\s+(?:so|dong|nguoi|may|tinh)\b", folded):
+        return True
+    return False
+
+
+def _unresolved_blocks(plan, original):
+    """Blank only a count or a filtered aggregate whose cue did not fully attach.
+
+    A Yes/No comparison and a list of several values keep the plan the base
+    matcher already produced. A question that asks how many rows still blanks,
+    even when that plan has not been promoted to a count yet.
+    """
+    op = plan.get("op")
+    kind = (plan.get("format") or {}).get("kind")
+    if op == "compare" or kind == "yesno":
+        return False
+    if kind == "list" or op == "values":
+        return _list_asks_a_count(original)
+    if _asks_row_count("", original) or op == "count":
+        return True
+    if op in ("sum", "mean", "max", "min"):
+        return True
+    if op == "lookup":
+        rows = plan.get("rows") or {}
+        width = len(rows.get("paths") or []) * max(len(plan.get("columns") or []), 1)
+        if width > 1 or len(plan.get("columns") or []) > 1:
+            return False
+    return True
+
+
 def _promote_filtered_op(plan, info, original):
     """Point a filtered question at an aggregate that actually applies the filter."""
     low = (info.get("body") or "").lower()
@@ -2086,14 +2152,18 @@ def _attach_vi_filters(plan, info, original):
     if len(set(scopes)) > 1:
         failed = True
     if failed or (spec["intro"] and not wheres and not scopes and not _already_restricted(plan)):
-        info["unresolved_filter"] = True
+        # Counts and filtered sums still abstain. Yes/No and multi-value
+        # lists do not: the base plan already answers those shapes.
+        if _unresolved_blocks(plan, original):
+            info["unresolved_filter"] = True
         return
     if scopes and not plan["rows"].get("scope"):
         plan["rows"]["scope"] = scopes[0]
     if not wheres and not scopes:
         return
     if wheres and not _promote_filtered_op(plan, info, original):
-        info["unresolved_filter"] = True
+        if _unresolved_blocks(plan, original):
+            info["unresolved_filter"] = True
         return
     numeric = set(view.numeric_cols())
     filtered = {item["column"] for item in wheres}
@@ -2118,6 +2188,13 @@ def _attach_vi_filters(plan, info, original):
         path for path in plan["rows"]["paths"]
         if not _label_overlaps_value(path, cues)
     ]
+    # 'có' and 'làm' also match rows named Co and Lam. A filtered count is
+    # every row that passes the where, not those two labels.
+    if plan.get("op") == "count":
+        plan["rows"]["paths"] = [
+            path for path in plan["rows"]["paths"]
+            if not _incidental_count_path(path)
+        ]
     info["applied_filter"] = True
 
 
