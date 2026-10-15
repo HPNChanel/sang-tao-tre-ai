@@ -270,14 +270,28 @@ def execute(plan, tables):
         if isinstance(val, list) and len(val) == 1:
             val = val[0]
     elif op == "rank":
-        c = cols[0] if cols else view.numeric_cols()[0]
-        if not groups:
+        if args.get("over") == "columns":
+            # top-k across the columns of one row (k past the row's columns returns every column)
+            g = groups[0] if groups else first_row()
+            val = _rank_columns(view, g, cols, args)
+        elif args.get("k") and not args.get("names"):
             idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
-            groups = [[i] for i in idx]
-        names = args.get("names") or [df.at[g[0], "_label"] for g in groups]
-        vals = [_col_values(view, c, g).sum() for g in groups]
-        order = sorted(range(len(vals)), key=lambda k: vals[k], reverse=args.get("order", "desc") == "desc")
-        val = [names[k] for k in order]
+            by = args.get("by")
+            if not by:
+                c0 = next((c for c in cols if c in view.df), None)
+                by = c0 or (view.numeric_cols()[:1] or view.date_cols()[:1] or [None])[0]
+            ordered = _order(view, idx, {"by": by, "order": args.get("order", "desc")})
+            # fewer matching rows than k: every remaining row, already in the requested order
+            val = [_ret(view, i, args.get("return")) for i in ordered][: args["k"]]
+        else:
+            c = cols[0] if cols else view.numeric_cols()[0]
+            if not groups:
+                idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
+                groups = [[i] for i in idx]
+            names = args.get("names") or [df.at[g[0], "_label"] for g in groups]
+            vals = [_col_values(view, c, g).sum() for g in groups]
+            order = sorted(range(len(vals)), key=lambda k: vals[k], reverse=args.get("order", "desc") == "desc")
+            val = [names[k] for k in order][: args.get("k") or None]
     elif op in ("nth", "topk_agg"):
         idx = _aggregate_rows(view, plan, base)
         idx = _apply_where(view, idx, r.get("where"))
@@ -310,6 +324,36 @@ def execute(plan, tables):
     else:
         raise PlanError(f"unknown op {op}")
     return val
+
+
+def _rank_columns(view, idx, cols, args):
+    """Highest or lowest k numeric columns of one row. Leaves are the answer items.
+
+    A k larger than the row's columns returns every one of those columns."""
+    def _leaf_total(c):
+        return bool(re.match(r"(grand )?total\b", str(c).split(" | ")[-1], re.I))
+
+    cand = []
+    for c in cols or []:
+        if str(c).endswith(" | *"):
+            pre = str(c)[:-4]
+            cand.extend(x for x in view.numeric_cols() if str(x).startswith(pre + " | ") and not _leaf_total(x))
+        elif c in view.numeric_cols() and not _leaf_total(c):
+            cand.append(c)
+    if len(cand) < 2:
+        cand = [c for c in view.numeric_cols() if not _leaf_total(c)]
+    vals = {}
+    for c in cand:
+        series = _col_values(view, c, idx)
+        v = series.iloc[0] if len(idx) == 1 else series.sum(min_count=1)
+        v = pd.to_numeric(v, errors="coerce")
+        if pd.isna(v):
+            continue
+        vals[c] = float(v)
+    ordered = sorted(vals, key=lambda c: vals[c], reverse=args.get("order", "desc") == "desc")
+    if args.get("k"):
+        ordered = ordered[: args["k"]]
+    return [str(c).split(" | ")[-1] for c in ordered]
 
 
 def _pick(cands, score, plan, what):
