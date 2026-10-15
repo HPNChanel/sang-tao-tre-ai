@@ -30,11 +30,12 @@ def test_nested_population_is_a_constraint(tables):
     assert execute(built, tables, query) == "30"
 
 
-def test_explicit_addition_preserves_both_columns(tables):
-    query = "Sum Bolts inventory in all depots and in Harbor. Answer with an integer."
+@pytest.mark.parametrize("operation,expected", [("Sum", "110"), ("Average", "55")])
+def test_explicit_arithmetic_preserves_both_columns(tables, operation, expected):
+    query = f"{operation} Bolts inventory in all depots and in Harbor. Answer with an integer."
     built = plan(query, tables)
     assert len(built["columns"]) == 2
-    assert execute(built, tables, query) == "110"
+    assert execute(built, tables, query) == expected
 
 
 def test_ambiguous_pair_still_abstains(tables):
