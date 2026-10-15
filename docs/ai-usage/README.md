@@ -17,6 +17,18 @@ Solver mặc định là code. Model chỉ là fallback.
 
 Schema trên đĩa `src/plan_schema.json` không bị sửa. Lúc gửi, `compact_schema` bỏ `description`, `$schema`, `$id` và `title` rồi nén JSON. Ràng buộc còn lại giữ nguyên. `reasoning` gửi đi với `{"enabled": false}`. Log chi phí tách `completion_tokens` và `reasoning_tokens` theo từng attempt.
 
+## Khai báo theo từng PR
+
+Model trên mọi PR: `qwen/qwen3.7-flash` qua OpenRouter. Không PR nào đã chạy với model thật.
+
+| PR | Trạng thái | Prompt | Ghi chú |
+|---|---|---|---|
+| #1 | merged, `e1ab186` | Không thêm prompt mới. Prompt có sẵn nằm trong `src/prompts/`. | Chưa chạy với model thật |
+| #2 | KSP1, merged, `c02777d` | `src/prompts/plan_system.txt`, `src/prompts/plan_user.txt`, `src/plan_schema.json` | Synth v3 là Python thuần điền template, không gọi LLM. Đổi code thêm duy nhất: `os.environ.get` thành `os.getenv`. Chưa chạy với model thật |
+| #3 | KSP1, fix-groups, CLOSED, không merge | Không sửa `src/prompts/` | Đóng vì điểm v2 giảm. Chưa chạy với model thật |
+| #4 (KSP2) | PR này; trên GitHub là #5, nhánh `ksp2/llm-compact-4` | Prompt chính và fake LLM ghi trong file này | Chưa chạy với model thật |
+| PR nhỏ của KSP1 | từng PR | Mỗi PR ghi prompt chính của chính nó. PM gom trước khi zip. | Chưa chạy với model thật |
+
 ## Bai hoc tu 6 nhom loi & synth v5 (KSP1)
 
-**Placeholder.** Bài học từ 6 nhóm lỗi và synth v5 của KSP1 sẽ được gắn vào mục này trước khi merge. Mục này cố ý để trống trong commit này.
+Nội dung nằm ở [`ksp1-lessons.md`](ksp1-lessons.md).
