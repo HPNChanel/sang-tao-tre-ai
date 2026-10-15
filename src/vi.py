@@ -37,6 +37,39 @@ def _card_repl(m):
     return _CARD[m.group(1).lower()] + " " + m.group(2)
 
 
+_ORD_VI = {"nhat": "first", "hai": "second", "nhi": "second", "ba": "third", "tu": "fourth",
+           "nam": "fifth", "sau": "sixth", "bay": "seventh", "tam": "eighth", "chin": "ninth", "muoi": "tenth"}
+_SUP_VI = {"cao": "highest", "thap": "lowest", "lon": "largest", "nho": "smallest", "nhieu": "most", "it": "least"}
+
+
+def _ord_en(tok: str) -> str:
+    if str(tok).isdigit():
+        n = int(tok)
+        words = ["", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"]
+        return words[n] if 1 <= n < len(words) else f"{n}th"
+    return _ORD_VI.get(tok, tok)
+
+
+def _sup_then_ord(m):
+    return _ord_en(m.group(2)) + " " + _SUP_VI[m.group(1)]
+
+
+def _hang_ord(m):
+    return _ord_en(m.group(1)) + " highest"
+
+
+def _ranks_ord(m):
+    return "ranks " + _ord_en(m.group(1))
+
+
+def _top_vi_card(m):
+    return m.group(1) + " " + _CARD[m.group(2)]
+
+
+def _vi_card_sup(m):
+    return _CARD[m.group(1)] + " " + _SUP_VI[m.group(2)]
+
+
 # (folded Vietnamese regex, English replacement). Order matters: longer phrases first.
 KEYWORDS = [
     # instructions
@@ -49,6 +82,20 @@ KEYWORDS = [
     (r"(tra loi|ghi) theo dinh dang yyyy-mm-dd", " Answer in YYYY-MM-DD format."),
     (r"phan cach (boi|bang) dau phay( va mot dau cach)?", " separated by a comma and one space"),
     (r"\bliet ke\b", " list "),
+    # operation phrasing, before the generic cardinal/superlative swaps (folded, so dấu or not)
+    (r"\b(cao|thap|lon|nho|nhieu|it)\s+nhat\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", _sup_then_ord),
+    (r"\b(cao|thap|lon|nho|nhieu|it)\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", _sup_then_ord),
+    (r"\bhang\s+(nhat|nhi|ba|tu|nam|sau|bay|tam|chin|muoi)\b", _hang_ord),
+    (r"\b(?:dung|xep)\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", _ranks_ord),
+    (r"\bhon\b(.{0,50}?)\bbao nhieu\b", r" how many more \1 "),
+    (r"\bchenh nhau\b|\bkhac nhau\b|\bkhac biet\b", " difference between "),
+    (r"\bhieu giua\b|\bhieu cua\b", " difference between "),
+    (r"\btru\b", " minus "),
+    (r"\blan luot\b", " respectively "),
+    (r"\bca hai\b", " both "),
+    (r"\bcap\s+(diem|gia tri|so lieu|ket qua)\b", r" pair of \1 "),
+    (r"\b(top|bottom)\s+(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b", _top_vi_card),
+    (r"\b(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+(cao|thap|lon|nho|nhieu|it)\s+nhat\b", _vi_card_sup),
     # 'năm' + noun (not a 4-digit year, not a function word) is the cardinal five; same for other cardinals
     (rf"\b(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+(?!(?:{_NOT_NOUN})\b)([a-z]{{2,}})\b", _card_repl),
     (r"\btrong\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+nguoi\s+(?:lon tuoi|gia)\s+nhat\b",
