@@ -10,7 +10,7 @@ import pandas as pd
 from . import conventions as C
 from .answer_format import parse_instruction
 from .subtotals import detect_subtotals
-from .textmatch import Query, tokens
+from .textmatch import Query, tok_eq, tokens
 from .xlsx_tables import strip_footnotes
 
 ORD = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8,
@@ -226,6 +226,7 @@ def _plan_with_confidence(query, tables, strict):
 def _plan_core(query: str, tables, strict=False):
     spec = parse_instruction(query)
     body = strip_instruction(query, spec)
+    body, excl_phrases = _split_exclusions(body)
     low = body.lower()
     q = Query(body)
     views = build_views(tables)
@@ -380,7 +381,7 @@ def _plan_core(query: str, tables, strict=False):
             plan["columns"] = view.date_cols()[:1]
     elif re.search(r"\bsumm?ing\b|\bsum\b|\btotal\b|\bcombined\b|\baltogether\b|\bin all\b|\bacross all\b", low) and not re.search(r"^\s*how many\b(?!.*\b(total|sum|combined)\b)", low):
         plan["op"] = "sum"
-    elif re.search(r"\bhow many\b", low):
+    elif re.search(r"\bhow many\b|^\s*count\b", low):
         conds = _conditions(body, view, cols, num_cols)
         countish = bool(conds) or plan["rows"]["leaf_only"] or any(c not in num_cols for c in cols) or (
             cols == [] and not row_paths) or (view.label_name and q.match(view.label_name)[0] > 0 and not any(c in num_cols for c in cols))
@@ -396,6 +397,19 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
+    if plan["op"] in ("values", "lookup") and (which or spec.kind == "list") and not plan["rows"]["paths"]:
+        eq = [w for w in _conditions(body, view, cols, num_cols) if w["op"] == "=="]
+        if eq:
+            # 'which X have/are tied at Y equal to N' -> every row meeting the condition
+            plan["op"], plan["rows"]["where"], args["ties"], args["over"] = "argmax", eq, "all", "rows"
+            plan["columns"] = [eq[0]["column"]]
+    if excl_phrases and plan["op"] in ("sum", "mean", "max", "min", "argmax", "argmin", "count", "rank", "topk_agg", "nth"):
+        for ph in excl_phrases:
+            xr, _ = match_rows(view, Query(ph))
+            for p, _ in xr[:1]:
+                leaf = p.split(" > ")[-1]
+                plan["rows"]["where"].append({"column": "_label", "op": "!=", "value": leaf})
+                plan["rows"]["paths"] = [x for x in plan["rows"]["paths"] if x.split(" > ")[-1] != leaf]
     if plan["op"] in ("argmax", "argmin") and args.get("over") == "rows" and \
             re.search(r"\b(increase|growth|rise|gain|change|decrease|decline|drop|fall)\b", low):
         _set_delta(plan, view, low)
@@ -410,6 +424,8 @@ def _plan_core(query: str, tables, strict=False):
         # a section named in the question ('of men', 'among women') scopes row aggregates
         secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
         hit = [x for x in secs if q.match(x)[0] == 1.0]
+        if len(hit) > 1:
+            hit = [x for x in hit if not TOTAL_LABEL.match(str(x))] or hit
         if len(hit) == 1:
             plan["rows"]["scope"] = hit[0]
     if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "topk_agg", "nth") and not plan["rows"]["where"]:
@@ -568,6 +584,20 @@ def _condition_column(window, view, cols, num_cols):
     return (c or num_cols[-1:] or [None])[0]
 
 
+_EXCL = re.compile(r"\b(?:excluding|except(?: for)?|not counting|other than|apart from|leaving out|without)\s+(?:the\s+)?([^,?.;]+?)(?=\s*(?:,|\?|\.|;|$|\bwhat\b|\bwhich\b|\bhow\b))", re.I)
+
+
+def _split_exclusions(body):
+    """'Excluding the 16 to 19 group, what ...' -> (body without the clause, ['16 to 19 group'])."""
+    out = []
+    def keep(m):
+        if re.match(r"\s*(commas?|units?|decimals?|spaces?)\b", m.group(1), re.I):
+            return m.group(0)
+        out.append(m.group(1))
+        return " "
+    return _EXCL.sub(keep, body), out
+
+
 def _label_spans(low, view):
     """Spans of the question that spell out a row label containing a number ('55 years and over'):
     such numbers name a row, they are not a filter threshold."""
@@ -591,6 +621,29 @@ def _conditions(body, view, cols, num_cols):
     low = body.lower()
     pre = "|".join(sorted(_COND_PRE, key=len, reverse=True))
     lab_spans = _label_spans(low, view)
+    used = []
+    for m in re.finditer(r"\bbetween\s+(-?\d+(?:\.\d+)?)\s+and\s+(-?\d+(?:\.\d+)?)(\s+(?:inclusive|exclusive))?", low):
+        a, b = m.group(1), m.group(2)
+        if _in_spans(m, lab_spans) or (len(a) == 4 and len(b) == 4 and a[:2] in ("19", "20") and b[:2] in ("19", "20")):
+            continue
+        w = low[max(0, m.start() - 40): m.end() + 40]
+        c = _condition_column(w, view, cols, num_cols)
+        if c:
+            ex = "exclusive" in (m.group(3) or "")
+            out += [{"column": c, "op": ">" if ex else ">=", "value": float(a)}, {"column": c, "op": "<" if ex else "<=", "value": float(b)}]
+            used.append((m.start(), m.end()))
+    for m in re.finditer(r"\b(?:equal to|equals|exactly|of exactly)\s+(-?\d+(?:\.\d+)?)", low):
+        if _in_spans(m, lab_spans):
+            continue
+        c = _condition_column(low[max(0, m.start() - 60): m.end()], view, cols, num_cols)
+        if c:
+            out.append({"column": c, "op": "==", "value": float(m.group(1))})
+    for m in re.finditer(r"\b(born|admitted|hired|joined|started|founded)\s+(after|before|in)\s+((?:19|20)\d{2})\b", low):
+        dc = [c for c in view.date_cols() if tokens(str(c)) and any(tok_eq(t, tokens(m.group(1))[0]) or t.startswith(tokens(m.group(1))[0][:4]) for t in tokens(str(c)))] or view.date_cols()
+        if dc:
+            out.append({"column": dc[0], "op": {"after": "year>", "before": "year<", "in": "year=="}[m.group(2)], "value": int(m.group(3))})
+            used.append((m.start(), m.end()))
+    lab_spans = lab_spans + used
     for m in re.finditer(rf"\b({pre})\s+(-?\d+(?:\.\d+)?)", low):
         if _in_spans(m, lab_spans):
             continue
@@ -598,10 +651,19 @@ def _conditions(body, view, cols, num_cols):
             continue
         w = low[max(0, m.start() - 40): m.end() + 20]
         c = _condition_column(w, view, cols, num_cols)
+        after = re.split(r"\band\b|\bor\b|,|\?|\.(?!\d)", low[m.end():], maxsplit=1)[0]
+        if len(tokens(after)) >= 1:
+            ac, _ = match_columns(view, Query(after))
+            ac = [x for x, _ in ac if x in num_cols]
+            if len(ac) == 1:
+                c = ac[0]  # 'more than 3000 <column words>': the column follows the number
         if c:
-            out.append({"column": c, "op": _COND_PRE[m.group(1)], "value": float(m.group(2))})
+            op = _COND_PRE[m.group(1)]
+            if re.search(r"\bnot\s+(?:be\s+|been\s+)?$", low[max(0, m.start() - 12): m.start()]):
+                op = {">": "<=", ">=": "<", "<": ">=", "<=": ">"}[op]
+            out.append({"column": c, "op": op, "value": float(m.group(2))})
     for m in re.finditer(r"(-?\d+(?:\.\d+)?)\s+(?:[a-z]+\s+)?(?:or|and)\s+(higher|more|older|above|greater|over|up|lower|less|fewer|younger|below|under)\b", low):
-        if _in_spans(m, lab_spans):
+        if _in_spans(m, lab_spans) or re.match(r"\s+than\b", low[m.end():]):
             continue
         op = ">=" if m.group(2) in ("higher", "more", "older", "above", "greater", "over", "up") else "<="
         w = low[max(0, m.start() - 40): m.end() + 10]
@@ -609,7 +671,7 @@ def _conditions(body, view, cols, num_cols):
         if c and not (len(m.group(1)) == 4 and m.group(1).startswith(("19", "20")) and c == m.group(1)):
             out.append({"column": c, "op": op, "value": float(m.group(1))})
     y = re.search(r"\b(?:in|during|of)\s+((?:19|20)\d{2})\b", body)
-    if y and view.date_cols():
+    if y and view.date_cols() and not any(w["op"].startswith("year") for w in out):
         dc = [c for c in cols if c in view.date_cols()] or view.date_cols()
         out.append({"column": dc[0], "op": "year==", "value": int(y.group(1))})
     return out

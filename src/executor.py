@@ -98,8 +98,9 @@ def _apply_where(view, idx, where):
         keep = []
         for i in idx:
             v = df.at[i, col]
-            if op == "year==":
-                ok = isinstance(v, (dt.date, dt.datetime)) and v.year == int(val)
+            if op in ("year==", "year>", "year<"):
+                ok = isinstance(v, (dt.date, dt.datetime)) and {"year==": v.year == int(val), "year>": v.year > int(val),
+                                                                "year<": v.year < int(val)}[op]
             else:
                 if v is None or (isinstance(v, float) and math.isnan(v)):
                     continue
@@ -276,6 +277,7 @@ def execute(plan, tables):
         else:
             idx = _aggregate_rows(view, plan, base)
             idx = _first_root_scope(view, idx) if r.get("scope") is None else idx
+            idx = _apply_where(view, idx, r.get("where"))
             c = cols[0] if cols else view.numeric_cols()[0]
             vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}
             vals = {i: v for i, v in vals.items() if isinstance(v, (int, float, np.floating)) and not math.isnan(v)}

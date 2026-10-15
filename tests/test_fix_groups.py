@@ -112,3 +112,39 @@ def test_biggest_increase_columns(tmp_path):
         ws.append(list(r))
     f = tmp_path / "c.xlsx"; wb.save(f)
     assert _ans(f, "Which region had the largest increase in sales from 2021 to 2022? Answer with only the region name.") == "North"
+
+
+# ---- condition parser
+@pytest.fixture
+def recs(tmp_path):
+    import datetime as dt
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["Last", "Born", "Score", "Hours"])
+    for r in [("Ka", dt.date(1970, 1, 2), 60, 10), ("Lu", dt.date(1982, 5, 6), 72, 40), ("Mo", dt.date(1990, 3, 3), 85, 20),
+              ("No", dt.date(1985, 8, 9), 90, 45), ("Op", dt.date(1979, 1, 1), 72, 5)]:
+        ws.append(list(r))
+    f = tmp_path / "r.xlsx"; wb.save(f); return f
+
+
+def test_between_inclusive(recs):
+    assert _ans(recs, "How many people have a score between 72 and 85 inclusive? Answer with only the integer.") == "3"
+
+
+def test_not_above(recs):
+    assert _ans(recs, "Count the persons whose score is not above 72. Answer with only the integer.") == "3"
+
+
+def test_born_after_and_at_least(recs):
+    assert _ans(recs, "How many people born after 1980 scored at least 80? Answer with only the integer.") == "2"
+
+
+def test_two_conditions_column_after_number(recs):
+    assert _ans(recs, "How many people have more than 15 hours and more than 70 score? Answer with only the integer.") == "3"
+
+
+def test_excluding_row(sections):
+    assert _ans(sections, "Excluding the 16 to 24 group, what is the total employed among women? Answer with only the integer.") == "40"
+
+
+def test_equal_to_ties(recs):
+    assert _ans(recs, "Which people have a score equal to 72? Answer with the last names in table order, separated by a comma and one space.") == "Lu, Op"
