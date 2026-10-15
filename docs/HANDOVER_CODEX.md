@@ -93,9 +93,9 @@ python3 run.py --data "<thư mục có queries.json>" --out "<thư mục>/submis
 
 Log tiến độ, timeout, cảnh báo LLM/executor ghi stderr. Khóa tùy chọn, không ghi vào source: `OPENROUTER_API_KEY`. Có thể đặt `COST_CAP_USD`, `QWEN_PRICE_IN_PER_M`, `QWEN_PRICE_OUT_PER_M`.
 
-Adapter nộp bài (KSP2, đang làm) chưa có nhánh trên origin và chưa có SHA. Chỉ đạo bàn giao gọi việc đó là PR #19, nhưng số #19 trên GitHub là PR tài liệu này (`ksp1/handover-codex`), không phải adapter. Đừng tìm Dockerfile trong PR #19.
+#19 trên GitHub là PR bàn giao này (`ksp1/handover-codex`), chỉ tài liệu.
 
-Việc adapter, khi được mở PR riêng, sẽ thêm Dockerfile và sáu đối số cuộc thi `--xlsx-dir --queries --output --openrouter-key --openrouter-model --openrouter-base-url`, log stderr, và giữ `--data` / `--out`. Image: `docker build --platform=linux/amd64`, rồi `docker run` với đúng sáu đối số đó.
+PR adapter (KSP2, nhánh `ksp2/submission-adapter`) thêm Dockerfile và sáu đối số cuộc thi `--xlsx-dir --queries --output --openrouter-key --openrouter-model --openrouter-base-url`, log stderr, và giữ `--data` / `--out`. Image: `docker build --platform=linux/amd64`, rồi `docker run` với đúng sáu đối số đó. Bản nộp tối nay = main `19eb267` + PR adapter. PR #18 không vào bản nộp.
 
 Gói thử dataset 2, không gọi LLM: `scripts/dry_run_dataset2.sh INPUT OUTPUT_DIR`. Zip chỉ chứa `submission.csv` ở gốc; `scripts/check_zip.sh` kiểm tra.
 
@@ -126,9 +126,33 @@ Mỗi PR:
 ## 6. PR đã merge và đang mở
 
 - **#16 đã merge**, SHA `19eb2670b42131553b87ff38a9c75b1197e7f92e`, nhánh `ksp1/blank-guards`. Guard còn lại: hình dạng đáp án (`blank:shape`) và cột xếp hạng khi nth từ hạng 2 mà thiếu `by` (`blank:nth-column`). Plan đã đủ cột đo và hướng thì guard không chạy. Guard top-N và guard lookup không phạm vi dòng chuyển backlog. Pytest trên SHA này: 146 passed, 24 skipped.
-- **#18 đang QA**, chưa merge. Nhánh `ksp1/title-row-header`, head `be4787f9b54b4e6b9b23ff1a2b97024c5da0b4bd`, đã rebase lên `19eb267`. Loader bỏ hàng caption phía trên header thật. QA xem trước trên #16: loader lộ 9 câu sai tự tin trên variant-check-1610 (4 câu đếm, 3 cặp giá trị, 1 hiệu năm, 1 tập con); 7 câu thành trống nhờ guard #16; còn 2 câu sai tự tin. Hai câu còn lại là planner yếu sau khi header thật được đọc. Đếm và tập con nằm trong phạm vi #17; cặp giá trị nằm trong vùng #16. Không mở thư mục bộ đó.
+- **#18 draft, không vào bản nộp.** Nhánh `ksp1/title-row-header`, head `6f82333464824bd8c8170eb9480fc6faf529b703`. Chi tiết QA ở mục sau.
 - **#17 đang mở**, KSP2, nhánh `ksp2/vi-filter-fix`, head `d4d83acd040285956de1d78e31ca849e165c1508`. Lọc dòng tiếng Việt: nhận ra điều kiện mà không gắn được đúng một cột và một giá trị thì để trống. Mô tả PR ghi nhánh vẫn dựa trên `cf37c01`, chưa rebase lên `19eb267`.
-- **Adapter nộp bài (KSP2)** chưa có nhánh, chưa có SHA. Số GitHub #19 là PR tài liệu này, không phải adapter. Sáu đối số và Docker nằm ở mục 3.
+- **#19** là PR bàn giao này (`ksp1/handover-codex`), chỉ tài liệu. Không nằm trong bản nộp.
+- **PR adapter** (KSP2, nhánh `ksp2/submission-adapter`) là Dockerfile và sáu đối số cuộc thi. Bản nộp tối nay = main `19eb267` + PR adapter.
+
+## PR #18 (không vào bản nộp)
+
+Nhánh `ksp1/title-row-header`, head `6f82333464824bd8c8170eb9480fc6faf529b703`, draft. Không merge, không đưa vào bản nộp tối nay.
+
+Loader bỏ dòng tiêu đề và banner năm phía trên header thật.
+
+Trên head này, `_blank_reasons` trả `blank:refined-header` trước các guard khác khi `View.title_skipped` đúng (loader gán `Table.title_skipped` nếu đã bỏ caption hoặc nâng banner năm) và plan là một trong các dạng: đếm; lọc rồi tính (`where`, `range`, `scope`, hoặc `leaf_only` cùng `sum`/`mean`/`max`/`min`, hoặc `topk_agg`); cặp giá trị (`values` đúng hai ô); hiệu số năm. Không có `title_skipped` thì guard không chạy.
+
+QA chấm một bộ đo kín. Số liệu là đúng / sai tự tin / trống:
+
+| Cây | Đúng | Sai tự tin | Trống |
+|---|---:|---:|---:|
+| main `19eb267` | 6 | 29 | 45 |
+| head `6f82333` | 12 | 36 | 32 |
+
+Tám câu trống thành sai tự tin. Sáu câu trống thành đúng. Không mất câu đúng.
+
+Sai tự tin theo dạng: đếm 4 → 8, cặp giá trị 1 → 4, lọc rồi tính 6 → 7, hiệu số năm không đổi.
+
+`blank:refined-header` không chặn được các dạng nó nhắm tới. Việc cần tìm: vì sao planner không đi qua `_blank_reasons`, hoặc bảng không mang dấu `title_skipped`.
+
+Việc tiếp cho Codex: sửa, rồi để QA chấm lại đủ 11 bộ.
 
 ## 7. Việc còn dở
 
@@ -138,7 +162,7 @@ Mỗi PR:
   - Bảng một cột: `_row_kind` coi hàng không có ô bên phải cột nhãn là section hoặc note, không có hàng data, `load_tables` trả về rỗng.
   - Hàng cuối chỉ có nhãn: không vào dataframe và không vào `notes`.
   - Bảng toàn chữ: hàng không có số bị coi là header, không có hàng data, không ra bảng.
-- Hai câu sai tự tin còn lại sau preview #18 (mục 6). Đếm, tập con và cặp giá trị là các dạng planner còn yếu; không gắn hai câu đó vào một dạng khi chưa có id. Không sửa bằng luật gắn file, id, câu, hoặc tên cột.
+- PR #18: `blank:refined-header` chưa chặn đếm, cặp giá trị, lọc rồi tính, hiệu số năm trên bộ đo kín (mục PR #18). Sửa xong thì QA chấm lại đủ 11 bộ. Không sửa bằng luật gắn file, id, câu, hoặc tên cột. PR này không vào bản nộp.
 
 ## 8. Luật repo
 
