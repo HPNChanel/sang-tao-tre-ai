@@ -38,3 +38,22 @@ def test_section_scope_argmax(sections):
 def test_numeric_row_label_not_condition(sections):
     assert _ans(sections, "Among men, the number unemployed aged 55 years and over was how many? Answer with only the integer.") == "1"
     assert _ans(sections, "How many women aged 55 years and over were employed? Answer with only the integer.") == "25"
+
+
+# ---- Vietnamese (with and without diacritics)
+def test_vi_section_and_range(sections):
+    assert _ans(sections, "Số người có việc làm của nữ từ 25 đến 54 tuổi là bao nhiêu? Chỉ trả lời bằng số nguyên.") == "15"
+    assert _ans(sections, "So nguoi that nghiep cua nam tu 55 tuoi tro len la bao nhieu? Chi tra loi bang so nguyen.") == "1"
+
+
+def test_vi_argmax_nodiac(sections):
+    assert _ans(sections, "Nhom tuoi nao cua nu co nhieu nguoi that nghiep nhat? Chi tra loi ten.") == "25 to 54 years"
+
+
+def test_vi_average_is_value(tmp_path):
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["Name", "Score"])
+    for n, s in [("A", 70), ("B", 80), ("C", 91)]:
+        ws.append([n, s])
+    f = tmp_path / "s.xlsx"; wb.save(f)
+    assert _ans(f, "Điểm trung bình của tất cả mọi người là bao nhiêu? Chỉ trả lời bằng số, làm tròn đến 2 chữ số thập phân.") == "80.33"

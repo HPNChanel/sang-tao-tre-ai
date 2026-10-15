@@ -257,6 +257,9 @@ def _plan_core(query: str, tables, strict=False):
                                             and any(o != c and _par(o) == _par(c) for o in names))]
     label_cols = [c for c, _ in cols if c == view.label_name]
     cols = [c for c, _ in cols if c != view.label_name]
+    # a 'Total' row matched only by the word 'total' is the operation, not a row, when other rows are named
+    if len(rows) > 1 and re.search(r"\btotal\b", low):
+        rows = [r for r in rows if not TOTAL_LABEL.match(r[0].split(" > ")[-1])] or rows
     row_paths = [p for p, _ in rows]
 
     plan = {"version": 1,
@@ -326,6 +329,12 @@ def _plan_core(query: str, tables, strict=False):
         g = nth.group(1)
         args["n"] = ORD.get(g) or (int(re.match(r"\d+", g).group()) if g else 1)
         _order_args(args, nth.group(2), view, cols + label_cols)
+        if args.get("return") is None and spec.instruction:
+            # 'Answer with only the last name' names the column to return
+            ic, _ = match_columns(view, Query(spec.instruction))
+            ic = [c for c, _ in ic if c not in num_cols and c != args.get("by")]
+            if ic:
+                args["return"] = ic[0]
         plan["op"] = "nth"
     elif topk and (topk.group(1) in NUMW or topk.group(1).isdigit()):
         args["k"] = NUMW.get(topk.group(1)) or int(topk.group(1))
