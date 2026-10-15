@@ -197,8 +197,20 @@ def plan_question(query: str, tables) -> dict:
     return plan_with_confidence(query, tables)[0]
 
 
-def plan_with_confidence(query: str, tables):
-    """-> (plan, confidence in [0,1], reasons). Vietnamese questions are keyword-translated first."""
+def plan_with_confidence(query: str, tables, strict=None):
+    """-> (plan, confidence in [0,1], reasons). Vietnamese questions are keyword-translated first.
+    strict=None -> conventions.strict_active() (on only with an LLM key); strict=True -> evidence accounting (42d00ea)."""
+    from . import textmatch
+    st = C.strict_active(strict)
+    old = textmatch.STRICT_POSSESSIVE
+    textmatch.STRICT_POSSESSIVE = st
+    try:
+        return _plan_with_confidence(query, tables, st)
+    finally:
+        textmatch.STRICT_POSSESSIVE = old
+
+
+def _plan_with_confidence(query, tables, strict):
     from .vi import is_vietnamese, translate
     reasons = []
     vi_factor = 1.0
@@ -206,12 +218,12 @@ def plan_with_confidence(query: str, tables):
         query, hits = translate(query)
         vi_factor = 0.9 if hits >= 2 else 0.6
         reasons.append(f"vi:{hits}")
-    plan, info = _plan_core(query, tables)
-    conf, r2 = _confidence(query, plan, info)
+    plan, info = _plan_core(query, tables, strict)
+    conf, r2 = (_confidence if strict else _confidence_legacy)(query, plan, info)
     return plan, conf * vi_factor, reasons + r2
 
 
-def _plan_core(query: str, tables):
+def _plan_core(query: str, tables, strict=False):
     spec = parse_instruction(query)
     body = strip_instruction(query, spec)
     low = body.lower()
@@ -357,7 +369,7 @@ def _plan_core(query: str, tables):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
-    if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
+    if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
         secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
         hit = [x for x in secs if q.match(x)[0] == 1.0]
@@ -729,3 +741,36 @@ def _confidence(query, plan, info):
         c = min(c, C.GUESS_CAP)
     c *= 0.9 ** sum(1 for _, h in ev if h.startswith("weak"))
     return c, guesses + [f"{s}:{h}" for s, h in ev if h.startswith("weak")]
+
+
+def _confidence_legacy(query, plan, info):
+    """b8f1082 confidence (default when no LLM key): kept verbatim for byte-identical output."""
+    from .answer_type import compatible, expected_type, plan_type
+    view, q = info["view"], info["q"]
+    reasons, c = [], 1.0
+    exp = expected_type(query, plan["format"])
+    got = plan_type(plan, view)
+    if not compatible(exp, got):
+        return 0.0, [f"type:{exp}!={got}"]
+    op, cols, rows = plan["op"], plan["columns"], plan["rows"]
+    nnum = len(view.numeric_cols())
+    nrows = len(rows["paths"])
+    if op in ("lookup", "values"):
+        if not nrows and not cols:
+            c *= 0.3; reasons.append("lookup:no-match")
+        elif not cols and nnum > 1:
+            c *= 0.6; reasons.append("lookup:no-col")
+    if op in ("compare", "diff", "ratio"):
+        if max(nrows, 1) * max(len(cols), 1) < 2 and not any(str(x).endswith("*") for x in cols):
+            c *= 0.3; reasons.append(f"{op}:<2 values")
+    if op in ("argmax", "argmin") and (plan["args"].get("over") == "rows") and not cols and nnum > 1:
+        c *= 0.5; reasons.append("arg:no-col")
+    if op in ("mean", "max", "min") and not cols and nnum > 1:
+        c *= 0.6; reasons.append("agg:no-col")
+    content = [p for t, p in q.toks if t not in OP_WORDS and not t.isdigit() or t.isdigit()]
+    cov = info.get("cols_cov") or set()
+    if content:
+        ratio = len([p for p in content if p in cov]) / len(content)
+        if ratio < 0.2:
+            c *= 0.6; reasons.append(f"coverage:{ratio:.2f}")
+    return c, reasons

@@ -29,8 +29,17 @@ def _fold(s):
     return fold(s)
 
 
+STRICT_POSSESSIVE = False  # set by planner in strict mode: only strip possessive "'s" (not "'some" quotes)
+
+
+def _poss(s):
+    if STRICT_POSSESSIVE:
+        return s.replace("'s ", " ").replace("'s,", ",").replace("'s.", ".")
+    return s.replace("'s", "")
+
+
 def tokens(s: str, keep_stop=False) -> list[str]:
-    s = _fold(str(s)).lower().replace("’", "'").replace("'s ", " ").replace("'s,", ",").replace("'s.", ".")
+    s = _poss(_fold(str(s)).lower().replace("’", "'"))
     out = []
     for t in _TOK.findall(s):
         if not keep_stop and t in STOP:
@@ -50,7 +59,7 @@ def tok_eq(a: str, b: str) -> bool:
 class Query:
     def __init__(self, text: str):
         self.text = text
-        raw = _fold(str(text)).lower().replace("’", "'").replace("'s ", " ").replace("'s,", ",").replace("'s.", ".")
+        raw = _poss(_fold(str(text)).lower().replace("’", "'"))
         self.toks = []  # (stem, position)
         for i, t in enumerate(_TOK.findall(raw)):
             if t in STOP:

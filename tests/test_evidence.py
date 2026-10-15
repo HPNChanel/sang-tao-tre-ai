@@ -2,7 +2,15 @@ import os, sys, warnings
 import openpyxl
 import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.code_planner import plan, plan_with_confidence
+from src.code_planner import plan as _plan, plan_with_confidence as _pwc
+
+
+def plan(q, t):
+    return _plan(q, t, strict=True)
+
+
+def plan_with_confidence(q, t):
+    return _pwc(q, t, strict=True)
 from src.plan_executor import execute
 from src.xlsx_tables import load_tables
 

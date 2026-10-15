@@ -37,3 +37,16 @@ PLAN_CONFIDENCE_THRESHOLD = 0.5
 POST_EXEC_TYPE_CHECK = True
 # Any plan slot (table/column/row/op/number/words) chosen by guessing caps confidence here (below threshold).
 GUESS_CAP = 0.4
+
+# Strict evidence-based confidence (42d00ea). None = auto: active only when OPENROUTER_API_KEY is set
+# (an LLM can take over); without a key the default (b8f1082) behavior is kept byte-identical.
+STRICT_CONFIDENCE = None
+
+
+def strict_active(strict=None):
+    import os
+    if strict is not None:
+        return bool(strict)
+    if STRICT_CONFIDENCE is not None:
+        return bool(STRICT_CONFIDENCE)
+    return bool(os.environ.get("OPENROUTER_API_KEY"))
