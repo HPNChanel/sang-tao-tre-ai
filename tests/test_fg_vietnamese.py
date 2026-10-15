@@ -2,7 +2,7 @@
 
 Workbooks are the public data pack: $AIPROJ_DATA_DIR, otherwise
 <data>/Public data 1, with files in xlsx_files/ or the pack root.
-A missing workbook is skipped; a wrong answer is an xfail, not a per-question rule.
+The set is skipped only when that directory is absent.
 """
 import json
 import os
@@ -21,6 +21,39 @@ _CASES = json.loads(
     (Path(__file__).resolve().parent / "fixtures" / "test_questions_vi.json").read_text(encoding="utf-8")
 )
 
+# Gaps in the general planner, not per-question rules in src.
+# fv08: "sinh năm 1997" becomes "born in 1997". year== is emitted only when
+# date_cols() is non-empty, and only after the op is already max/min/mean/sum/
+# argmax/argmin/nth. A numeric birth year is not a date column. "điểm cao nhất
+# là bao nhiêu" becomes "score highest what is the value", which takes the
+# argmax branch (a row label) rather than max of the score over filtered rows.
+# fv10: "người trẻ nhất" becomes "the youngest" and is planned as nth with
+# by="age" and order="asc". _ages uses a numeric column named age, or
+# reference_date - birth_date when both are date columns — not the latest
+# birth date. The return column is the first match that is not age/birth/born;
+# "nhập học" is not mapped onto the enrollment-date column.
+_XFAIL = {
+    "fv08": (
+        "year== only applies to date columns, and 'score highest what is the value' "
+        "is argmax of a label rather than max of the score over rows filtered by a numeric birth year"
+    ),
+    "fv10": (
+        "youngest is nth by='age' ascending (smallest age, or reference date minus birth date), "
+        "not latest birth date then the enrollment-date column"
+    ),
+}
+
+
+def _params():
+    params = []
+    for case in _CASES:
+        marks = []
+        reason = _XFAIL.get(case["id"])
+        if reason:
+            marks.append(pytest.mark.xfail(strict=False, reason=reason))
+        params.append(pytest.param(case, id=case["id"], marks=marks))
+    return params
+
 
 def _pack_dir():
     env = os.environ.get("AIPROJ_DATA_DIR")
@@ -29,12 +62,11 @@ def _pack_dir():
     return Path(__file__).resolve().parents[1] / "data" / "Public data 1"
 
 
-def _workbook(file_name):
-    root = _pack_dir()
+def _workbook(root, file_name):
     for path in (root / "xlsx_files" / file_name, root / file_name):
         if path.is_file():
             return path
-    pytest.skip(f"{file_name} is not in the public data pack")
+    raise FileNotFoundError(f"{file_name} is not in {root}")
 
 
 def _matches(got, expected):
@@ -54,11 +86,13 @@ def _matches(got, expected):
     return gn is not None and en is not None and gn == en
 
 
-@pytest.mark.parametrize("case", _CASES, ids=[c["id"] for c in _CASES])
+@pytest.mark.parametrize("case", _params())
 def test_fg_vietnamese(case):
-    path = _workbook(case["file_name"])
+    root = _pack_dir()
+    if not root.is_dir():
+        pytest.skip("public data directory is absent")
+    path = _workbook(root, case["file_name"])
     tables = load_tables(str(path))
     query = case["query"]
     got = execute(plan(query, tables, case["file_name"]), tables, query)
-    if not _matches(got, case["expected"]):
-        pytest.xfail(f"got {got!r}, expected {case['expected']!r}")
+    assert _matches(got, case["expected"]), f"got {got!r}, expected {case['expected']!r}"
