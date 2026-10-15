@@ -3,7 +3,22 @@ import openpyxl
 from openpyxl.styles import Alignment
 import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from src.code_planner import plan
+from src.plan_executor import execute
 from src.xlsx_tables import load_tables, summarize, to_number, clean_text, strip_footnotes
+
+
+def _cols(t):
+    return [c for c in t.df.columns if not str(c).startswith("_")]
+
+
+def _values(t):
+    return [c for c in _cols(t) if c != t.label_col]
+
+
+def _ask(tables, q):
+    pl = plan(q, tables)
+    return execute(pl, tables, q), pl
 
 
 def _save(wb, tmp_path, name="t.xlsx"):
@@ -88,6 +103,127 @@ def test_multiple_tables_one_sheet(tmp_path):
     assert len(ts) == 2
     assert "Fiscal | 2024" in ts[0].df.columns and "Calendar | 2023" in ts[1].df.columns
     assert ts[1].df["Calendar | 2023"].tolist() == [9]
+
+
+def test_title_row_flat_header(tmp_path):
+    """A caption above a flat header is not a header, and the header is not data."""
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws["A1"] = "Bảng 3. Doanh thu theo năm"
+    ws["A2"] = "Chỉ tiêu"; ws["B2"] = "Tổng"; ws["C2"] = 2019; ws["D2"] = 2020
+    ws["A3"] = "Bán lẻ"; ws["B3"] = 100; ws["C3"] = 10; ws["D3"] = 20
+    ws["A4"] = "Bán sỉ"; ws["B4"] = 40; ws["C4"] = 5; ws["D4"] = 7
+    t = load_tables(_save(wb, tmp_path, "a.xlsx"))[0]
+    assert "Bảng 3. Doanh thu theo năm" in t.title
+    assert _cols(t) == ["Chỉ tiêu", "Tổng", "2019", "2020"]
+    assert t.df["Chỉ tiêu"].tolist() == ["Bán lẻ", "Bán sỉ"]
+    assert t.df["2020"].tolist() == [20, 7]
+    q = "What is the sum of column 2020? Answer with only the integer."
+    assert _ask([t], q)[0] == "27"
+    q = "Which two rows have the highest 2020? Answer with the names separated by a comma and one space."
+    assert _ask([t], q)[0] == "Bán lẻ, Bán sỉ"
+
+    # Year banner with no corner label: every year stays a value column.
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws["A1"] = "Bảng 3. Doanh thu theo năm"
+    ws["A2"] = 2019; ws["B2"] = 2020; ws["C2"] = 2021
+    ws["A3"] = 10; ws["B3"] = 20; ws["C3"] = 30
+    ws["A4"] = 5; ws["B4"] = 7; ws["C4"] = 12
+    t = load_tables(_save(wb, tmp_path, "a2.xlsx"))[0]
+    assert "Bảng 3" in t.title
+    assert _values(t) == ["2019", "2020", "2021"]
+    assert len(t.df) == 2
+    assert t.df["2019"].tolist() == [10, 5]
+    assert t.df["2020"].tolist() == [20, 7]
+    assert _ask([t], "What is the sum of column 2020? Answer with only the integer.")[0] == "27"
+
+    # A one-cell caption that is not in the label column is still a caption.
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws["B1"] = "Bảng 3. Doanh thu theo năm"
+    ws["A2"] = "Chỉ tiêu"; ws["B2"] = 2019; ws["C2"] = 2020; ws["D2"] = 2021
+    ws["A3"] = "Bán lẻ"; ws["B3"] = 10; ws["C3"] = 20; ws["D3"] = 30
+    ws["A4"] = "Bán sỉ"; ws["B4"] = 5; ws["C4"] = 7; ws["D4"] = 12
+    t = load_tables(_save(wb, tmp_path, "a3.xlsx"))[0]
+    assert "Bảng 3. Doanh thu theo năm" in t.title
+    assert _cols(t) == ["Chỉ tiêu", "2019", "2020", "2021"]
+    assert _ask([t], "What is the sum of column 2019? Answer with only the integer.")[0] == "15"
+
+
+def test_title_row_two_level_header(tmp_path):
+    """Title plus a parent row plus a year row. Years stay under the parent, not in the data."""
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws["A1"] = "Bảng 3. Doanh thu theo năm"
+    ws["A2"] = "Chỉ tiêu"
+    ws["B2"] = "Doanh thu"; ws.merge_cells("B2:C2")
+    ws["D2"] = "Chi phí"; ws.merge_cells("D2:E2")
+    ws["A3"] = "Năm"; ws["B3"] = 2019; ws["C3"] = 2020; ws["D3"] = 2019; ws["E3"] = 2020
+    ws["A4"] = "Bán lẻ"; ws["B4"] = 10; ws["C4"] = 20; ws["D4"] = 3; ws["E4"] = 4
+    ws["A5"] = "Bán sỉ"; ws["B5"] = 5; ws["C5"] = 7; ws["D5"] = 1; ws["E5"] = 2
+    t = load_tables(_save(wb, tmp_path))[0]
+    assert "Bảng 3" in t.title
+    assert _cols(t) == ["Chỉ tiêu", "Doanh thu | 2019", "Doanh thu | 2020", "Chi phí | 2019", "Chi phí | 2020"]
+    assert t.df["Chỉ tiêu"].tolist() == ["Bán lẻ", "Bán sỉ"]
+    assert t.df["Doanh thu | 2020"].tolist() == [20, 7]
+    got, pl = _ask([t], "What is the sum of Doanh thu 2020? Answer with only the integer.")
+    assert pl["columns"] == ["Doanh thu | 2020"] and got == "27"
+    got, pl = _ask([t], "What is the sum of Doanh thu? Answer with only the integer.")
+    assert pl["columns"] == ["Doanh thu | *"] and got == "42"
+    got, pl = _ask([t], "Which two rows have the highest Doanh thu 2020? Answer with the names separated by a comma and one space.")
+    assert got == "Bán lẻ, Bán sỉ"
+
+
+def test_two_title_rows_blank_and_trailing_note(tmp_path):
+    """Two captions, a blank row, then the header. A trailing source line is a note."""
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws["A1"] = "Bảng 3. Doanh thu theo năm"
+    ws["D2"] = "Đơn vị tính: tỷ đồng"
+    ws["A4"] = "Chỉ tiêu"; ws["B4"] = 2019; ws["C4"] = 2020; ws["D4"] = 2021
+    ws["A5"] = "Bán lẻ"; ws["B5"] = 10; ws["C5"] = 20; ws["D5"] = 30
+    ws["A6"] = "Bán sỉ"; ws["B6"] = 5; ws["C6"] = 7; ws["D6"] = 12
+    ws["A8"] = "Nguồn: Tổng cục Thống kê"
+    t = load_tables(_save(wb, tmp_path))[0]
+    assert "Bảng 3. Doanh thu theo năm" in t.title and "Đơn vị tính: tỷ đồng" in t.title
+    assert _cols(t) == ["Chỉ tiêu", "2019", "2020", "2021"]
+    assert t.df["Chỉ tiêu"].tolist() == ["Bán lẻ", "Bán sỉ"]
+    assert any("Nguồn" in n for n in t.notes)
+    assert _ask([t], "What is the sum of column 2021? Answer with only the integer.")[0] == "42"
+    assert _ask([t], "Which two rows have the highest 2020? Answer with the names separated by a comma and one space.")[0] == "Bán lẻ, Bán sỉ"
+
+
+def test_flat_header_without_title(tmp_path):
+    """A flat one-row header is unchanged when nothing sits above it."""
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws["A1"] = "Name"; ws["B1"] = "Val"
+    ws["A2"] = "Total"; ws["B2"] = 3
+    for n, v in (("  A", 1), ("  B", 2)):
+        ws.append([n, v])
+    t = load_tables(_save(wb, tmp_path))[0]
+    assert t.title == ""
+    assert t.header_rows == [1]
+    assert _cols(t) == ["Name", "Val"]
+    assert t.df["_row_path"].tolist() == ["Total", "Total > A", "Total > B"]
+    assert t.df["Val"].tolist() == [3, 1, 2]
+    assert _ask([t], "What is the sum of Val? Answer with only the integer.")[0] == "3"
+    assert _ask([t], "Which name has the highest Val? Answer with only the name.")[0] == "B"
+
+
+def test_multilevel_header_without_title(tmp_path):
+    """Parent | year headers, including the wildcard over the children, with no caption above."""
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws["A1"] = "Item"; ws.merge_cells("A1:A2")
+    ws["B1"] = "Revenue"; ws.merge_cells("B1:C1")
+    ws["B2"] = 2019; ws["C2"] = 2020
+    ws["A3"] = "Sales"; ws["B3"] = 10; ws["C3"] = 20
+    ws["A4"] = "Services"; ws["B4"] = 5; ws["C4"] = 7
+    t = load_tables(_save(wb, tmp_path))[0]
+    assert t.title == ""
+    assert t.header_rows == [1, 2]
+    assert _cols(t) == ["Item", "Revenue | 2019", "Revenue | 2020"]
+    assert t.df["Item"].tolist() == ["Sales", "Services"]
+    got, pl = _ask([t], "What is the sum of Revenue 2020? Answer with only the integer.")
+    assert pl["columns"] == ["Revenue | 2020"] and got == "27"
+    got, pl = _ask([t], "What is the sum of Revenue? Answer with only the integer.")
+    assert pl["columns"] == ["Revenue | *"] and got == "42"
+    assert _ask([t], "Which item has the highest Revenue 2020? Answer with only the name.")[0] == "Sales"
 
 
 def test_record_table_with_dates(tmp_path):

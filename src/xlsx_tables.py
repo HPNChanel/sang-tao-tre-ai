@@ -1,12 +1,15 @@
 """Parse messy statistical .xlsx sheets into clean pandas tables.
 
 General heuristics only (no file/question special cases):
-- title rows: single text cell / full-width merge above the header block
+- title rows: a single non-empty cell above the real header (any column), or a
+  full-width merge; a one-value row that covers every data column stays a header
+  and is moved to `meta` instead of polluting every column name
 - header rows: rows above data whose label column is empty or vertically merged,
-  or all-text rows; merged cells are forward-filled and flattened 'Parent | Child'
-- a header row whose single value spans every data column (e.g. a year, a unit)
-  is moved to `meta` instead of polluting every column name
+  or all-text rows; a row of years (text allowed beside them, no measurements)
+  directly above measurement rows, including under a parent header; merged cells
+  are forward-filled and flattened 'Parent | Child'
 - data rows: label + values; label-only rows are section rows -> `_row_path`
+- a label-only row after the measurements, with no further data, is a note
 - indentation (alignment.indent or leading spaces) builds the hierarchy
 - a new header block after data starts a new table (multiple tables per sheet)
 - notes/footnotes after the data go to `notes`
@@ -215,6 +218,134 @@ def _label_col(g, ncols):
     return best
 
 
+def _is_quantity(v):
+    """A measurement. Years are column banners, not measurements."""
+    return to_number(v) is not None and not _is_year(v)
+
+
+def _filled_cols(row, ncols):
+    return [c for c in range(ncols) if not _empty(row[c])]
+
+
+def _neighbor_filled(g, kinds, r, ncols, step):
+    k = r + step
+    while 0 <= k < len(kinds):
+        if kinds[k] != "blank" and _filled_cols(g[k], ncols):
+            return k
+        k += step
+    return None
+
+
+def _caption_kind(text):
+    s = clean_text(text)
+    if _NOTE_RE.match(s) or len(s) > 90:
+        return "note"
+    return "section"
+
+
+def _preamble(kinds, r):
+    """True when r belongs to the rows above a table's data (a blank row starts a new table)."""
+    saw_blank = False
+    for k in range(r - 1, -1, -1):
+        if kinds[k] == "blank":
+            saw_blank = True
+            continue
+        if kinds[k] == "data":
+            return saw_blank
+    return True
+
+
+def _following_value_cols(g, kinds, r, ncols, lc):
+    cols = set()
+    seen = False
+    for k in range(r + 1, len(g)):
+        if kinds[k] == "blank":
+            if seen:
+                break
+            continue
+        if kinds[k] in ("section", "note") and not seen:
+            continue
+        if kinds[k] not in ("header", "data"):
+            break
+        seen = True
+        for c in range(ncols):
+            if c != lc and not _empty(g[k][c]):
+                cols.add(c)
+        if kinds[k] == "data":
+            break
+    return cols
+
+
+def _banner_header(g, kinds, r, ncols):
+    """Year/text row directly above measurements: a header, not the first data row.
+
+    The row above must not already be a year header (those following rows are data).
+    """
+    if kinds[r] != "data":
+        return False
+    nonempty = _filled_cols(g[r], ncols)
+    years = []
+    for c in nonempty:
+        v = g[r][c]
+        if _is_quantity(v):
+            return False
+        if _is_year(v):
+            years.append(c)
+        elif not isinstance(v, str):
+            return False
+    if len(years) < 2:
+        return False
+    prev = _neighbor_filled(g, kinds, r, ncols, -1)
+    if prev is not None and kinds[prev] == "data":
+        return False
+    if prev is not None and kinds[prev] == "header" and sum(1 for c in years if _is_year(g[prev][c])) >= 2:
+        return False
+    nxt = _neighbor_filled(g, kinds, r, ncols, 1)
+    if nxt is None:
+        return False
+    hit = sum(1 for c in years if _is_quantity(g[nxt][c]))
+    return hit >= 2 and hit * 2 >= len(years)
+
+
+def _refine_row_kinds(g, kinds, ncols, lc):
+    """Captions above the real header are not headers; a year banner above measurements is.
+
+    One non-empty cell above another header is a caption, unless that cell is the only
+    data column (it is the header of a one-column table, or a parent of that column).
+    """
+    kinds = list(kinds)
+    for r in range(len(kinds)):
+        if _banner_header(g, kinds, r, ncols):
+            kinds[r] = "header"
+    for r in range(len(kinds)):
+        if kinds[r] != "header" or not _preamble(kinds, r):
+            continue
+        nonempty = _filled_cols(g[r], ncols)
+        if len(nonempty) != 1:
+            continue
+        nxt = _neighbor_filled(g, kinds, r, ncols, 1)
+        if nxt is None or kinds[nxt] != "header":
+            continue
+        cols = _following_value_cols(g, kinds, r, ncols, lc)
+        if cols and all(not _empty(g[r][c]) for c in cols) and len({clean_text(g[r][c]) for c in cols}) == 1:
+            continue
+        kinds[r] = _caption_kind(g[r][nonempty[0]])
+    return kinds
+
+
+def _data_before_next_header(kinds, r):
+    for k in kinds[r + 1:]:
+        if k == "data":
+            return True
+        if k == "header":
+            return False
+    return False
+
+
+def _has_text_label(g, rows, lc):
+    return any(isinstance(g[b][lc], str) and str(g[b][lc]).strip() for b in rows)
+
+
 def _split_tables(sheet, g, indent, vmerge, hspan):
     nrows = len(g)
     ncols = max((len(r) for r in g), default=0)
@@ -225,7 +356,7 @@ def _split_tables(sheet, g, indent, vmerge, hspan):
         return []
     # pure index column like 'Indent Level' containing small ints: detect, use as indent
     lc = _label_col(g, ncols)
-    kinds = [_row_kind(g, r, vmerge, ncols, lc) for r in range(nrows)]
+    kinds = _refine_row_kinds(g, [_row_kind(g, r, vmerge, ncols, lc) for r in range(nrows)], ncols, lc)
     # first header block: rows before first data that are 'header' or the row
     # immediately preceding data with all-text values
     tables = []
@@ -251,7 +382,8 @@ def _split_tables(sheet, g, indent, vmerge, hspan):
         while r < nrows and kinds[r] in ("data", "section", "blank", "note"):
             if kinds[r] == "section":
                 nxt = next((k for k in kinds[r + 1:] if k != "blank"), None)
-                if nxt == "header":
+                # a new header starts another table; a label with no data under it is a trailing note
+                if nxt == "header" or not _data_before_next_header(kinds, r):
                     break
             if kinds[r] == "note":
                 # a note followed by more data is inline; otherwise stop
@@ -281,7 +413,9 @@ def _starts_header(kinds, r):
 
 def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
     data_rows = [b for b in body if any(not _empty(g[b][c]) for c in range(ncols))]
-    data_cols = [c for c in range(ncols) if c != lc and any(not _empty(g[b][c]) for b in data_rows)]
+    # no text labels anywhere: the corner cell is a value (a year), not a row name
+    lc_is_value = not _has_text_label(g, list(hdr) + list(data_rows), lc)
+    data_cols = [c for c in range(ncols) if (lc_is_value or c != lc) and any(not _empty(g[b][c]) for b in data_rows)]
     meta, used_hdr = [], []
     for h in hdr:
         vals = [g[h][c] for c in data_cols]
@@ -290,7 +424,19 @@ def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
             meta.append(distinct.pop())
         else:
             used_hdr.append(h)
-    label_name = " | ".join(dict.fromkeys(clean_text(g[h][lc]) for h in hdr if not _empty(g[h][lc]))) or "label"
+    if lc_is_value:
+        label_name = "label"
+    else:
+        # the corner of a year banner is not a second level of the row label
+        # when another header row already names that column
+        def _year_banner(h):
+            vals = [g[h][c] for c in data_cols if not _empty(g[h][c])]
+            return len(vals) >= 2 and all(_is_year(v) for v in vals)
+
+        parts = [(h, clean_text(g[h][lc])) for h in hdr if not _empty(g[h][lc])]
+        if any(not _year_banner(h) for h, _ in parts):
+            parts = [(h, t) for h, t in parts if not _year_banner(h)]
+        label_name = " | ".join(dict.fromkeys(t for _, t in parts)) or "label"
     names = []
     for c in data_cols:
         parts = []
@@ -315,10 +461,12 @@ def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
     recs = []
     base_ind = min((indent[b][lc] for b in data_rows), default=0)
     for b in data_rows:
-        raw = g[b][lc]
-        label_raw = clean_text(raw)
-        label = strip_footnotes(label_raw)
         has_values = any(not _empty(g[b][c]) for c in data_cols)
+        if lc_is_value:
+            label = ""
+        else:
+            raw = g[b][lc]
+            label = strip_footnotes(clean_text(raw))
         lvl = indent[b][lc] - base_ind
         if not has_values:
             # section heading: becomes top-level parent
