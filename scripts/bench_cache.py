@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -175,6 +177,20 @@ def summarize(label, stats, query_count, estimated=False):
     }
 
 
+def measure_parse(data: Path) -> float:
+    """Wall time of one in-process load of the pack's workbook."""
+    sys.path.insert(0, str(ROOT))
+    from src.xlsx_tables import load_tables
+
+    path = data / "xlsx_files" / XLSX_NAME
+    started = time.perf_counter()
+    tables = load_tables(str(path))
+    elapsed = time.perf_counter() - started
+    del tables
+    gc.collect()
+    return elapsed
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--queries", type=int, default=300)
@@ -188,8 +204,10 @@ def main(argv=None):
     write_pack(full)
     rows = queries(args.queries)
     write_queries(full, rows)
+    parse_s = measure_parse(full)
 
     print(f"work={work}", flush=True)
+    print(f"largest file parse_s={parse_s:.3f} file={XLSX_NAME}", flush=True)
     print(f"cached full n={args.queries} timeout=20s", flush=True)
     cached_full = run_mode(full, work / "full-cached.csv", [])
     print(
@@ -201,8 +219,13 @@ def main(argv=None):
     uncached_full = run_mode(full, work / "full-uncached.csv", ["--no-cache"])
     same = cached_full["csv"].read_bytes() == uncached_full["csv"].read_bytes()
     print(f"full csv identical={same}", flush=True)
-    if not same:
-        raise SystemExit("cached and uncached CSVs differ")
+    print(
+        "uncached CSV may differ from cached when a 20s child is killed during "
+        "parse or answer; those answers are blank.",
+        flush=True,
+    )
+    print(f"cached blank ids: {cached_full['blanks'] or 'none'}", flush=True)
+    print(f"uncached blank ids: {uncached_full['blanks'] or 'none'}", flush=True)
 
     cached = summarize("cached", cached_full, args.queries)
     uncached = summarize("uncached", uncached_full, args.queries)
@@ -222,7 +245,10 @@ def main(argv=None):
     print()
     print(f"templates: {fast} sheet-level, {slow} record-level (every 10th). answer timeout=20s, preload=120s")
     print("peak RSS is the greater of the parent ru_maxrss and the sampled fork-child VmHWM.")
-    print(f"full CSV diff: identical ({args.queries} rows)")
+    print(f"full CSV identical={same}. Uncached may differ where the 20s child was killed.")
+    print(f"largest file parse_s={parse_s:.3f} file={XLSX_NAME}")
+    print(f"cached blank ids: {cached_full['blanks'] or 'none'}")
+    print(f"uncached blank ids: {uncached_full['blanks'] or 'none'}")
     print(f"cached timed-out: {cached['timed_out'] or 'none'}")
     print(f"uncached timed-out: {uncached['timed_out'] or 'none'}")
     print()

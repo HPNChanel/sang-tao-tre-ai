@@ -14,6 +14,7 @@ _MISS = object()
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_PRELOAD_S = 120.0
 DEFAULT_RSS_MB = 640
+_KILL_GRACE_S = 0.5
 
 
 class _QueryTimedOut(BaseException):
@@ -29,6 +30,7 @@ class _RunState:
         self.flush_every = max(int(flush_every), 1)
         self.pending = 0
         self.child = None
+        self.proc = None
         self.flushing = False
         self.timed_out = []
         self.deadline_skip = []
@@ -386,12 +388,56 @@ def _note_child_hwm(pid):
         _RUN.child_hwm_kb = kb
 
 
-def _run_forked(fn, timeout):
-    """Run fn in a forked child and SIGKILL it when timeout fires.
+def _stop_process(proc):
+    """SIGTERM, a short grace, then SIGKILL. Reap the child either way."""
+    if proc is None:
+        return
+    try:
+        alive = proc.is_alive()
+    except Exception:
+        alive = False
+    if alive:
+        _note_child_hwm(proc.pid)
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        proc.join(timeout=_KILL_GRACE_S)
+        try:
+            alive = proc.is_alive()
+        except Exception:
+            alive = False
+        if alive:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            proc.join(timeout=2)
+            try:
+                if proc.is_alive():
+                    _kill_pid(proc.pid)
+                    proc.join(timeout=1)
+            except Exception:
+                pass
+    else:
+        proc.join(timeout=1)
+    if getattr(proc, "pid", None) and _RUN.child == proc.pid:
+        _RUN.child = None
+    if _RUN.proc is proc:
+        _RUN.proc = None
+    try:
+        if not proc.is_alive():
+            proc.close()
+    except Exception:
+        pass
 
-    The child is started with multiprocessing's fork context, so it shares
-    the parent's cache via copy-on-write. fn's return value is pickled back;
-    callers must keep that value small (an answer, or True after a file dump).
+
+def _run_forked(fn, timeout):
+    """Run fn in a forked child. The parent kills that child when time is up.
+
+    The clock starts as the child is created. SIGTERM is sent at the deadline,
+    then SIGKILL after a short grace. The child shares the parent's memory via
+    fork. fn's return value is pickled back and must stay small.
     timeout None runs fn here. timeout <= 0 means the budget is already spent.
     """
     global _PENDING
@@ -405,6 +451,7 @@ def _run_forked(fn, timeout):
     parent_conn, child_conn = ctx.Pipe(duplex=False)
     _PENDING = fn
     proc = ctx.Process(target=_fork_target, args=(child_conn,))
+    deadline = time.monotonic() + float(timeout)
     try:
         proc.start()
     except Exception:
@@ -416,8 +463,8 @@ def _run_forked(fn, timeout):
     _PENDING = None
     child_conn.close()
     _RUN.child = proc.pid
+    _RUN.proc = proc
     try:
-        deadline = time.monotonic() + float(timeout)
         message = None
         while message is None:
             _note_child_hwm(proc.pid)
@@ -439,20 +486,7 @@ def _run_forked(fn, timeout):
             parent_conn.close()
         except Exception:
             pass
-        if proc.is_alive():
-            _note_child_hwm(proc.pid)
-            proc.kill()
-        proc.join(timeout=5)
-        if proc.is_alive():
-            _kill_pid(proc.pid)
-            proc.join(timeout=1)
-        if _RUN.child == proc.pid:
-            _RUN.child = None
-        if not proc.is_alive():
-            try:
-                proc.close()
-            except Exception:
-                pass
+        _stop_process(proc)
 
 
 def _dump_tables(path, dest):
@@ -509,10 +543,48 @@ def _cached_tables(cache, path, use_fork, preload_timeout):
     return tables
 
 
-def _uncached_rule(path, query, fname):
-    """Load and answer inside one killable child. Nothing is stored."""
+def _uncached_rule(path, query, fname, dest=None):
+    """Load and answer inside one child. The parent's limit covers both.
+
+    dest, when set, receives a pickle of the tables before the answer is
+    computed, still inside this child. The parent stores that pickle only
+    after the child returns.
+    """
     tables = load_tables(str(path))
+    if dest:
+        partial = dest + ".writing"
+        with open(partial, "wb") as handle:
+            pickle.dump(tables, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(partial, dest)
     return _rule_answer(query, tables, fname)
+
+
+def _fork_miss(path, query, fname, limit, cache, allow_store):
+    """Parse and answer in one child. limit applies to that whole child."""
+    dest = None
+    partial = None
+    if allow_store and cache.enabled:
+        fd, dest = tempfile.mkstemp(prefix="ds2-tables-", suffix=".pkl")
+        os.close(fd)
+        partial = dest + ".writing"
+    try:
+        ans = _run_forked(lambda: _uncached_rule(path, query, fname, dest), limit)
+        if dest and os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            with open(dest, "rb") as handle:
+                tables = pickle.load(handle)
+            cache.make_room()
+            cache.store(path, tables)
+        return ans
+    finally:
+        for name in (dest, partial):
+            if not name:
+                continue
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
 
 
 def _answer_rule(query, tables, fname, limit, use_fork, started):
@@ -574,11 +646,11 @@ def _note_timeout(qid):
 def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeout=None, whole_query=False):
     """Answer one query.
 
-    Parsing is not charged to the answer timeout. With fork, a stuck answer
-    is killed and the answer is blank. Without fork the call runs to
-    completion; the run loop is what skips later queries past the deadline.
-    whole_query is the path for a workbook whose preload was killed: load and
-    answer share one killable child under the answer timeout, and nothing is cached.
+    With fork, a cache hit runs only the answer in a child, and the parent
+    kills that child at the query limit. A cache miss, --no-cache, or a file
+    that failed preload parses inside that same child, so parsing counts
+    toward the same limit. Without fork a query that has started runs to
+    completion; the run loop skips later queries past the deadline.
     """
     if use_fork is None:
         use_fork = _want_fork(False)
@@ -595,8 +667,20 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
     tables = None
     started = time.monotonic()
     try:
-        if whole_query and use_fork and limit is not None:
-            ans = _run_forked(lambda: _uncached_rule(path, q["query"], fname), limit)
+        hit = _MISS if whole_query or not cache.enabled else cache.lookup(path)
+        if use_fork and limit is not None and hit is _MISS:
+            ans = _fork_miss(
+                path, q["query"], fname, limit, cache,
+                allow_store=cache.enabled and not whole_query,
+            )
+            if cache.enabled and not whole_query:
+                hit = cache.lookup(path)
+                if hit is not _MISS:
+                    tables = hit
+        elif hit is not _MISS:
+            tables = hit
+            started = time.monotonic()
+            ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
         else:
             tables = _cached_tables(cache, path, use_fork, preload_timeout)
             started = time.monotonic()
@@ -646,9 +730,14 @@ def _flush_submission():
 
 
 def _on_sigterm(signum, frame):
+    proc = _RUN.proc
+    _RUN.proc = None
     pid = _RUN.child
     _RUN.child = None
-    _kill_pid(pid)
+    if proc is not None:
+        _stop_process(proc)
+    else:
+        _kill_pid(pid)
     _flush_submission()
     raise SystemExit(128 + int(signum))
 
@@ -693,11 +782,30 @@ def _preload(cache, data, byid, execution, use_fork, preload_timeout):
             cache.store(path, tables)
         except _QueryTimedOut:
             skipped.add(key)
-            print(f"[preload-timeout] {path.name}", file=sys.stderr)
+            affected = _affected_queries(data, byid, execution, key)
+            print(
+                f"[preload-timeout] {path.name}: not cached; "
+                f"{affected} queries will parse inside the answer timeout and may be blank",
+                file=sys.stderr,
+            )
         except Exception as exc:
             skipped.add(key)
-            print(f"[preload-failed] {path.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            affected = _affected_queries(data, byid, execution, key)
+            print(
+                f"[preload-failed] {path.name}: {type(exc).__name__}: {exc}; "
+                f"not cached; {affected} queries will parse inside the answer timeout and may be blank",
+                file=sys.stderr,
+            )
     return skipped
+
+
+def _affected_queries(data, byid, execution, key):
+    count = 0
+    for qid in execution:
+        path = _resolve_workbook(data, byid[qid].get("file_name", ""))
+        if _path_key(path) == key:
+            count += 1
+    return count
 
 
 def main(argv=None):
@@ -706,9 +814,10 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--log", default=None, help="JSONL log (default: <out dir>/run_log.jsonl)")
     ap.add_argument("--query-timeout", type=float, default=None,
-                    help="Seconds for one answer when fork is available "
-                         "(default 20, or DS2_QUERY_TIMEOUT). 0 disables. "
-                         "Without fork this does not interrupt a running query; "
+                    help="Seconds for one forked child (default 20, or DS2_QUERY_TIMEOUT). "
+                         "The parent sends SIGTERM at this limit, then SIGKILL. "
+                         "A cache hit times only the answer. A cache miss times parse and answer together. "
+                         "0 disables. Without fork this does not interrupt a running query; "
                          "queries stop being started after timeout times the query count.")
     ap.add_argument("--preload-timeout", type=float, default=None,
                     help="Seconds to parse one workbook into the cache "
@@ -717,7 +826,9 @@ def main(argv=None):
                          "Without fork a parse runs to completion.")
     ap.add_argument("--cache-rss-mb", type=float, default=None,
                     help="RSS / frame budget in MiB (default 640, or DS2_CACHE_RSS_MB).")
-    ap.add_argument("--no-cache", action="store_true", help="Parse each workbook on every query.")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="Do not keep parsed tables. Each query parses and answers "
+                         "in one child under the query timeout.")
     ap.add_argument("--in-process", action="store_true",
                     help="Do not fork. Same path as Windows or DS2_START_METHOD=spawn. "
                          "Also enabled by DS2_IN_PROCESS=1.")

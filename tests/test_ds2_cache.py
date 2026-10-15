@@ -228,7 +228,25 @@ def test_slow_parse_is_outside_the_answer_timeout(tmp_path, monkeypatch):
     assert "a" not in run._RUN.timed_out
 
 
-def test_preload_timeout_skips_cache_and_bounds_the_query(tmp_path, monkeypatch):
+def _worker_children():
+    """Child processes of this pid, ignoring the multiprocessing tracker."""
+    me = os.getpid()
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+            cmd = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if ppid == me and "resource_tracker" not in cmd:
+            found.append(int(entry.name))
+    return found
+
+
+def test_preload_timeout_skips_cache_and_bounds_the_query(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     data = tmp_path / "pack"
     _workbook(data / "xlsx_files" / "book.xlsx")
@@ -236,6 +254,7 @@ def test_preload_timeout_skips_cache_and_bounds_the_query(tmp_path, monkeypatch)
     (data / "queries.json").write_text(json.dumps([
         _q("fast", file_name="book.xlsx"),
         _q("slow", file_name="slow.xlsx"),
+        _q("slow2", file_name="slow.xlsx"),
     ]), encoding="utf-8")
     log = tmp_path / "loads.txt"
     real = run.load_tables
@@ -259,8 +278,11 @@ def test_preload_timeout_skips_cache_and_bounds_the_query(tmp_path, monkeypatch)
     rows = {row[0]: row[1] for row in _rows(out)[1:]}
     assert rows["fast"] == "2"
     assert rows["slow"] == ""
+    assert rows["slow2"] == ""
     assert elapsed < 8
-    assert run._RUN.timed_out == ["slow"]
+    assert run._RUN.timed_out == ["slow", "slow2"]
+    err = capsys.readouterr().err
+    assert "[preload-timeout] slow.xlsx: not cached; 2 queries will parse inside the answer timeout and may be blank" in err
     names = _load_names(log)
     assert names.count("book.xlsx") == 1
     assert names.count("slow.xlsx") >= 1
@@ -295,6 +317,42 @@ def test_hanging_query_is_killed_and_later_answer_is_correct(tmp_path, monkeypat
     assert run._RUN.timed_out == ["slow"]
     assert after < before + 200 * 1024
     assert after < 2 * 1024 * 1024
+
+
+def test_fork_hang_cut_off_near_twenty_seconds(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("DS2_IN_PROCESS", raising=False)
+    monkeypatch.delenv("DS2_START_METHOD", raising=False)
+    assert run._want_fork(False) is True
+    data = _pack(
+        tmp_path,
+        [_q("hung", "SLEEP please"), _q("next"), _q("after")],
+        order=["hung", "next", "after"],
+    )
+    real_rule = run._rule_answer
+
+    def rule(query, tables, fname, strict=None):
+        if "SLEEP" in query:
+            time.sleep(120)
+        return real_rule(query, tables, fname, strict)
+
+    monkeypatch.setattr(run, "_rule_answer", rule)
+    before = set(_worker_children())
+    out = tmp_path / "submission.csv"
+    t0 = time.perf_counter()
+    assert run.main(["--data", str(data), "--out", str(out), "--query-timeout", "20"]) == 0
+    elapsed = time.perf_counter() - t0
+    rows = _rows(out)
+    assert [row[0] for row in rows[1:]] == ["hung", "next", "after"]
+    assert rows[1][1] == ""
+    assert rows[2][1] == "2"
+    assert rows[3][1] == "2"
+    assert 18 <= elapsed < 25
+    assert run._RUN.timed_out == ["hung"]
+    assert run._RUN.child is None
+    assert run._RUN.proc is None
+    assert set(_worker_children()) - before == set()
+    assert __import__("multiprocessing").active_children() == []
 
 
 def test_spawn_and_in_process_do_not_fork(tmp_path, monkeypatch):
