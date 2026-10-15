@@ -38,15 +38,15 @@ POST_EXEC_TYPE_CHECK = True
 # Any plan slot (table/column/row/op/number/words) chosen by guessing caps confidence here (below threshold).
 GUESS_CAP = 0.4
 
-# Strict evidence-based confidence (42d00ea). None = auto: active only when OPENROUTER_API_KEY is set
-# (an LLM can take over); without a key the default (b8f1082) behavior is kept byte-identical.
+# Strict evidence mode is opt-in (strict=True, or STRICT_CONFIDENCE set). It must not follow
+# OPENROUTER_API_KEY: the key only enables the LLM fallback. The rule answer stays the same
+# whether or not that path is configured (b8f1082 behavior by default).
 STRICT_CONFIDENCE = None
 
 
 def strict_active(strict=None):
-    import os
     if strict is not None:
         return bool(strict)
     if STRICT_CONFIDENCE is not None:
         return bool(STRICT_CONFIDENCE)
-    return bool(os.getenv("OPENROUTER_API_KEY"))
+    return False

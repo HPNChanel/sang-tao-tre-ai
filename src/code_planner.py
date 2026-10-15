@@ -16,7 +16,7 @@ def plan_with_confidence(query, tables, file_name=None, strict=None):
 
 def plan(query, tables, file_name=None, strict=None):
     """Backward-compatible: plan dict, or None when confidence < conventions.PLAN_CONFIDENCE_THRESHOLD.
-    strict=None: strict evidence mode only when OPENROUTER_API_KEY is set (else b8f1082 behavior)."""
+    strict=None: strict evidence mode only when explicitly enabled (else b8f1082 behavior)."""
     p, conf, reasons = plan_with_confidence(query, tables, file_name, strict)
     if p is None or conf < C.PLAN_CONFIDENCE_THRESHOLD:
         print(f"[plan] low confidence {conf:.2f} {reasons} -> fallback", file=sys.stderr)
