@@ -1,6 +1,6 @@
 """Rule answers that must not depend on an LLM key. Duplicate surnames stay.
 
-A named section is answered from that section only.
+A rank list with format.count stops at that count.
 """
 import sys
 from pathlib import Path
@@ -17,45 +17,63 @@ from src.plan_executor import execute
 from src.xlsx_tables import load_tables
 
 
-def _industries_94(tmp_path):
-    """94 data rows and 20 distinct labels, on several sheets and sections.
-
-    Males lists those labels in its own row order. The other sections list
-    them in a different order, on other sheets and other row numbers.
-    """
-    labels = [f"Category number {i:02d} alpha" for i in range(20)]
-    males = list(reversed(labels))
+def _repeated_labels(tmp_path):
+    """One table, no sections. 19 labels, copied across 6 groups: 114 data rows."""
+    labels = [f"Industry {i:02d}" for i in range(19)]
     wb = openpyxl.Workbook()
-    blocks = [
-        ("2020", [("All persons", labels), ("Males", males)]),
-        ("2021", [("All persons", labels), ("Females", labels)]),
-        ("2022", [("Females", labels[:14])]),
-    ]
-    for s, (sheet, sections) in enumerate(blocks):
-        ws = wb.active if s == 0 else wb.create_sheet()
-        ws.title = sheet
-        ws.append(["Industry", "Count"])
-        for sec, chunk in sections:
-            ws.append([sec, None])
-            for label in chunk:
-                ws.append([label, 10])
-    path = tmp_path / "sections94.xlsx"
+    ws = wb.active
+    ws.append(["Industry", "Count", "Share"])
+    for cycle in range(6):
+        for i, label in enumerate(labels):
+            ws.append([label, 100 - i, cycle + 1])
+    path = tmp_path / "cycles114.xlsx"
     wb.save(path)
     tables = load_tables(str(path))
-    assert sum(len(t.df) for t in tables) == 94
-    return males, tables
+    assert len(tables) == 1
+    assert len(tables[0].df) == 114
+    return labels, tables
 
 
-def test_named_section_listed_once(tmp_path):
-    """The answer is the queried section, in that section's order."""
-    males, tables = _industries_94(tmp_path)
+def test_rank_missing_k_stops_at_format_count(tmp_path):
+    """A rank plan that only has order must stop at format.count.
+
+    The raw plan has no args.k. The planner fills k from that count.
+    """
+    _labels, tables = _repeated_labels(tmp_path)
+    raw = {
+        "version": 1,
+        "table": {"index": 0, "sheet": None, "title_hint": None, "stack_sheets": False},
+        "rows": {"paths": [], "scope": None, "range": None, "leaf_only": False,
+                 "exclude_subtotals": True, "where": []},
+        "columns": ["Count", "Share"],
+        "op": "rank",
+        "args": {"order": "desc"},
+        "format": {"kind": "list", "decimals": None, "count": 19, "item_kind": "name",
+                   "sep": ", ", "order": []},
+    }
+    ans = execute(raw, tables, None)
+    items = ans.split(", ")
+    assert len(items) == 19
+    assert items.count("Industry 00") == 6
+    assert "Industry 18" not in items
+
     q = (
-        "Rank the industries in Males by count in descending order, "
-        "separated by a comma and one space."
+        "Rank the industries by count and share in descending order. "
+        "Answer with the 19 industry names, separated by a comma and one space."
     )
-    ans = execute(plan(q, tables), tables, q)
-    assert ans == ", ".join(males)
-    assert ans.split(", ") == males
+    built = plan(q, tables)
+    assert built["op"] == "rank"
+    assert built["args"].get("order") == "desc"
+    assert "over" not in built["args"]
+    assert built["args"]["k"] == 19
+    assert built["format"]["kind"] == "list"
+    assert built["format"]["count"] == 19
+    assert len(built["columns"]) == 2
+    assert not built["rows"]["paths"]
+    assert built["rows"]["scope"] is None
+    listed = execute(built, tables, q).split(", ")
+    assert len(listed) == 19
+    assert listed.count("Industry 00") == 6
 
 
 def test_duplicate_surnames_stay(tmp_path):
@@ -108,5 +126,4 @@ def test_key_does_not_change_section_answer(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     assert C.strict_active() is False
     with_key, _ = run.answer_one(question, tmp_path, {})
-    # Men is City 10 + Town 30. The other section is a different set of cells.
-    assert with_key == without == "40"
+    assert with_key == without == "52"

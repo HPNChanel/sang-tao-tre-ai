@@ -446,10 +446,7 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
-    # One named section is the row selection, whether or not strict evidence is on.
-    # The other sections are different cells (other sheets and row numbers). Leaving
-    # them in repeats the same labels. This is not a dedupe of those values.
-    if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
+    if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
         secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
         hit = [x for x in secs if q.match(x)[0] == 1.0]
@@ -470,6 +467,9 @@ def _plan_core(query: str, tables, strict=False):
         # '55 years and over' names a band already chosen as the sort column or the row, not a threshold.
         band = " ".join([str(args.get("by") or "")] + list(plan["rows"]["paths"]))
         plan["rows"]["where"] = [w for w in plan["rows"]["where"] if not _number_names_band(w.get("value"), band)]
+        # 'Answer with the N names' sets format.count. Without k the rank slice keeps every row.
+        if not args.get("k") and plan["format"].get("count"):
+            args["k"] = plan["format"]["count"]
     if view.stacked and plan["op"] in ("compare", "diff", "values", "ratio") and len(set(plan["rows"]["paths"])) == 1:
         sheets = []
         for sname in dict.fromkeys(view.df["_sheet"]):

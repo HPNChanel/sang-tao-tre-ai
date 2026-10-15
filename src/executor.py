@@ -285,6 +285,11 @@ def execute(plan, tables):
         if isinstance(val, list) and len(val) == 1:
             val = val[0]
     elif op == "rank":
+        if not args.get("k"):
+            # Same list length as the planner: format.count is the requested slice.
+            fmt_k = (plan.get("format") or {}).get("count")
+            if fmt_k:
+                args["k"] = fmt_k
         if args.get("over") == "columns":
             # top-k across the columns of one row (k past the row's columns returns every column)
             g = groups[0] if groups else first_row()
