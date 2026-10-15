@@ -1,64 +1,279 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "aiproj/plan/v1",
-  "title": "TableQAPlan",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["version", "op", "format"],
-  "properties": {
-    "version": {"const": 1},
-    "table": {
-      "type": "object", "additionalProperties": false,
-      "properties": {
-        "index": {"type": ["integer", "null"], "description": "index in load_tables() order"},
-        "sheet": {"type": ["string", "null"]},
-        "title_hint": {"type": ["string", "null"]},
-        "stack_sheets": {"type": "boolean", "description": "treat same-schema tables on different sheets as one table with a _sheet dimension"}
-      }
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "aiproj/plan/v1",
+ "title": "TableQAPlan",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "version",
+  "op",
+  "format"
+ ],
+ "properties": {
+  "version": {
+   "const": 1
+  },
+  "table": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "index": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "description": "index in load_tables() order"
     },
-    "rows": {
-      "type": "object", "additionalProperties": false,
-      "properties": {
-        "paths": {"type": "array", "items": {"type": "string"}, "description": "row labels or ' > ' paths, in question order"},
-        "scope": {"type": ["string", "null"], "description": "restrict to descendants of this row/section"},
-        "range": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "numeric label range [lo, hi], e.g. ages"},
-        "leaf_only": {"type": "boolean"},
-        "exclude_subtotals": {"type": "boolean"},
-        "where": {"type": "array", "items": {
-          "type": "object", "additionalProperties": false, "required": ["column", "op", "value"],
-          "properties": {"column": {"type": "string"}, "op": {"enum": [">=", ">", "<=", "<", "==", "!=", "year=="]}, "value": {"type": ["number", "string"]}}}}
-      }
+    "sheet": {
+     "type": [
+      "string",
+      "null"
+     ]
     },
-    "columns": {"type": "array", "items": {"type": "string"}, "description": "exact flattened column names 'Parent | Child', in question order"},
-    "op": {"enum": ["lookup", "values", "sum", "diff", "mean", "max", "min", "argmax", "argmin",
-                     "rank", "nth", "topk_agg", "count", "compare", "ratio", "share"]},
-    "args": {
-      "type": "object", "additionalProperties": false,
-      "properties": {
-        "over": {"enum": ["rows", "columns", "sheets"]},
-        "abs": {"type": "boolean"},
-        "signed_order": {"enum": ["first_minus_second", "second_minus_first"]},
-        "cmp": {"enum": [">", "<", ">=", "<=", "=="]},
-        "n": {"type": "integer", "minimum": 1},
-        "k": {"type": "integer", "minimum": 1},
-        "order": {"enum": ["asc", "desc"]},
-        "by": {"type": ["string", "null"], "description": "column to order by, or 'age' for age-from-dates"},
-        "agg": {"enum": ["max", "min", "sum", "mean", "count"]},
-        "return": {"type": ["string", "null"], "description": "column to return; null = row label"},
-        "names": {"type": "array", "items": {"type": "string"}, "description": "rank: display names from the question, aligned with rows.paths"},
-        "percent": {"type": "boolean", "description": "multiply ratio/share by 100"}
-      }
+    "title_hint": {
+     "type": [
+      "string",
+      "null"
+     ]
     },
-    "format": {
-      "type": "object", "additionalProperties": false, "required": ["kind"],
-      "properties": {
-        "kind": {"enum": ["int", "decimal", "number", "yesno", "name", "list", "date", "text"]},
-        "decimals": {"type": ["integer", "null"]},
-        "count": {"type": ["integer", "null"]},
-        "item_kind": {"type": ["string", "null"]},
-        "sep": {"type": "string"},
-        "order": {"type": "array", "items": {"type": "string"}}
-      }
+    "stack_sheets": {
+     "type": "boolean",
+     "description": "treat same-schema tables on different sheets as one table with a _sheet dimension"
     }
+   }
+  },
+  "rows": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "paths": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "row labels or ' > ' paths, in question order"
+    },
+    "scope": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "description": "restrict to descendants of this row/section"
+    },
+    "range": {
+     "type": [
+      "array",
+      "null"
+     ],
+     "items": {
+      "type": "number"
+     },
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "numeric label range [lo, hi], e.g. ages"
+    },
+    "leaf_only": {
+     "type": "boolean"
+    },
+    "exclude_subtotals": {
+     "type": "boolean"
+    },
+    "where": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "column",
+       "op",
+       "value"
+      ],
+      "properties": {
+       "column": {
+        "type": "string"
+       },
+       "op": {
+        "enum": [
+         ">=",
+         ">",
+         "<=",
+         "<",
+         "==",
+         "!=",
+         "year=="
+        ]
+       },
+       "value": {
+        "type": [
+         "number",
+         "string"
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "columns": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   },
+   "description": "exact flattened column names 'Parent | Child', in question order"
+  },
+  "op": {
+   "enum": [
+    "lookup",
+    "values",
+    "sum",
+    "diff",
+    "mean",
+    "max",
+    "min",
+    "argmax",
+    "argmin",
+    "rank",
+    "nth",
+    "topk_agg",
+    "count",
+    "compare",
+    "ratio",
+    "share"
+   ]
+  },
+  "args": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "over": {
+     "enum": [
+      "rows",
+      "columns",
+      "sheets"
+     ]
+    },
+    "abs": {
+     "type": "boolean"
+    },
+    "signed_order": {
+     "enum": [
+      "first_minus_second",
+      "second_minus_first"
+     ]
+    },
+    "cmp": {
+     "enum": [
+      ">",
+      "<",
+      ">=",
+      "<=",
+      "=="
+     ]
+    },
+    "n": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "k": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "order": {
+     "enum": [
+      "asc",
+      "desc"
+     ]
+    },
+    "by": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "description": "column to order by, or 'age' for age-from-dates"
+    },
+    "agg": {
+     "enum": [
+      "max",
+      "min",
+      "sum",
+      "mean",
+      "count"
+     ]
+    },
+    "return": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "description": "column to return; null = row label"
+    },
+    "names": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "rank: display names from the question, aligned with rows.paths"
+    },
+    "percent": {
+     "type": "boolean",
+     "description": "multiply ratio/share by 100"
+    },
+    "ties": {
+     "enum": [
+      "all",
+      "first"
+     ],
+     "description": "argmax/argmin ties: all tied labels (table order) or first only"
+    }
+   }
+  },
+  "format": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind"
+   ],
+   "properties": {
+    "kind": {
+     "enum": [
+      "int",
+      "decimal",
+      "number",
+      "yesno",
+      "name",
+      "list",
+      "date",
+      "text"
+     ]
+    },
+    "decimals": {
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "count": {
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "item_kind": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "sep": {
+     "type": "string"
+    },
+    "order": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    }
+   }
   }
+ }
 }

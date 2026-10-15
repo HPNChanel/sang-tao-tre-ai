@@ -25,3 +25,8 @@ PREFER_TOTAL_SUBCOLUMN = True
 
 # Sum/count over rows exclude detected subtotal rows and 'Total'/'Grand total' rows.
 EXCLUDE_SUBTOTALS_IN_AGGREGATES = True
+
+# Ties in max/min/argmax/argmin: return ALL tied labels (table order, joined by the format's list
+# separator) unless the wording/format asks for exactly one result (singular 'which <noun>',
+# 'the ...', name/int format with no count) -> keep the first and log the tie to stderr.
+TIES_RETURN_ALL = True

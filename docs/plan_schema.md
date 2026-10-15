@@ -24,7 +24,7 @@ Ops (value = cells rows×columns after filters):
 | compare | v1 cmp v2 → Yes/No | cmp |
 | ratio | v1 / v2 | percent |
 | share | row / its mentioned ancestor (or parent) | percent |
-| argmax / argmin | label of best row / column / sheet | over, abs |
+| argmax / argmin | label of best row / column / sheet; ties -> all (table order) or first | over, abs, ties |
 | rank | names ordered by value | order, names |
 | nth | n-th row ordered by `by` (`age` = from dates), return column/label | n, order, by, return |
 | topk_agg | take top-k rows by `by`, then agg over return column | k, order, by, agg, return |

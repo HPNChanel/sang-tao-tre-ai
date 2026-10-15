@@ -256,7 +256,7 @@ def plan_question(query: str, tables) -> dict:
 
     # ---- operation
     sup_max, sup_min = re.search(rf"\b({SUP_MAX})\b", low), re.search(rf"\b({SUP_MIN})\b", low)
-    which = re.search(r"\b(which|who|identify|name the|in what)\b", low)
+    which = re.search(r"\b(which|who|identify|name the|in what|list all|name all)\b", low)
     nth = re.search(r"\b(" + "|".join(ORD) + r"|\d+(?:st|nd|rd|th))[- ](" + SUP_MAX + "|" + SUP_MIN + r")\b", low) or \
         re.search(r"\bthe ()(youngest|oldest)\b(?! \w+ (?:people|persons))", low)
     _unused = re.search(r"\b(" + "|".join(ORD) + r"|\d+(?:st|nd|rd|th))[- ](" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
@@ -363,8 +363,28 @@ def _order_args(args, word, view, cols):
     args["return"] = ret[0] if ret else None
 
 
+def _tie_mode(low, fmt):
+    """'all' unless the wording/format demands exactly one result."""
+    if not C.TIES_RETURN_ALL:
+        return "first"
+    if fmt.get("kind") == "list":
+        return "all"
+    if re.search(r"\b(which ones|list all|name all|all (the )?\w+ (that|which|with))\b", low):
+        return "all"
+    if re.search(r"\bwhich one\b|\bthe (single|only)\b", low):
+        return "first"
+    m = re.search(r"\b(?:which|what|identify the|name the)\s+(\w+)(?:\s+(\w+))?", low)
+    if not m:
+        return "all"
+    words = [w for w in m.groups() if w]
+    plural = any(w.endswith("s") and not w.endswith(("ss", "us", "is")) and w not in ("was", "has", "does", "its")
+                 for w in words)
+    return "all" if plural else "first"
+
+
 def _choose_over(plan, view, rows, cols, low):
     args = plan["args"]
+    args["ties"] = _tie_mode(low, plan["format"])
     if view.stacked and len(rows) == 1 and re.search(r"\b(which|what|in which) (year|sheet|period)\b", low):
         args["over"] = "sheets"
     elif len(rows) == 1 and not [c for c in cols if c != view.label_name]:

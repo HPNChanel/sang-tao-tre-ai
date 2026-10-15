@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import sys
 import re
 
 import numpy as np
@@ -242,8 +243,8 @@ def execute(plan, tables):
             cand = [c for c in view.numeric_cols() if not re.match(r"(grand )?total\b", str(c).split(" | ")[-1], re.I)]
             vals = {c: _col_values(view, c, g).sum(min_count=1) for c in cand}
             vals = {c: v for c, v in vals.items() if v is not None and not (isinstance(v, float) and math.isnan(v))}
-            best = max(vals, key=lambda c: sign * tf(vals[c]))
-            val = str(best).split(" | ")[-1] if " | " in str(best) else best
+            best = _pick(list(vals), lambda c: sign * tf(vals[c]), plan, "columns")
+            val = [str(b).split(" | ")[-1] for b in best]
         elif over == "sheets":
             g = groups[0]
             leaf = df.at[g[0], "_label"]
@@ -252,15 +253,17 @@ def execute(plan, tables):
             for i in df.index[df["_label"] == leaf]:
                 v = _col_values(view, c, [i]).iloc[0]
                 per[df.at[i, "_sheet"]] = v
-            val = max(per, key=lambda s: sign * tf(per[s]))
+            val = _pick(list(per), lambda s: sign * tf(per[s]), plan, "sheets")
         else:
             idx = _aggregate_rows(view, plan, base)
             idx = _first_root_scope(view, idx) if r.get("scope") is None else idx
             c = cols[0] if cols else view.numeric_cols()[0]
             vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}
             vals = {i: v for i, v in vals.items() if isinstance(v, (int, float, np.floating)) and not math.isnan(v)}
-            best = max(vals, key=lambda i: sign * tf(vals[i]))
-            val = df.at[best, "_label"]
+            best = _pick(list(vals), lambda i: sign * tf(vals[i]), plan, "rows")
+            val = [df.at[b, "_label"] for b in best]
+        if isinstance(val, list) and len(val) == 1:
+            val = val[0]
     elif op == "rank":
         c = cols[0] if cols else view.numeric_cols()[0]
         names = args.get("names") or [df.at[g[0], "_label"] for g in groups]
@@ -299,6 +302,19 @@ def execute(plan, tables):
     return val
 
 
+def _pick(cands, score, plan, what):
+    """best key(s) by score in table order, honoring args.ties"""
+    best = max(score(k) for k in cands)
+    tied = [k for k in cands if math.isclose(score(k), best, rel_tol=1e-9, abs_tol=1e-9)]
+    if len(tied) > 1:
+        mode = (plan.get("args") or {}).get("ties", "first" if not C.TIES_RETURN_ALL else "all")
+        if mode == "first":
+            print(f"[tie] {what}: {len(tied)} tied, keeping first", file=sys.stderr)
+            return tied[:1]
+        return tied
+    return tied
+
+
 def _first_root_scope(view, idx):
     """If rows form several parallel root groups (e.g. Total / Men / Women), keep the first group."""
     df = view.df
@@ -335,5 +351,6 @@ def answer(plan, tables) -> str:
         f = float(val)
         return str(int(f)) if f.is_integer() else f"{f:.10g}"
     if isinstance(val, list) and spec.kind != "list":
-        spec = FormatSpec(kind="list", item_kind="name" if isinstance(val[0], str) else "int" if spec.kind == "int" else "number")
+        spec = FormatSpec(kind="list", sep=spec.sep or ", ",
+                          item_kind="name" if isinstance(val[0], str) else "int" if spec.kind == "int" else "number")
     return format_answer(val, spec)
