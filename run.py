@@ -763,6 +763,9 @@ def main(argv=None):
                         _RUN.answers[rest] = ""
                         _RUN.deadline_skip.append(rest)
                         lf.write(json.dumps({"id": rest, "tokens": 0,
+                                             "completion_tokens": 0,
+                                             "reasoning_tokens": 0,
+                                             "attempts": [],
                                              "cost_usd": 0.0}) + "\n")
                         print(f"{rest}\tdeadline-skip\t''", file=sys.stderr)
                     lf.flush()
