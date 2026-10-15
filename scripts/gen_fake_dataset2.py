@@ -137,6 +137,26 @@ def _queries():
             "d2q05",
             "Which region had the highest Sales in 2024? Answer with only the region name.",
         ),
+        (
+            "d2q06",
+            "Tổng điểm Score của những người có City bằng C3 và Shift bằng night là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+        ),
+        (
+            "d2q07",
+            "Trong năm người lớn tuổi nhất, tổng điểm Score là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+        ),
+        (
+            "d2q08",
+            "Doanh số Sales của vùng South thay đổi từ năm 2023 đến năm 2025 là bao nhiêu? lấy 2025 trừ 2023. Chỉ trả lời bằng số nguyên.",
+        ),
+        (
+            "d2q09",
+            "Có bao nhiêu người có City bằng C5 và điểm Score từ 49 trở xuống? Chỉ trả lời bằng số nguyên.",
+        ),
+        (
+            "d2q10",
+            "Có bao nhiêu người có Shift bằng evening và điểm Score từ chín mươi chín trở lên? Chỉ trả lời bằng số nguyên.",
+        ),
     ]
     return [{"id": i, "file_name": fname, "query": q} for i, q in items]
 
@@ -158,7 +178,10 @@ def write_pack(out: Path) -> None:
         json.dumps(queries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     # Id order differs from queries.json so a sample file is actually exercised.
-    sample_ids = ["d2q05", "d2q01", "d2q03", "d2q02", "d2q04"]
+    sample_ids = [
+        "d2q05", "d2q01", "d2q03", "d2q02", "d2q04",
+        "d2q10", "d2q06", "d2q08", "d2q09", "d2q07",
+    ]
     with open(out / "sample_submission.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["id", "answer"])
