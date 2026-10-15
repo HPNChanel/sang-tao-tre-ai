@@ -78,7 +78,7 @@ def test_llm_raises_uses_nonstrict_answer(monkeypatch, tmp_path):
     def responder(_n):
         raise TimeoutError("timeout")
 
-    _assert_matches_nokey(monkeypatch, tmp_path, responder, True)
+    _assert_matches_nokey(monkeypatch, tmp_path, responder, False)
 
 
 def test_llm_garbage_json_uses_nonstrict_answer(monkeypatch, tmp_path):
@@ -86,7 +86,7 @@ def test_llm_garbage_json_uses_nonstrict_answer(monkeypatch, tmp_path):
         return {"usage": {"prompt_tokens": 10, "completion_tokens": 4},
                 "choices": [{"message": {"content": "this is not json"}}]}
 
-    _assert_matches_nokey(monkeypatch, tmp_path, responder, True)
+    _assert_matches_nokey(monkeypatch, tmp_path, responder, False)
 
 
 def test_llm_schema_invalid_uses_nonstrict_answer(monkeypatch, tmp_path):
@@ -96,7 +96,7 @@ def test_llm_schema_invalid_uses_nonstrict_answer(monkeypatch, tmp_path):
         return {"usage": {"prompt_tokens": 10, "completion_tokens": 8},
                 "choices": [{"message": {"content": bad}}]}
 
-    _assert_matches_nokey(monkeypatch, tmp_path, responder, True)
+    _assert_matches_nokey(monkeypatch, tmp_path, responder, False)
 
 
 def test_llm_executor_error_uses_nonstrict_answer(monkeypatch, tmp_path):
@@ -106,7 +106,7 @@ def test_llm_executor_error_uses_nonstrict_answer(monkeypatch, tmp_path):
         return {"usage": {"prompt_tokens": 10, "completion_tokens": 20},
                 "choices": [{"message": {"content": body}}]}
 
-    _assert_matches_nokey(monkeypatch, tmp_path, responder, True)
+    _assert_matches_nokey(monkeypatch, tmp_path, responder, False)
 
 
 def test_llm_cost_cap_uses_nonstrict_answer(monkeypatch, tmp_path):
