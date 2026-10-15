@@ -5,7 +5,7 @@ budget using the worst case (prompt tokens estimate + max_tokens) x price; an
 attempt is refused if that worst case would exceed the cap. Actual cost from the
 response usage is then recorded. Cap default 0.02 USD (<< 0.10 rule).
 """
-import json, os, time, urllib.request
+import json, os, sys, time, urllib.request
 from pathlib import Path
 
 MODEL = "qwen/qwen3.7-flash"
@@ -69,7 +69,7 @@ def _post(body: bytes, timeout):
         return json.loads(r.read())
 
 
-def llm_plan(query, tables_summary, schema, budget: Budget, timeout=60):
+def llm_plan(query, tables_summary, schema, budget: Budget, timeout=60, validate=None, qid=""):
     """Return plan dict or None. Never raises on network/parse errors."""
     if not enabled():
         return None
@@ -91,7 +91,14 @@ def llm_plan(query, tables_summary, schema, budget: Budget, timeout=60):
         try:
             txt = data["choices"][0]["message"]["content"].strip()
             txt = txt[txt.find("{"): txt.rfind("}") + 1]
-            return json.loads(txt)
+            plan = json.loads(txt)
         except Exception:
             continue
+        if validate is not None:
+            errs = validate(plan)
+            if errs:  # counts as a used attempt; cap + MAX_ATTEMPTS still apply
+                print(f"[schema] {qid}: attempt {attempt + 1} plan invalid: "
+                      + "; ".join(errs[:3]), file=sys.stderr)
+                continue
+        return plan
     return None

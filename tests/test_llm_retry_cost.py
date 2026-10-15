@@ -29,7 +29,7 @@ def _setup(monkeypatch, responses):
 
 def test_failed_then_retry_logged(monkeypatch, tmp_path):
     ok = {"usage": {"prompt_tokens": 100, "completion_tokens": 20},
-          "choices": [{"message": {"content": '{"op": "x"}'}}]}
+          "choices": [{"message": {"content": '{"version": 1, "op": "sum", "format": {"kind": "int"}}'}}]}
     calls = _setup(monkeypatch, [TimeoutError("boom"),
                                  {"choices": [{"message": {"content": "not json"}}]}, ok])
     ans, b = run.answer_one({"id": "q1", "file_name": "f.xlsx", "query": "Q?"}, tmp_path, {})
@@ -56,3 +56,25 @@ def test_cap_blocks_before_exceeding(monkeypatch, tmp_path):
     b = llm_client.Budget(cap)
     assert llm_client.llm_plan("Q", "T", "{}", b) is None
     assert len(calls) == 1 and b.spent <= cap
+
+
+def test_schema_invalid_plan_blank_bounded(monkeypatch, tmp_path, capsys):
+    bad = {"usage": {"prompt_tokens": 50, "completion_tokens": 10},
+           "choices": [{"message": {"content": '{"version": 1, "op": "explode", "format": {"kind": "int"}}'}}]}
+    calls = _setup(monkeypatch, [bad] * 10)
+    executed = []
+    monkeypatch.setattr(seams, "execute", lambda p, t, q: executed.append(p) or "42")
+    ans, b = run.answer_one({"id": "q9", "file_name": "f.xlsx", "query": "Q?"}, tmp_path, {})
+    assert ans == "" and executed == []
+    assert len(calls) == llm_client.MAX_ATTEMPTS == b.attempts
+    assert b.tokens == 3 * 60 and b.spent > 0
+    err = capsys.readouterr().err
+    assert "[schema] q9" in err and "not in enum" in err
+
+
+def test_validator_accepts_valid_plan():
+    from src.plan_validate import validate
+    assert validate({"version": 1, "op": "argmax", "args": {"ties": "all"},
+                     "format": {"kind": "name"}}) == []
+    assert validate({"version": 1, "op": "sum", "format": {"kind": "int"}, "x": 1})
+    assert validate({"version": 1, "op": "nth", "args": {"n": 0}, "format": {"kind": "int"}})

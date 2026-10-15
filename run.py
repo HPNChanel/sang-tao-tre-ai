@@ -5,9 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from src.xlsx_tables import load_tables, summarize  # noqa: E402
-from src import seams, llm_client  # noqa: E402
+from src import seams, llm_client, plan_validate  # noqa: E402
 
-PLAN_SCHEMA_FILE = Path(__file__).resolve().parent / "src" / "plan_schema.json"  # TODO(KSP1)
+PLAN_SCHEMA_FILE = Path(__file__).resolve().parent / "src" / "plan_schema.json"
 
 
 def answer_one(q, data_dir, cache):
@@ -25,7 +25,12 @@ def answer_one(q, data_dir, cache):
         ans = seams.execute(plan, tables, q["query"]) if plan else None
         if ans is None and llm_client.enabled() and seams.have_executor():
             schema = PLAN_SCHEMA_FILE.read_text() if PLAN_SCHEMA_FILE.exists() else "{}"
-            plan = llm_client.llm_plan(q["query"], summarize(tables), schema, budget)
+            plan = llm_client.llm_plan(q["query"], summarize(tables), schema, budget,
+                                       validate=plan_validate.validate, qid=q.get("id", ""))
+            if plan is None:
+                print(f"[schema] {q.get('id')}: no schema-valid LLM plan "
+                      f"(attempts={budget.attempts}, cap/retries exhausted); answer blank",
+                      file=sys.stderr)
             ans = seams.execute(plan, tables, q["query"]) if plan else None
     except Exception as e:  # never crash the whole run
         print(f"[warn] {q.get('id')}: {type(e).__name__}: {e}", file=sys.stderr)
