@@ -138,11 +138,14 @@ def run_mode(data: Path, out: Path, extra):
         *extra,
     ]
     env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
+    started = time.perf_counter()
     with open(err, "w", encoding="utf-8") as handle:
         proc = subprocess.run(cmd, cwd=str(ROOT), env=env, stderr=handle)
+    wall = time.perf_counter() - started
     if proc.returncode != 0:
         raise SystemExit(f"run.py exited {proc.returncode}; see {err}")
-    wall, rss = parse_time(stamp)
+    # GNU time's "Elapsed" uses the wall clock and grows when that clock steps.
+    _, rss = parse_time(stamp)
     times = parse_query_times(err)
     child = child_hwm_mb(err)
     return {

@@ -884,7 +884,7 @@ def main(argv=None):
                     break
                 path = _resolve_workbook(data, byid[qid].get("file_name", ""))
                 whole = _path_key(path) in skipped
-                t = time.time()
+                t = time.perf_counter()
                 try:
                     ans, b = answer_one(
                         byid[qid], data, cache, timeout=timeout,
@@ -901,7 +901,7 @@ def main(argv=None):
                                      "attempts": b.log,
                                      "cost_usd": round(b.spent, 6)}) + "\n")
                 lf.flush()
-                print(f"{qid}\t{time.time()-t:.4f}s\t{ans!r}", file=sys.stderr)
+                print(f"{qid}\t{time.perf_counter()-t:.4f}s\t{ans!r}", file=sys.stderr)
                 _RUN.pending += 1
                 if _RUN.pending >= _RUN.flush_every:
                     _flush_submission()
