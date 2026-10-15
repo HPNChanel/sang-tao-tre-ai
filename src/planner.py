@@ -246,7 +246,7 @@ def plan_question(query: str, tables) -> dict:
 
 def plan_with_confidence(query: str, tables, strict=None):
     """-> (plan, confidence in [0,1], reasons). Vietnamese questions are keyword-translated first.
-    strict=None -> conventions.strict_active() (on only with an LLM key); strict=True -> evidence accounting (42d00ea)."""
+    strict=None -> conventions.strict_active() (off unless opted in); strict=True -> evidence accounting (42d00ea)."""
     from . import textmatch
     st = C.strict_active(strict)
     old = textmatch.STRICT_POSSESSIVE

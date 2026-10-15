@@ -1,4 +1,4 @@
-"""No LLM key -> b8f1082 behavior (legacy confidence, no strict evidence); strict only with key/flag."""
+"""No LLM key -> b8f1082 behavior. Strict evidence is an explicit flag, not the key."""
 import os, sys
 import openpyxl
 import pytest
@@ -28,13 +28,15 @@ def test_no_key_is_legacy_best_guess(t, monkeypatch):
     assert p is not None and execute(p, t, AMBIG) == "300"   # b8f1082 answered (first matching column)
 
 
-def test_key_turns_strict_on(t, monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy-not-used")
+def test_key_does_not_change_rule_answer(t, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(C, "STRICT_CONFIDENCE", None)
-    assert C.strict_active()
-    assert plan(AMBIG, t) is None
-    p, c, r = plan_with_confidence(AMBIG, t)
-    assert p is not None and c < C.PLAN_CONFIDENCE_THRESHOLD and r
+    assert not C.strict_active()
+    off = plan(AMBIG, t)
+    assert execute(off, t, AMBIG) == "300"
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+    assert not C.strict_active()
+    assert plan(AMBIG, t) == off
 
 
 def test_explicit_flag_overrides_env(t, monkeypatch):
