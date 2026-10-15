@@ -25,6 +25,8 @@ KSP2, head `d4d83acd040285956de1d78e31ca849e165c1508`.
 
 Tám prompt, cả tám đã chạy. Mục đích: lọc dòng theo điều kiện tiếng Việt.
 
+Nguyên văn đã che của 8 prompt #17 sẽ bổ sung sau.
+
 ## PR adapter
 
 KSP2, nhánh `ksp2/submission-adapter`.
