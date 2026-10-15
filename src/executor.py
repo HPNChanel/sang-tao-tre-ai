@@ -285,6 +285,21 @@ def execute(plan, tables):
         if isinstance(val, list) and len(val) == 1:
             val = val[0]
     elif op == "rank":
+        if not args.get("k"):
+            # Same list length as the planner: format.count is the requested slice.
+            fmt_k = (plan.get("format") or {}).get("count")
+            if fmt_k:
+                args["k"] = fmt_k
+        if r.get("scope") and args.get("over") != "columns":
+            # The named group is the universe. Do not fall back to every row, then cut.
+            sc = r["scope"]
+            sheet = (plan.get("table") or {}).get("sheet")
+            scoped = [i for i in df.index
+                      if str(df.at[i, "_row_path"]).startswith(sc + " > ")
+                      and (not sheet or df.at[i, "_sheet"] == sheet)]
+            if not scoped:
+                raise PlanError("rank scope has no rows")
+            base = scoped
         if args.get("over") == "columns":
             # top-k across the columns of one row (k past the row's columns returns every column)
             g = groups[0] if groups else first_row()

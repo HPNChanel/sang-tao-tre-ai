@@ -270,6 +270,42 @@ def _plan_with_confidence(query, tables, strict):
     return plan, conf * vi_factor, reasons + r2
 
 
+def _named_rank_scope(view, q, matched_rows):
+    """The one group a row-rank must be limited to, or None, or 'ambiguous'.
+
+    A section or a parent row the question names fully is that group. Two
+    unrelated hits is a guess, so the caller blanks instead of ranking
+    every row. No hit means the question did not name a subset.
+    """
+    df = view.df
+    secs = [x for x in dict.fromkeys(df["_section"]) if x]
+    sec_hit = [x for x in secs if q.match(x)[0] == 1.0]
+    if len(sec_hit) > 1:
+        return "ambiguous"
+    paths = [str(p) for p in df["_row_path"]]
+    parents = []
+    for path, _pos in matched_rows:
+        leaf = strip_footnotes(str(path).split(" > ")[-1])
+        if q.match(leaf)[0] != 1.0:
+            continue
+        if any(p.startswith(path + " > ") for p in paths) and path not in parents:
+            parents.append(path)
+    if len(parents) > 1:
+        parents.sort(key=len)
+        tight = parents[-1]
+        if not all(tight == p or tight.startswith(p + " > ") for p in parents):
+            return "ambiguous"
+        parents = [tight]
+    if len(parents) == 1:
+        parent = parents[0]
+        if sec_hit and not (parent == sec_hit[0] or parent.startswith(sec_hit[0] + " > ")):
+            return "ambiguous"
+        return parent
+    if len(sec_hit) == 1:
+        return sec_hit[0]
+    return None
+
+
 def _plan_core(query: str, tables, strict=False):
     spec = parse_instruction(query)
     body = strip_instruction(query, spec)
@@ -463,10 +499,22 @@ def _plan_core(query: str, tables, strict=False):
     if plan["rows"]["where"]:
         # 'born in 1990' filters the birth column (date year or numeric year), not whichever date is listed first
         plan["rows"]["where"] = _aim_born_year(plan["rows"]["where"], view, low)
+    ambiguous_rank_scope = False
     if plan["op"] == "rank":
         # '55 years and over' names a band already chosen as the sort column or the row, not a threshold.
         band = " ".join([str(args.get("by") or "")] + list(plan["rows"]["paths"]))
         plan["rows"]["where"] = [w for w in plan["rows"]["where"] if not _number_names_band(w.get("value"), band)]
+        # 'Answer with the N names' sets format.count. Without k the rank slice keeps every row.
+        if not args.get("k") and plan["format"].get("count"):
+            args["k"] = plan["format"]["count"]
+        # Rank the named group first, then cut to k. Clearing paths above drops that group.
+        if args.get("over") != "columns" and not args.get("names") and not plan["rows"]["paths"] \
+                and not plan["rows"].get("scope"):
+            picked = _named_rank_scope(view, q, rows)
+            if picked == "ambiguous":
+                ambiguous_rank_scope = True
+            elif picked:
+                plan["rows"]["scope"] = picked
     if view.stacked and plan["op"] in ("compare", "diff", "values", "ratio") and len(set(plan["rows"]["paths"])) == 1:
         sheets = []
         for sname in dict.fromkeys(view.df["_sheet"]):
@@ -484,6 +532,7 @@ def _plan_core(query: str, tables, strict=False):
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
         plan["columns"] = ["*"]
     return plan, {"view": view, "q": q, "rows": rows, "cols_cov": best_cov, "body": body,
+                  "ambiguous_rank_scope": ambiguous_rank_scope,
                   "views": views, "vscores": vscores, "vi": vi, "spec": spec}
 
 
@@ -1012,6 +1061,8 @@ def json_dump(plan):
 
 def _confidence(query, plan, info):
     from .answer_type import compatible, expected_type, plan_type
+    if info.get("ambiguous_rank_scope"):
+        return 0.0, ["rank:ambiguous scope"]
     exp = expected_type(query, plan["format"])
     got = plan_type(plan, info["view"])
     if not compatible(exp, got):
@@ -1028,6 +1079,8 @@ def _confidence(query, plan, info):
 def _confidence_legacy(query, plan, info):
     """b8f1082 confidence (default when no LLM key): kept verbatim for byte-identical output."""
     from .answer_type import compatible, expected_type, plan_type
+    if info.get("ambiguous_rank_scope"):
+        return 0.0, ["rank:ambiguous scope"]
     view, q = info["view"], info["q"]
     reasons, c = [], 1.0
     exp = expected_type(query, plan["format"])
