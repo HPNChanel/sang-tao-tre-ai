@@ -87,6 +87,27 @@ def _col_part_match(q: Query, part: str, exclude=frozenset()):
     return hit / len(use), pos
 
 
+def _quoted_column_operands(view, text):
+    """Resolve an explicitly quoted column list before greedy token coverage.
+
+    Tokens shared by two labels belong to both operands. A generic operation
+    word such as 'total' outside the list is not an extra operand.
+    """
+    phrases = re.findall(r"(?<!\w)(['\"`])(.+?)\1", text)
+    if len(phrases) < 2:
+        return None
+    out = []
+    for _, phrase in phrases:
+        target = tokens(phrase, keep_stop=True)
+        matches = [c for c in view.numeric_cols()
+                   if target in (tokens(str(c), keep_stop=True),
+                                 tokens(str(c).split(" | ")[-1], keep_stop=True))]
+        if len(matches) != 1:
+            return None
+        out.append(matches[0])
+    return out if len(set(out)) == len(out) else None
+
+
 def match_columns(view: View, q: Query, exclude=frozenset()):
     """Greedy cover of query tokens by column keys (prefix of 'A | B | C' parts)."""
     cands = {}
@@ -406,6 +427,9 @@ def _plan_core(query: str, tables, strict=False):
     label_cols = [c for c, _ in cols if c == view.label_name]
     cols = [c for c, _ in cols if c != view.label_name]
     row_paths = [p for p, _ in rows]
+    quoted_operands = _quoted_column_operands(view, body)
+    if quoted_operands:
+        cols = quoted_operands
 
     plan = {"version": 1,
             "table": {"index": view.idx[0], "sheet": None, "title_hint": None, "stack_sheets": view.stacked},
