@@ -146,12 +146,13 @@ def test_resolved_topn_on_multilevel_header_still_answers(tmp_path):
     assert _answer(tables, q) == "Amber, Birch, Cedar"
 
 
-def test_ambiguous_rank_column_blanks(tmp_path):
-    # Before: rank on the first Ripe column, 'Amber, Birch, Cedar'.
+def test_complete_rank_is_not_second_guessed(tmp_path):
+    # The question says 'ripe' and two Ripe columns exist. The planner still
+    # emits a rank with N, a column, and a direction. That plan is kept.
     tables = _ledger(tmp_path / "ledger.xlsx")
     q = "Name three sheds with the largest ripe figure, comma-separated."
-    assert _answer(tables, q) is None
-    assert "blank:topn" in _reasons(tables, q)
+    assert _answer(tables, q) == "Amber, Birch, Cedar"
+    assert "blank:topn" not in _reasons(tables, q)
 
 
 def test_topn_with_two_directions_blanks(tmp_path):
@@ -182,8 +183,8 @@ def test_scalar_extreme_stays_a_single_number(tmp_path):
     assert _answer(tables, "top 2 Grams. Respond with an integer.") == "88"
 
 
-def test_topn_list_must_have_exactly_n_items(tmp_path):
-    # Before: the two sheds that exist, 'Amber, Birch'.
+def test_shorter_topn_list_stays_when_the_plan_is_complete(tmp_path):
+    # A filtered or short table can legitimately return fewer than N labels.
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(["Shed", "Ripe"])
@@ -193,11 +194,10 @@ def test_topn_list_must_have_exactly_n_items(tmp_path):
     wb.save(path)
     tables = load_tables(str(path))
     q = "Name the three sheds with the largest Ripe, descending, separated by a comma and one space."
-    assert _answer(tables, q) is None
-    planned, conf, _reasons = plan_with_confidence(q, tables)
+    assert _answer(tables, q) == "Amber, Birch"
+    planned, conf, reasons = plan_with_confidence(q, tables)
     assert planned and planned["op"] == "rank" and conf >= 0.5
-    assert execute(planned, tables, q) is None
-    assert not answer_ok("list", "Amber, Birch", planned["format"], q, planned)
+    assert "blank:topn" not in reasons
 
 
 def test_nth_without_a_rank_column_blanks(tmp_path):
@@ -288,3 +288,80 @@ def test_single_number_question_rejects_a_label_list():
     assert answer_ok("number", "96", {"kind": "int", "sep": ", "},
                      "What is the sum of bushels? Answer with only the integer.",
                      {"op": "sum"})
+
+
+def test_oldest_list_keeps_the_planner_order(tmp_path):
+    import datetime as dt
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Name", "Birth", "Points"])
+    for row in [
+        ("Dee", dt.datetime(1975, 1, 1), 11),
+        ("Cy", dt.datetime(1984, 1, 1), 27),
+        ("Ada", dt.datetime(1988, 1, 1), 6),
+        ("Bo", dt.datetime(1992, 1, 1), 44),
+    ]:
+        ws.append(list(row))
+    path = tmp_path / "people.xlsx"
+    wb.save(path)
+    tables = load_tables(str(path))
+    q = "Who are the three oldest? Answer with names, oldest first, separated by a comma and one space."
+    reasons = _reasons(tables, q)
+    assert "blank:nth-column" not in reasons and "blank:topn" not in reasons
+    assert _answer(tables, q) == "Dee, Cy, Ada"
+
+
+def test_list_order_first_is_not_an_nth_rank(tmp_path):
+    # 'highest first' and 'lowest first' order a top-N or bottom-N list.
+    tables = _grams(tmp_path / "grams.xlsx")
+    assert _answer(
+        tables,
+        "List the top 3 tags by Grams, highest first, separated by a comma and one space.",
+    ) == "Nia, Pax, Quill"
+    assert _answer(
+        tables,
+        "Name the bottom 2 tags by Grams, lowest first, separated by a comma and one space.",
+    ) == "Ren, Quill"
+
+
+def test_number_words_and_bottom_n_stay(tmp_path):
+    tables = _grams(tmp_path / "grams.xlsx")
+    assert _answer(tables, "Grams: ba lớn nhất.") == "Nia, Pax, Quill"
+    assert _answer(tables, "Grams: năm nhỏ nhất.") == "Ren, Quill, Pax, Nia"
+
+
+def test_ten_smallest_number_word(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Tag", "Grams"])
+    for i, n in enumerate([88, 63, 52, 41, 30, 22, 18, 11, 7, 4, 2, 1]):
+        ws.append([f"T{i}", n])
+    path = tmp_path / "long.xlsx"
+    wb.save(path)
+    tables = load_tables(str(path))
+    got = _answer(tables, "Grams: mười nhỏ nhất.")
+    assert got == "T11, T10, T9, T8, T7, T6, T5, T4, T3, T2"
+    assert "blank:topn" not in _reasons(tables, "Grams: mười nhỏ nhất.")
+    assert _answer(tables, "bottom 5 Grams tags, separated by a comma and one space.") == "T11, T10, T9, T8, T7"
+
+
+def test_which_name_with_a_total_column_stays_a_label(tmp_path):
+    # Same shape as a which-group question that names the Total column.
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Age", "Total", "Agriculture"])
+    for row in [
+        ("Women", None, None),
+        ("16 to 19 years", 10, 1),
+        ("35 to 44 years", 50, 30),
+        ("55 years and over", 15, 8),
+        ("Men", None, None),
+        ("35 to 44 years", 40, 9),
+    ]:
+        ws.append(list(row))
+    path = tmp_path / "ages.xlsx"
+    wb.save(path)
+    tables = load_tables(str(path))
+    q = "Ở phụ nữ, nhóm tuổi nào có đông người làm nông nghiệp nhất (cột Total)? Chỉ trả lời tên nhóm tuổi."
+    assert "blank:shape" not in _reasons(tables, q)
+    assert _answer(tables, q) == "35 to 44 years"

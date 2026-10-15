@@ -98,13 +98,10 @@ def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan
 
 
 def _answer_counts(ans: str, fmt: dict, query: str | None, plan: dict | None) -> bool:
-    """Pair answers need two elements. A top-N list needs exactly N. Shape mismatches blank."""
+    """A demanded pair needs two elements. A list of labels is not a single number."""
     from . import blank_guards as G
     fmt = fmt or {}
     if G.pair_demanded(fmt, query) and G.item_count(ans, fmt) != 2:
-        return False
-    k = _topn_answer_k(fmt, query, plan)
-    if k is not None and G.item_count(ans, fmt) != k:
         return False
     blob = query or ""
     if G.asks_single_number(blob, fmt) and G.label_list(ans, fmt):
@@ -112,26 +109,6 @@ def _answer_counts(ans: str, fmt: dict, query: str | None, plan: dict | None) ->
     if G.asks_list(blob, fmt) and G.single_number(ans) and _aggregate_answer(plan):
         return False
     return True
-
-
-def _topn_answer_k(fmt: dict, query: str | None, plan: dict | None):
-    """N for a top-N list. Other rank plans are left to their own count."""
-    if not plan or plan.get("op") != "rank":
-        return None
-    fmt = fmt or {}
-    if fmt.get("kind") in ("int", "decimal", "number"):
-        return None
-    try:
-        k = int((plan.get("args") or {}).get("k") or 0)
-    except (TypeError, ValueError):
-        return None
-    if k < 2:
-        return None
-    from . import blank_guards as G
-    signal = G.topn_signal([query or ""])
-    if signal == k or fmt.get("count") == k:
-        return k
-    return None
 
 
 def _aggregate_answer(plan: dict | None) -> bool:

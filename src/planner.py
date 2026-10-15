@@ -329,122 +329,120 @@ def _unscoped_lookup(plan, info):
 
 
 def _topn_must_blank(plan, info, texts):
+    """Blank only a plan that is missing a top-N shape or contradicts a clear cue.
+
+    An unsure signal (several N, or no direction word) does not fire. A rank or
+    top-k plan that already has N and a direction is kept unless the question
+    states both directions or the plan order opposes the one clear direction.
+    """
     from . import blank_guards as G
     signal = G.topn_signal(texts)
-    if signal is None:
-        return False
     if signal == "ambiguous":
-        return True
-    if _topn_plan_resolved(plan, info, texts, signal):
+        signal = None
+    if _topn_plan_has_n_and_direction(plan):
+        return _direction_contradicts(plan, info, texts)
+    if signal is None:
         return False
     if _scalar_extreme_ok(plan, info, texts):
         return False
     return True
 
 
-def _topn_plan_resolved(plan, info, texts, k):
-    from . import blank_guards as G
+def _topn_plan_has_n_and_direction(plan):
     op = plan.get("op")
     if op not in ("rank", "topk_agg"):
         return False
     args = plan.get("args") or {}
     try:
-        got = int(args.get("k"))
+        k = int(args.get("k"))
     except (TypeError, ValueError):
         return False
-    if got != int(k):
+    if k < 2:
         return False
-    if G.direction(texts) is None or not _direction_matches(plan, texts):
+    return args.get("order") in ("asc", "desc")
+
+
+def _direction_contradicts(plan, info, texts):
+    """Opposing direction words, or one clear direction against the plan order.
+
+    On a date column, oldest/earliest sort ascending and youngest/latest sort
+    descending. That uses the column type only, never a column name or an age key.
+    """
+    from . import blank_guards as G
+    if G.direction_conflict(texts) and _rank_column_type(plan, info) != "date":
+        return True
+    expect = _expected_order(plan, info, texts)
+    if expect is None:
         return False
-    if not _guard_column_resolved(plan, info, texts):
+    order = (plan.get("args") or {}).get("order")
+    if order not in ("asc", "desc"):
         return False
-    fmt = plan.get("format") or {}
-    blob = " ".join(texts)
-    if op == "topk_agg" and G.asks_list(blob, fmt) and not G.asks_single_number(blob, fmt):
-        return False
-    if op == "rank" and G.asks_single_number(blob, fmt):
-        return False
-    return True
+    return order != expect
+
+
+def _expected_order(plan, info, texts):
+    from . import blank_guards as G
+    if _rank_column_type(plan, info) == "date":
+        cues = G.date_order_cues(texts)
+        if len(cues) == 1:
+            return cues.pop()
+        return None
+    return G.direction(texts)
+
+
+def _rank_column_type(plan, info):
+    """'date', 'number', or None from the column's type. Names are not consulted."""
+    view = info.get("view")
+    by = (plan.get("args") or {}).get("by")
+    if view is None or not by:
+        return None
+    if by in view.date_cols():
+        return "date"
+    if by in view.numeric_cols():
+        return "number"
+    return None
 
 
 def _scalar_extreme_ok(plan, info, texts):
-    """'highest 3 ... integer' stays the max of that column. A list request does not."""
+    """'highest 3 ... integer' and 'top 2 ... integer' stay a single extreme."""
     from . import blank_guards as G
     fmt = plan.get("format") or {}
-    if plan.get("op") not in ("max", "min"):
+    op = plan.get("op")
+    if op not in ("max", "min"):
         return False
     if fmt.get("kind") not in ("int", "decimal", "number"):
         return False
     blob = " ".join(texts)
     if G.asks_list(blob, fmt):
         return False
-    if G.direction(texts) is None or not _direction_matches(plan, texts):
+    if G.direction_conflict(texts):
+        return False
+    want = G.direction(texts)
+    if op == "max" and want == "asc":
+        return False
+    if op == "min" and want == "desc":
         return False
     return _guard_column_resolved(plan, info, texts)
 
 
-def _direction_matches(plan, texts):
-    from . import blank_guards as G
-    want = G.direction(texts)
-    if want is None:
-        return False
-    op = plan.get("op")
-    order = (plan.get("args") or {}).get("order")
-    if op == "max":
-        return want == "desc"
-    if op == "min":
-        return want == "asc"
-    if _birth_rank_order(plan, texts):
-        return True
-    if order in ("asc", "desc"):
-        return order == want
-    return True
-
-
-def _birth_rank_order(plan, texts):
-    """Oldest ranks a birth date ascending; youngest ranks it descending.
-
-    'highest' on the value taken from that subset is a different direction and
-    must not blank a resolved age ranking.
-    """
-    args = plan.get("args") or {}
-    by = args.get("by")
-    order = args.get("order")
-    if order not in ("asc", "desc"):
-        return False
-    if not (by == "age" or _birth_name(by)):
-        return False
-    blob = " ".join(texts)
-    oldest = bool(re.search(r"\boldest\b", blob, re.I))
-    youngest = bool(re.search(r"\byoungest\b", blob, re.I))
-    if oldest and not youngest:
-        return order == "asc"
-    if youngest and not oldest:
-        return order == "desc"
-    return False
-
-
 def _guard_column_resolved(plan, info, texts):
-    """One ranking column: the only measure, a named one, or an age ordering."""
+    """One ranking column: the only measure, or one column the question names."""
     view = info.get("view")
     if view is None:
         return False
     by = (plan.get("args") or {}).get("by")
     blob = " ".join(texts)
-    age = by == "age" or bool(re.search(r"\b(oldest|youngest)\b", blob, re.I))
-    if age:
-        return _birth_column(view) is not None or len(view.date_cols()) == 1
     num = [c for c in view.numeric_cols() if not _is_total_col(c)]
     if len(num) <= 1:
         return True
     hits = _named_measures(view, blob)
     if len(hits) == 1:
-        return by in (None, hits[0], "age") or by == hits[0]
+        return by in (None, hits[0])
     if len(hits) > 1:
         best = _dominant_measure(hits, blob)
         if best is None:
             return False
-        return by in (None, best) or by == best
+        return by in (None, best)
     return False
 
 

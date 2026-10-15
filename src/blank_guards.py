@@ -104,34 +104,72 @@ def topn_signal(texts) -> int | None | str:
     return uniq[0]
 
 
+def _sort_votes(low: str) -> set[str]:
+    """Direction words left after a top-N/bottom-N operator is removed.
+
+    'top 10 smallest' is one ascending cue. 'top' there is the operator, not a
+    second direction. 'from highest to lowest' is one descending phrase.
+    """
+    low = re.sub(rf"\b(?:top|bottom)\s+{_kpat()}\b", " ", low)
+    votes = set()
+    if re.search(r"\bfrom (?:highest|largest|most|greatest|biggest) to\b", low):
+        votes.add("desc")
+        low = re.sub(
+            r"\bfrom (?:highest|largest|most|greatest|biggest) to "
+            r"(?:lowest|smallest|least|fewest|highest|largest)\b",
+            " ", low)
+    if re.search(r"\bfrom (?:lowest|smallest|least|fewest) to\b", low):
+        votes.add("asc")
+        low = re.sub(
+            r"\bfrom (?:lowest|smallest|least|fewest) to "
+            r"(?:highest|largest|most|greatest|biggest|lowest|smallest)\b",
+            " ", low)
+    if re.search(rf"\b(?:{_SUP_DESC}|descending|giam dan)\b", low):
+        votes.add("desc")
+    if re.search(rf"\b(?:{_SUP_ASC}|ascending|tang dan)\b", low):
+        votes.add("asc")
+    return votes
+
+
+def _votes(texts) -> set[str]:
+    votes = set()
+    for text in texts:
+        if text:
+            votes |= _sort_votes(fold_text(text))
+    return votes
+
+
 def direction(texts) -> str | None:
     """'asc' or 'desc' when the question names one sort direction."""
+    votes = _votes(texts)
+    if len(votes) == 1:
+        return votes.pop()
+    return None
+
+
+def direction_conflict(texts) -> bool:
+    """True when the question states both directions, not when a cue is missing."""
+    votes = _votes(texts)
+    return "asc" in votes and "desc" in votes
+
+
+def date_order_cues(texts) -> set[str]:
+    """Order of a date column. Earlier dates sort ascending.
+
+    Oldest and earliest are ascending. Youngest and latest are descending.
+    This follows the column type, not a column name.
+    """
     votes = set()
-    desc = re.compile(rf"\b(?:{_SUP_DESC}|descending|giam dan)\b")
-    asc = re.compile(rf"\b(?:{_SUP_ASC}|ascending|tang dan)\b")
     for text in texts:
         if not text:
             continue
         low = fold_text(text)
-        if re.search(r"\bfrom (?:highest|largest|most|greatest|biggest) to\b", low):
-            votes.add("desc")
-            low = re.sub(
-                r"\bfrom (?:highest|largest|most|greatest|biggest) to "
-                r"(?:lowest|smallest|least|fewest|highest|largest)\b",
-                " ", low)
-        if re.search(r"\bfrom (?:lowest|smallest|least|fewest) to\b", low):
+        low = re.sub(rf"\b(?:top|bottom)\s+{_kpat()}\b", " ", low)
+        if re.search(r"\b(?:oldest|earliest|som nhat)\b", low):
             votes.add("asc")
-            low = re.sub(
-                r"\bfrom (?:lowest|smallest|least|fewest) to "
-                r"(?:highest|largest|most|greatest|biggest|lowest|smallest)\b",
-                " ", low)
-        if desc.search(low):
+        if re.search(r"\b(?:youngest|latest|tre nhat|muon nhat|gan nhat)\b", low):
             votes.add("desc")
-        if asc.search(low):
-            votes.add("asc")
-    if len(votes) == 1:
-        return votes.pop()
-    return None
+    return votes
 
 
 def nth_signal(original: str, translated: str) -> bool:
@@ -143,7 +181,14 @@ def nth_signal(original: str, translated: str) -> bool:
     pieces = [folded, fold_text(translated or "")]
     ord_en = _ORD_EN
     sup = _SUP
+    # 'highest first' / 'lowest first' / 'oldest first' orders a list. It is not an nth rank.
+    list_order = re.compile(
+        r"\b(?:largest|highest|most|greatest|biggest|smallest|lowest|least|fewest|"
+        r"oldest|youngest|earliest|latest)\s+first\b"
+    )
     for low in pieces:
+        low = list_order.sub(" ", low)
+        low = re.sub(r"\bfirst\s+names?\b", " ", low)
         if re.search(rf"\b(?:{ord_en})[- ](?:{sup})\b", low):
             return True
         if re.search(rf"\b(?:{sup})[- ](?:{ord_en})\b", low):
@@ -178,10 +223,22 @@ def asks_list(text: str, fmt: dict | None) -> bool:
     return False
 
 
+def asks_for_label(text: str) -> bool:
+    """Which/who/name. A column called Total in that question is not a request for a sum."""
+    low = fold_text(text or "")
+    if re.search(r"\b(how many|bao nhieu)\b", low):
+        return False
+    if re.search(r"\b(which|who|whom)\b", low):
+        return True
+    if re.search(r"\bonly the name\b|\btra loi ten\b|\bten nhom\b", low):
+        return True
+    return False
+
+
 def asks_single_number(text: str, fmt: dict | None) -> bool:
-    """A single figure: how many / total / sum / bao nhiêu, and not a list."""
+    """A single figure: how many / total / sum / bao nhiêu, and not a list or a label."""
     fmt = fmt or {}
-    if asks_list(text, fmt):
+    if asks_list(text, fmt) or asks_for_label(text):
         return False
     if fmt.get("kind") in ("int", "decimal", "number"):
         return True
