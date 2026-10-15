@@ -161,3 +161,21 @@ def test_label_number_is_not_a_cutoff(tmp_path):
 def test_threshold_wording_still_counts(tmp_path):
     path = _kiln(tmp_path)
     assert _ask(path, "How many tags carry Grams of 60 or more?") == "2"
+
+
+def test_scalar_count_stays_a_single_extreme(tmp_path):
+    # A trailing integer instruction is one number. 'highest 3' must not become a
+    # ranked list, even when 3 is also stored on a row.
+    path = _save(tmp_path, "weights.xlsx", ["Tag", "Grams"], [
+        ("Nia", 88), ("Pax", 3), ("Quill", 52),
+    ])
+    assert _ask(path, "highest 3 Grams. Respond with an integer.") == "88"
+    assert _ask(path, "top 2 Grams. Respond with an integer.") == "88"
+
+
+def test_sort_sentinel_can_return_that_column(tmp_path):
+    # The sort key is a real column, so an integer question returns that column.
+    path = _save(tmp_path, "crew.xlsx", ["Tag", "age"], [
+        ("Nia", 40), ("Pax", 22), ("Quill", 31),
+    ])
+    assert _ask(path, "The oldest age in the crew log. Respond with an integer.") == "40"

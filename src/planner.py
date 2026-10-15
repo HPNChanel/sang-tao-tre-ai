@@ -396,7 +396,7 @@ def _plan_core(query: str, tables, strict=False):
     if spec.kind == "yesno":
         plan["op"] = "compare"
         args["cmp"] = "<" if re.search(r"\b(less|lower|smaller|fewer|below|under)\b", low) else ">"
-    elif topn:
+    elif topn and _commit_topn(query, spec, topn, view, body):
         plan["op"] = "rank"
         args["k"] = topn["k"]
         args["order"] = _topn_order(query, topn["word"])
@@ -557,6 +557,11 @@ def _plan_core(query: str, tables, strict=False):
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
         plan["columns"] = ["*"]
     abstain = _unhandled_op(op_low, plan)
+    # A refused top-N (scalar number, or a count that is also a stored value) keeps
+    # the older max/lookup. That leftover phrase is not an unparsed operation.
+    if abstain and topn and plan["op"] in ("lookup", "values", "sum", "count") \
+            and not _commit_topn(query, spec, topn, view, body):
+        abstain = False
     fresh = _fresh_op(plan, low, op_low, topn, _topn_lists(query, spec))
     return plan, {"view": view, "q": q, "rows": rows, "cols_cov": best_cov, "body": body,
                   "ambiguous_rank_scope": ambiguous_rank_scope,
@@ -832,9 +837,14 @@ def _nth_match(low):
 
 
 def _prefer_measure_return(args, plan, low, view):
-    """'the second highest score' is the number. 'which person' stays the label."""
+    """'the second highest score' is the number. 'which person' stays the label.
+
+    A sort key that is not a real column (an age ordering, for example) cannot be
+    the returned measure. Any column that is the sort key can, including one whose
+    name happens to be a sort sentinel.
+    """
     by = args.get("by")
-    if not by or by == "age" or by not in view.df.columns:
+    if not by or by not in view.df.columns:
         return
     asks_label = re.search(r"\b(who|whom|which|whose|name the|person|people|names)\b", low)
     kind = plan["format"]["kind"]
@@ -1036,12 +1046,37 @@ def _named_numeric(body, view):
     return [c for c, _ in found if c in num]
 
 
+def _commit_topn(query, spec, topn, view, body):
+    """Take a ranked list only when that reading is the one the question asks for.
+
+    A lone integer or number is the later max/min, not a list. A top-N shape main
+    already ranked is kept. A new shape (reversed 'highest 3', or a count with no
+    list wording) is kept only when one measure is named and the count is not also
+    a stored value; otherwise the older reading stands.
+    """
+    if spec.kind in ("int", "decimal", "number"):
+        return False
+    lists = _topn_lists(query, spec)
+    fresh = (not lists) or topn.get("via") == "rev"
+    if not fresh:
+        return True
+    by = "age" if topn.get("word") in ("oldest", "youngest") else topn.get("by")
+    fake = {"op": "rank", "args": {"k": topn.get("k"), "by": by},
+            "columns": [by] if by and by in view.df.columns else [], "rows": {"paths": []}}
+    if _digit_could_be_value(fake, view, query):
+        return False
+    return _measure_unique(fake, {"view": view, "body": body})
+
+
 def _measure_unique(plan, info):
     """One measure column, or exactly one column the question names."""
     view = info["view"]
     num = [c for c in view.numeric_cols() if not _is_total_col(c)]
     by = plan["args"].get("by")
-    if by == "age":
+    # A sort key that is not a column is already chosen. It is one reading when the
+    # table has a single date column or a birth column; several dates and no birth
+    # column are still ambiguous.
+    if by and by not in view.df.columns:
         return len(view.date_cols()) == 1 or _birth_column(view) is not None
     if len(num) <= 1:
         return True
