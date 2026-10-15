@@ -233,10 +233,25 @@ def match_rows(view: View, q: Query, exclude=frozenset()):
 
 # ---------------------------------------------------------------- planning
 def strip_instruction(query, spec):
-    q = re.sub(r"\((?:e\.g\.|eg\.?|for example|i\.e\.)[^)]*\)", " ", query, flags=re.I)
+    """Drop answer-format text before operand, year, and N extraction.
+
+    Numbers inside 'Answer with only ...', a parenthetical '(e.g. ...)',
+    'for example ...', or the Vietnamese 'ví dụ' / 'chỉ trả lời' are examples
+    of how to write the answer, not operands.
+    """
+    q = query
+    q = re.sub(
+        r"\((?:e\.g\.|eg\.?|for example|i\.e\.|ví\s*dụ|vi\s*du)[^)]*\)",
+        " ", q, flags=re.I)
+    # 'e.g.' ends on a dot, so it cannot demand a trailing word boundary.
+    q = re.sub(
+        r"(?:\bfor example\b|\be\.g\.|\beg\.?|\bví\s*dụ\b|\bvi\s*du\b)[^.;?!]*",
+        " ", q, flags=re.I)
     if spec.instruction:
         q = q.replace(spec.instruction, " ")
-    q = re.sub(r"\b(Provide|Answer|Respond)\b[^.?!]*[.?!]?", " ", q)
+    q = re.sub(
+        r"\b(?:Provide|Answer|Respond|Chỉ\s+trả\s+lời|Chi\s+tra\s+loi)\b[^.?!]*[.?!]?",
+        " ", q, flags=re.I)
     return q
 
 
@@ -545,6 +560,7 @@ def _plan_core(query: str, tables, strict=False):
             plan["table"]["sheet"] = None
     if plan["op"] in ("sum", "mean", "diff", "compare", "ratio", "share", "argmax", "argmin", "rank"):
         plan["columns"] = [c for c in plan["columns"] if c in num_cols or c.endswith(" | *") or c == "*"]
+    _order_year_change_columns(plan, body)
     if plan["op"] in ("lookup", "values") and (len(plan["rows"]["paths"]) * max(1, len(plan["columns"])) > 1 or spec.kind == "list"):
         plan["op"] = "values"
     if plan["op"] == "values" and re.search(r"\b(pair|respectively|both)\b", op_low):
@@ -1089,6 +1105,55 @@ def _measure_unique(plan, info):
     return cols == [named[0]] or by == named[0]
 
 
+def _order_year_change_columns(plan, body):
+    """Put YEAR_A then YEAR_B so a signed change is value(YEAR_B) - value(YEAR_A)."""
+    if plan["op"] != "diff" or plan["args"].get("signed_order") != "second_minus_first":
+        return
+    m = re.search(r"\bfrom\s+((?:19|20)\d{2})\s+to\s+((?:19|20)\d{2})\b", body or "", re.I)
+    if not m:
+        return
+    y1, y2 = m.group(1), m.group(2)
+    located = {}
+    for c in plan["columns"]:
+        y = _col_year(c)
+        if y:
+            located[y] = c
+    if set(located) == {y1, y2} and len(plan["columns"]) == 2:
+        plan["columns"] = [located[y1], located[y2]]
+
+
+def _col_year(col):
+    """The single 4-digit year in a column leaf, if it has exactly one."""
+    leaf = str(col).split(" | ")[-1]
+    found = re.findall(r"(?:19|20)\d{2}", leaf)
+    return found[0] if len(found) == 1 else None
+
+
+def _signed_year_change(plan, info):
+    """'change from YEAR_A to YEAR_B' over one group is one signed difference.
+
+    The two columns are the two periods of the same aggregate, value(YEAR_B)
+    minus value(YEAR_A). They are not two competing measures.
+    """
+    if plan.get("op") != "diff" or plan["args"].get("abs"):
+        return False
+    if plan["args"].get("signed_order") != "second_minus_first":
+        return False
+    body = info.get("body") or ""
+    m = re.search(r"\bfrom\s+((?:19|20)\d{2})\s+to\s+((?:19|20)\d{2})\b", body, re.I)
+    if not m:
+        return False
+    years = {m.group(1), m.group(2)}
+    cols = plan["columns"]
+    got = [_col_year(c) for c in cols]
+    if len(cols) != 2 or set(got) != years:
+        return False
+    rows = plan["rows"]
+    if len(rows["paths"]) == 1:
+        return True
+    return not rows["paths"] and bool(rows.get("scope") or rows.get("where"))
+
+
 def _digit_could_be_value(plan, view, original):
     """A digit used as N also occurs as a stored value, so it may not be a count."""
     k = plan["args"].get("k")
@@ -1098,7 +1163,8 @@ def _digit_could_be_value(plan, view, original):
         k = int(k)
     except (TypeError, ValueError):
         return False
-    if not re.search(rf"\b{k}\b", _fold_q(original)):
+    bare = strip_instruction(original, parse_instruction(original))
+    if not re.search(rf"\b{k}\b", _fold_q(bare)):
         return False
     for col in view.numeric_cols():
         for v in view.df[col]:
@@ -1129,6 +1195,8 @@ def _operands_unique(plan, info):
     cols = [c for c in plan["columns"] if c in num or str(c).endswith(" | *") or c == "*"]
     paths = plan["rows"]["paths"]
     if op == "diff":
+        if _signed_year_change(plan, info):
+            return True
         pair_rows = len(paths) == 2 and len(cols) == 1
         pair_cols = len(paths) == 1 and len(cols) == 2
         return (pair_rows or pair_cols) and _measure_unique(plan, info)

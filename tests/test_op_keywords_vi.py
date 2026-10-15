@@ -173,6 +173,44 @@ def test_scalar_count_stays_a_single_extreme(tmp_path):
     assert _ask(path, "top 2 Grams. Respond with an integer.") == "88"
 
 
+def test_signed_year_change_ignores_format_examples(tmp_path):
+    # Example numbers in the reply instruction are not operands. The signed
+    # change is the later year minus the earlier year for the named berth.
+    # -4 and 15 are stored on another row and also written in the instruction.
+    path = _save(tmp_path, "berths.xlsx", ["Berth", "2019", "2018"], [
+        ("Quill", 50, 20),
+        ("Pax", 9, 8),
+        ("Sample", -4, 15),
+    ])
+    q = ("Quill berth crates changed from 2018 to 2019 by how much? "
+         "Respond with a signed integer (for example -4 or 15).")
+    tables = load_tables(path)
+    planned = plan(q, tables)
+    assert planned["op"] == "diff"
+    assert planned["columns"] == ["2018", "2019"]
+    assert planned["args"].get("signed_order") == "second_minus_first"
+    assert planned["rows"]["where"] == []
+    assert _ask(path, q) == "30"
+    q = ("Quill berth crates changed from 2018 to 2019 by how much? "
+         "Chi tra loi so nguyen (vi du: -4 hoac 15).")
+    assert _ask(path, q) == "30"
+    # Later year is smaller: the sign stays.
+    path = _save(tmp_path, "berths_down.xlsx", ["Berth", "2018", "2019"], [
+        ("Quill", 50, 20),
+        ("Pax", 9, 8),
+    ])
+    q = "Quill berth crates changed from 2018 to 2019 by how much? Respond with a signed integer."
+    assert _ask(path, q) == "-30"
+
+
+def test_year_change_without_one_group_stays_blank(tmp_path):
+    path = _save(tmp_path, "berths.xlsx", ["Berth", "2018", "2019"], [
+        ("Quill", 20, 50),
+        ("Pax", 8, 9),
+    ])
+    _blank(path, "By how much did crates change from 2018 to 2019?")
+
+
 def test_sort_sentinel_can_return_that_column(tmp_path):
     # The sort key is a real column, so an integer question returns that column.
     path = _save(tmp_path, "crew.xlsx", ["Tag", "age"], [
