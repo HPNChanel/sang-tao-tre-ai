@@ -95,7 +95,7 @@ Log tiến độ, timeout, cảnh báo LLM/executor ghi stderr. Khóa tùy chọ
 
 #19 trên GitHub là PR bàn giao này (`ksp1/handover-codex`), chỉ tài liệu.
 
-PR adapter (KSP2, nhánh `ksp2/submission-adapter`) thêm Dockerfile và sáu đối số cuộc thi `--xlsx-dir --queries --output --openrouter-key --openrouter-model --openrouter-base-url`, log stderr, và giữ `--data` / `--out`. Image: `docker build --platform=linux/amd64`, rồi `docker run` với đúng sáu đối số đó. Bản nộp tối nay = main `19eb267` + PR adapter. PR #18 không vào bản nộp.
+PR adapter (KSP2, nhánh `ksp2/submission-adapter`) thêm Dockerfile và sáu đối số cuộc thi `--xlsx-dir --queries --output --openrouter-key --openrouter-model --openrouter-base-url`, log stderr, và giữ `--data` / `--out`. Image: `docker build --platform=linux/amd64`, rồi `docker run` với đúng sáu đối số đó. Bản nộp tối nay = main `47c1e20`. PR #18 không vào bản nộp.
 
 Gói thử dataset 2, không gọi LLM: `scripts/dry_run_dataset2.sh INPUT OUTPUT_DIR`. Zip chỉ chứa `submission.csv` ở gốc; `scripts/check_zip.sh` kiểm tra.
 
@@ -129,7 +129,7 @@ Mỗi PR:
 - **#18 draft, không vào bản nộp.** Nhánh `ksp1/title-row-header`, head `6f82333464824bd8c8170eb9480fc6faf529b703`. Chi tiết QA ở mục sau.
 - **#17 đang mở**, KSP2, nhánh `ksp2/vi-filter-fix`, head `d4d83acd040285956de1d78e31ca849e165c1508`. Lọc dòng tiếng Việt: nhận ra điều kiện mà không gắn được đúng một cột và một giá trị thì để trống. Mô tả PR ghi nhánh vẫn dựa trên `cf37c01`, chưa rebase lên `19eb267`.
 - **#19** là PR bàn giao này (`ksp1/handover-codex`), chỉ tài liệu. Không nằm trong bản nộp.
-- **PR adapter** (KSP2, nhánh `ksp2/submission-adapter`) là #20 merge `47c1e20`. Dockerfile và sáu đối số cuộc thi. Bản nộp tối nay = main `19eb267` + PR adapter.
+- **PR adapter** (KSP2, nhánh `ksp2/submission-adapter`) là #20 merge `47c1e20`. Dockerfile và sáu đối số cuộc thi. Bản nộp tối nay = main `47c1e20`.
 
 ## PR #18 (không vào bản nộp)
 
