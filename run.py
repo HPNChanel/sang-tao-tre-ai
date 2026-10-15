@@ -92,6 +92,9 @@ def main(argv=None):
             ans, b = answer_one(byid[qid], data, cache)
             answers[qid] = ans
             lf.write(json.dumps({"id": qid, "tokens": b.tokens,
+                                 "completion_tokens": b.completion_tokens,
+                                 "reasoning_tokens": b.reasoning_tokens,
+                                 "attempts": b.log,
                                  "cost_usd": round(b.spent, 6)}) + "\n")
             print(f"{qid}\t{time.time()-t:.2f}s\t{ans!r}", file=sys.stderr)
     with open(out, "w", newline="", encoding="utf-8") as f:
