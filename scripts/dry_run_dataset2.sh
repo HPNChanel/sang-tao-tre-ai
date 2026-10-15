@@ -11,7 +11,12 @@
 #
 # OUTPUT_DIR receives submission.csv, run_log.jsonl, and submission.zip.
 #
-# The timed span is run.py plus zip packaging. The checker runs after that.
+# The measured span is run.py plus zip packaging. The checker runs after that.
+# Measurement uses /usr/bin/time -v (Maximum resident set size) when that
+# binary exists. Otherwise the same span is timed in process and peak RSS
+# comes from resource.getrusage(RUSAGE_SELF), with waited children included
+# so the zip step is not dropped. Peak RSS is printed in MB next to the
+# contest 1 GB limit (1024 MB, matching the kibibyte unit time reports).
 # OPENROUTER_API_KEY is removed from the child environment so the solver
 # stays on the code path.
 #
@@ -75,8 +80,52 @@ PY
 )
 
 cd "$ROOT"
-seconds=$(
+
+# Shared driver: run.py then zip. stdout is unused. stderr is the solver log.
+run_pack() {
   env -u OPENROUTER_API_KEY python3 - "$data" "$OUTPUT" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+data, output = sys.argv[1], Path(sys.argv[2])
+csv_path = output / "submission.csv"
+zip_path = output / "submission.zip"
+subprocess.check_call(
+    [sys.executable, "run.py", "--data", data, "--out", str(csv_path)]
+)
+if zip_path.exists():
+    zip_path.unlink()
+subprocess.check_call(["zip", "-q", "-X", "-j", str(zip_path), str(csv_path)])
+PY
+}
+
+if [[ -x /usr/bin/time ]]; then
+  export data OUTPUT
+  export -f run_pack
+  LC_ALL=C /usr/bin/time -v -o "$work/timev.txt" bash -c 'set -euo pipefail; run_pack'
+  parsed=$(python3 - "$work/timev.txt" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+em = re.search(r"Elapsed \(wall clock\) time \(h:mm:ss or m:ss\): (\S+)", text)
+rm = re.search(r"Maximum resident set size \(kbytes\): (\d+)", text)
+if not em or not rm:
+    sys.exit("time -v output missing elapsed or maximum resident set size")
+bits = em.group(1).split(":")
+if len(bits) == 3:
+    sec = int(bits[0]) * 3600 + int(bits[1]) * 60 + float(bits[2])
+elif len(bits) == 2:
+    sec = int(bits[0]) * 60 + float(bits[1])
+else:
+    sec = float(bits[0])
+print(f"{sec:.3f} {rm.group(1)}")
+PY
+)
+else
+  parsed=$(env -u OPENROUTER_API_KEY python3 - "$data" "$OUTPUT" <<'PY'
+import resource
 import subprocess
 import sys
 import time
@@ -85,16 +134,36 @@ from pathlib import Path
 data, output = sys.argv[1], Path(sys.argv[2])
 csv_path = output / "submission.csv"
 zip_path = output / "submission.zip"
+sys.path.insert(0, ".")
+import run
+
 t0 = time.perf_counter()
-subprocess.check_call(
-    [sys.executable, "run.py", "--data", data, "--out", str(csv_path)]
-)
+rc = run.main(["--data", data, "--out", str(csv_path)])
+if rc:
+    sys.exit(rc)
 if zip_path.exists():
     zip_path.unlink()
 subprocess.check_call(["zip", "-q", "-X", "-j", str(zip_path), str(csv_path)])
-print(f"{time.perf_counter() - t0:.3f}")
+elapsed = time.perf_counter() - t0
+self_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+child_kb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+print(f"{elapsed:.3f} {max(self_kb, child_kb)}")
 PY
 )
+fi
 
-echo "run+package wall_clock_s=${seconds}"
+seconds=${parsed%% *}
+rss_kb=${parsed##* }
+python3 - "$seconds" "$rss_kb" <<'PY'
+import sys
+
+seconds = float(sys.argv[1])
+kb = int(sys.argv[2])
+mb = kb / 1024.0
+limit = 1024.0
+print(f"run+package wall_clock_s={seconds:.3f}")
+print(f"run+package peak_rss_mb={mb:.1f}")
+print(f"run+package rss_limit_mb={limit:.0f}")
+print(f"run+package rss_headroom_mb={limit - mb:.1f}")
+PY
 "$ROOT/scripts/check_zip.sh" "$OUTPUT/submission.zip"

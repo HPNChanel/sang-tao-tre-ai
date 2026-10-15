@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write a small synthetic dataset-2 pack for the dry run.
+"""Write a synthetic dataset-2 pack for the dry run.
 
 Pure Python, openpyxl, fixed seed. Not contest data. The pack matches the
 layout run.py reads:
@@ -9,9 +9,13 @@ layout run.py reads:
   <out>/xlsx_files/dataset2_fake.xlsx
 
 The workbook has three kinds of sheet, same shapes as round 1:
-  People  — record table, two-row merged header
+  People  — record table, two-row merged header, tens of thousands of rows
   Stats   — grouped rows plus a Total row
   2023, 2024, 2025 — same columns, one sheet per period
+
+Round-1 workbook byte sizes are not recorded in this repo (only an 87 MB
+RAM note for a full answer run), so People is generated large enough to
+stand in for a big round-1 file. The script prints the xlsx size in bytes.
 """
 from __future__ import annotations
 
@@ -19,7 +23,7 @@ import argparse
 import csv
 import json
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import openpyxl
@@ -27,11 +31,14 @@ from openpyxl.styles import Alignment, Font
 
 SEED = 20261016
 XLSX_NAME = "dataset2_fake.xlsx"
+PEOPLE_ROWS = 40000
 
 
 def _people(wb, rng: random.Random):
     ws = wb.active
     ws.title = "People"
+    # Two-row merged header. Several columns; only Score is numeric so a long
+    # flat sheet is not mistaken for nested subtotals.
     ws["A1"] = "No"
     ws.merge_cells("A1:A2")
     ws["B1"] = "Name"
@@ -42,24 +49,32 @@ def _people(wb, rng: random.Random):
     ws.merge_cells("D1:D2")
     ws["E1"] = "Score"
     ws.merge_cells("E1:E2")
-    for col in ("A", "B", "D", "E"):
+    ws["F1"] = "City"
+    ws.merge_cells("F1:F2")
+    ws["G1"] = "Shift"
+    ws.merge_cells("G1:G2")
+    for col in ("A", "B", "D", "E", "F", "G"):
         ws[f"{col}1"].alignment = Alignment(horizontal="center", vertical="center")
     ws["B1"].alignment = Alignment(horizontal="center")
-    first = ["An", "Binh", "Chi", "Dung", "Ha"]
-    last = ["Le", "Tran", "Pham", "Vo", "Do"]
-    rng.shuffle(last)
-    for i, (fn, ln) in enumerate(zip(first, last), start=1):
-        row = i + 2
-        year = rng.randint(1988, 2004)
-        month = rng.randint(1, 12)
-        day = rng.randint(1, 28)
-        score = rng.choice([45, 60, 70, 80, 90])
-        ws.cell(row, 1, i)
-        ws.cell(row, 2, fn)
-        ws.cell(row, 3, ln)
-        ws.cell(row, 4, datetime(year, month, day))
-        ws.cell(row, 4).number_format = "YYYY-MM-DD"
-        ws.cell(row, 5, score)
+    first = ["An", "Binh", "Chi", "Dung", "Ha", "Khoa", "Lan", "Minh", "Ngoc", "Phuc"]
+    last = ["Le", "Tran", "Pham", "Vo", "Do", "Bui", "Ho", "Dang", "Ly", "Truong"]
+    cities = ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"]
+    shifts = ["day", "evening", "night"]
+    # Unique birth dates so "oldest" is a single row. Ids are text codes so
+    # Score stays the only numeric column, and a question number is not a row label.
+    offsets = list(range(PEOPLE_ROWS))
+    rng.shuffle(offsets)
+    base = datetime(1970, 1, 1)
+    for i in range(PEOPLE_ROWS):
+        ws.append((
+            f"P{i + 1:05d}",
+            first[i % len(first)],
+            last[(i * 3) % len(last)],
+            base + timedelta(days=int(offsets[i])),
+            rng.randint(40, 99),
+            cities[i % len(cities)],
+            shifts[i % len(shifts)],
+        ))
 
 
 def _stats(wb):
@@ -135,7 +150,9 @@ def write_pack(out: Path) -> None:
     _people(wb, rng)
     _stats(wb)
     _periods(wb, rng)
-    wb.save(xlsx_dir / XLSX_NAME)
+    path = xlsx_dir / XLSX_NAME
+    wb.save(path)
+    print(f"{XLSX_NAME} bytes={path.stat().st_size} rows_people={PEOPLE_ROWS}")
     queries = _queries()
     (out / "queries.json").write_text(
         json.dumps(queries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
