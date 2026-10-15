@@ -108,4 +108,5 @@ def test_key_does_not_change_section_answer(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     assert C.strict_active() is False
     with_key, _ = run.answer_one(question, tmp_path, {})
-    assert with_key == without == "52"
+    # Men is City 10 + Town 30. The other section is a different set of cells.
+    assert with_key == without == "40"
