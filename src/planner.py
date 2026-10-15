@@ -403,6 +403,8 @@ def _plan_core(query: str, tables, strict=False):
     elif topk and (topk.group(1) in NUMW or topk.group(1).isdigit()):
         args["k"] = NUMW.get(topk.group(1)) or int(topk.group(1))
         _order_args(args, topk.group(2), view, cols)
+        # 'among the k oldest' is the birth column; the later aggregate is a different column
+        _order_birth_subset(args, topk.group(2), view)
         rest = low[topk.end():]
         args["agg"] = "max" if re.search(rf"\b({SUP_MAX})\b", rest) else "min" if re.search(rf"\b({SUP_MIN})\b", rest) else "mean" if re.search(r"average|mean", rest) else "sum"
         plan["op"] = "topk_agg"
@@ -420,8 +422,10 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "argmax" if sup_max and not (sup_min and sup_min.start() < sup_max.start()) else "argmin"
         args["abs"] = bool(re.search(r"absolute", low))
         _choose_over(plan, view, rows, cols, low)
-    elif (sup_max or sup_min) and plan["format"]["kind"] in ("date",) or ((sup_max or sup_min) and re.search(r"\bwhat (was|is) the (highest|lowest|maximum|minimum|largest|smallest|earliest|latest)", low)):
-        plan["op"] = "max" if sup_max else "min"
+    elif _value_superlative(sup_max, sup_min, plan, low):
+        # 'score highest what is the value' is max of that column, including over a filtered subset
+        earlier_min = bool(sup_min) and (not sup_max or sup_min.start() < sup_max.start())
+        plan["op"] = "min" if earlier_min else "max"
         if not cols and view.date_cols():
             plan["columns"] = view.date_cols()[:1]
     elif re.search(r"\bsumm?ing\b|\bsum\b|\btotal\b|\bcombined\b|\baltogether\b|\bin all\b|\bacross all\b", low) and not re.search(r"^\s*how many\b(?!.*\b(total|sum|combined)\b)", low):
@@ -456,20 +460,13 @@ def _plan_core(query: str, tables, strict=False):
             rest = [c for c in plan["columns"] if c not in cc]
             plan["columns"] = rest or plan["columns"]
             plan["rows"]["paths"] = [p for p in plan["rows"]["paths"]] if plan["op"] not in ("max", "min", "mean", "sum") else plan["rows"]["paths"]
+    if plan["rows"]["where"]:
+        # 'born in 1990' filters the birth column (date year or numeric year), not whichever date is listed first
+        plan["rows"]["where"] = _aim_born_year(plan["rows"]["where"], view, low)
     if plan["op"] == "rank":
         # '55 years and over' names a band already chosen as the sort column or the row, not a threshold.
-        # 'born in 1997' filters the birth column even when another date column is listed first.
         band = " ".join([str(args.get("by") or "")] + list(plan["rows"]["paths"]))
-        wh = []
-        for w in plan["rows"]["where"]:
-            if _number_names_band(w.get("value"), band):
-                continue
-            if w.get("op") == "year==" and re.search(r"\bborn\b", low):
-                birth = [c for c in view.date_cols() if re.search(r"birth|born|dob", str(c), re.I)]
-                if birth:
-                    w = dict(w, column=birth[0])
-            wh.append(w)
-        plan["rows"]["where"] = wh
+        plan["rows"]["where"] = [w for w in plan["rows"]["where"] if not _number_names_band(w.get("value"), band)]
     if view.stacked and plan["op"] in ("compare", "diff", "values", "ratio") and len(set(plan["rows"]["paths"])) == 1:
         sheets = []
         for sname in dict.fromkeys(view.df["_sheet"]):
@@ -505,8 +502,38 @@ def _order_args(args, word, view, cols):
         num = [c for c in cols if c in view.numeric_cols()]
         args["by"] = num[0] if num else None
         args["order"] = "desc" if re.fullmatch(SUP_MAX, word) else "asc"
-    ret = [c for c in cols if c != args.get("by") and not (args.get("by") == "age" and re.search(r"\b(age|birth|born)\b", str(c), re.I))]
+    ret = [c for c in cols if c != args.get("by") and not (args.get("by") == "age" and _birth_name(c))]
     args["return"] = ret[0] if ret else None
+
+
+def _order_birth_subset(args, word, view):
+    """Oldest/youngest as a multi-row subset is the birth column itself.
+
+    A later max/min/sum/mean then reduces a different column over every selected row.
+    A single nth keeps by='age' (age at the row's other date, unless that date is the answer).
+    """
+    if word not in ("oldest", "youngest"):
+        return
+    col = _birth_column(view)
+    if not col:
+        return
+    args["by"] = col
+    args["order"] = "asc" if word == "oldest" else "desc"
+    if args.get("return") == col:
+        args["return"] = None
+
+
+def _value_superlative(sup_max, sup_min, plan, low):
+    """Superlative asking for a number or a date, not for which row.
+
+    Covers both 'what is the highest score' and 'score highest what is the value'."""
+    if not (sup_max or sup_min) or re.search(r"\bhow many\b", low):
+        return False
+    if plan["format"]["kind"] in ("date", "int", "decimal", "number"):
+        return True
+    if re.search(r"\bwhat (?:was|is) the (?:highest|lowest|maximum|minimum|largest|smallest|earliest|latest)\b", low):
+        return True
+    return bool(re.search(r"\bwhat (?:was|is) the value\b", low))
 
 
 def _tie_mode(low, fmt):
@@ -581,11 +608,69 @@ def _conditions(body, view, cols, num_cols):
         c = _condition_column(w, view, cols, num_cols)
         if c and not (len(m.group(1)) == 4 and m.group(1).startswith(("19", "20")) and c == m.group(1)):
             out.append({"column": c, "op": op, "value": float(m.group(1))})
-    y = re.search(r"\b(?:in|during|of)\s+((?:19|20)\d{2})\b", body)
+    _append_year_filter(out, body.lower(), view, cols)
+    return out
+
+
+def _birth_name(name) -> bool:
+    from .vi import fold
+    return bool(re.search(r"birth|born|dob|nam sinh|ngay sinh", fold(str(name)), re.I))
+
+
+def _birth_column(view):
+    """Date of birth if present, otherwise a numeric birth-year column."""
+    dates = [c for c in view.date_cols() if _birth_name(c)]
+    if dates:
+        return dates[0]
+    nums = [c for c in view.numeric_cols() if _birth_name(c)]
+    return nums[0] if nums else None
+
+
+def _is_year_number(value) -> bool:
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError):
+        return False
+    return 1900 <= n <= 2100
+
+
+def _append_year_filter(out, low, view, cols):
+    """'born in 1982' filters the birth column even when it is a plain number.
+
+    A bare 'in 1982' still uses a date column, so a period column is unchanged."""
+    born = re.search(r"\bborn\s+in\s+((?:19|20)\d{2})\b", low)
+    if born:
+        year = int(born.group(1))
+        col = _birth_column(view)
+        if col is not None:
+            op = "year==" if col in view.date_cols() else "=="
+            out.append({"column": col, "op": op, "value": year})
+            return
+        if view.date_cols():
+            dc = [c for c in cols if c in view.date_cols()] or view.date_cols()
+            out.append({"column": dc[0], "op": "year==", "value": year})
+        return
+    y = re.search(r"\b(?:in|during|of)\s+((?:19|20)\d{2})\b", low)
     if y and view.date_cols():
         dc = [c for c in cols if c in view.date_cols()] or view.date_cols()
         out.append({"column": dc[0], "op": "year==", "value": int(y.group(1))})
-    return out
+
+
+def _aim_born_year(where, view, low):
+    """Point a year filter at the birth column when the question says born."""
+    if not re.search(r"\bborn\b", low):
+        return where
+    col = _birth_column(view)
+    if col is None:
+        return where
+    op = "year==" if col in view.date_cols() else "=="
+    aimed = []
+    for w in where:
+        if w.get("op") in ("year==", "==") and _is_year_number(w.get("value")):
+            aimed.append({"column": col, "op": op, "value": int(float(w["value"]))})
+        else:
+            aimed.append(w)
+    return aimed
 
 
 def _number_names_band(value, text):

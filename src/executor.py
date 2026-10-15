@@ -11,7 +11,7 @@ import pandas as pd
 
 from . import conventions as C
 from .answer_format import FormatSpec, format_answer
-from .planner import TOTAL_LABEL, View, _label_range, build_views
+from .planner import TOTAL_LABEL, View, _birth_column, _label_range, build_views
 from .textmatch import Query, tokens
 from .xlsx_tables import strip_footnotes
 
@@ -110,16 +110,31 @@ def _apply_where(view, idx, where):
     return idx
 
 
-def _ages(view, idx):
+def _ages(view, idx, ignore=()):
+    """Age for a single nth. A date the question asks to return is not the age reference.
+
+    Youngest is then the latest birth date, and that other date is the answer.
+    When the answer is a different column (a score, a name), a second date on the row
+    is still the reference: age = reference_date - birth_date.
+    """
     df = view.df
+    skip = {c for c in (ignore or ()) if c}
     dcols = view.date_cols()
+    named = _birth_column(view)
+    if named and named not in dcols:
+        out = {}
+        for i in idx:
+            try:
+                out[i] = -float(df.at[i, named])
+            except (TypeError, ValueError):
+                out[i] = np.nan
+        return out
     if dcols:
-        birth = [c for c in dcols if re.search(r"birth|born|dob", str(c), re.I)] or dcols[:1]
-        b = birth[0]
-        ref = [c for c in dcols if c != b]
+        b = named if named in dcols else dcols[0]
+        ref = [c for c in dcols if c != b and c not in skip]
         if C.AGE_AT_ROW_REFERENCE_DATE and ref:
             return {i: (df.at[i, ref[0]] - df.at[i, b]).days / 365.2425 if df.at[i, b] and df.at[i, ref[0]] else np.nan for i in idx}
-        return {i: (dt.datetime(2100, 1, 1) - df.at[i, b]).days / 365.2425 for i in idx}
+        return {i: (dt.datetime(2100, 1, 1) - df.at[i, b]).days / 365.2425 if df.at[i, b] else np.nan for i in idx}
     agec = [c for c in view.numeric_cols() if re.fullmatch(r"age", tokens(str(c).split(" | ")[-1], keep_stop=True)[0] if tokens(str(c), keep_stop=True) else "")]
     if agec:
         return {i: df.at[i, agec[0]] for i in idx}
@@ -129,7 +144,7 @@ def _ages(view, idx):
 def _order(view, idx, args):
     by = args.get("by")
     if by == "age":
-        key = _ages(view, idx)
+        key = _ages(view, idx, ignore=[args.get("return")])
     elif by:
         key = {i: view.df.at[i, by] for i in idx}
     else:
@@ -300,10 +315,14 @@ def execute(plan, tables):
             i = ordered[args.get("n", 1) - 1]
             val = _ret(view, i, args.get("return"))
         else:
+            # reduce the answer column over the whole subset, not the boundary row
             top = ordered[: args.get("k", 1)]
-            col = args.get("return") or view.numeric_cols()[-1]
-            s = pd.to_numeric(df.loc[top, col], errors="coerce")
-            val = getattr(s, args.get("agg", "max"))()
+            col = _subset_value_column(view, args)
+            raw = [_subset_cell(df.at[i, col]) for i in top]
+            raw = [v for v in raw if v is not None]
+            if not raw:
+                raise PlanError("topk_agg: empty subset")
+            val = _reduce_subset(raw, args.get("agg") or "max")
     elif op == "share":
         g = groups[-1] if groups else None
         if g is None:
@@ -324,6 +343,44 @@ def execute(plan, tables):
     else:
         raise PlanError(f"unknown op {op}")
     return val
+
+
+def _subset_value_column(view, args):
+    """Column reduced over a subset: the named return column, else a numeric column that is not the sort key."""
+    col = args.get("return")
+    if col in view.df.columns:
+        return col
+    by = args.get("by")
+    nums = [c for c in view.numeric_cols() if c != by]
+    pool = nums or view.numeric_cols()
+    if not pool:
+        raise PlanError("topk_agg: no value column")
+    return pool[-1]
+
+
+def _subset_cell(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    if isinstance(v, (dt.date, dt.datetime)):
+        return v
+    num = pd.to_numeric(v, errors="coerce")
+    if pd.isna(num):
+        return None
+    return float(num)
+
+
+def _reduce_subset(raw, agg):
+    if isinstance(raw[0], (dt.date, dt.datetime)):
+        return max(raw) if agg == "max" else min(raw)
+    if agg == "min":
+        return min(raw)
+    if agg == "sum":
+        return sum(raw)
+    if agg == "mean":
+        return sum(raw) / len(raw)
+    if agg == "count":
+        return len(raw)
+    return max(raw)
 
 
 def _rank_columns(view, idx, cols, args):
