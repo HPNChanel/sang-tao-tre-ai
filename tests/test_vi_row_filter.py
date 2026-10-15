@@ -564,6 +564,59 @@ def test_age_column_band_still_filters(tmp_path):
     assert planned["op"] == "count"
 
 
+def test_shift_alias_row_does_not_shrink_the_count(tmp_path):
+    """A row named like the shift must not hide the other rows that share its alias."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("A1:C1")
+    ws["A1"] = "Kho"
+    for col, name in enumerate(["Ma", "Gio", "Kip"], 1):
+        ws.cell(2, col, name)
+    rows = [("Dem", 25, "night"), ("An", 30, "night"), ("Bo", 22, "night"), ("Cy", 18, "night"), ("Di", 40, "day")]
+    for r, row in enumerate(rows, 3):
+        for c, value in enumerate(row, 1):
+            ws.cell(r, c, value)
+    path = _save(wb, tmp_path, "kips.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Máy có Gio lớn hơn hai mươi thuộc kip dem, đếm mấy máy? Viết một chữ số.",
+    )
+    assert got == "3", (got, conf, reasons, None if not planned else planned["rows"])
+    assert planned["op"] == "count"
+    assert "dem" not in [str(p).split(" > ")[-1].lower() for p in planned["rows"]["paths"]]
+
+
+def test_empty_filtered_count_is_blank(tmp_path):
+    """A filter that keeps no row is blank, not a confident zero."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Ma", "Gio", "Kip"])
+    ws.append(["An", 25, "night"])
+    ws.append(["Bo", 30, "night"])
+    path = _save(wb, tmp_path, "empty.xlsx")
+    got, conf, reasons, _planned = _ask(
+        path,
+        "Đếm máy thuộc kip dem khi Gio đúng bằng chín trăm. Viết một chữ số.",
+    )
+    assert got is None, (got, conf, reasons)
+    assert got != "0"
+
+
+def test_men_phrase_keeps_a_selected_row(tmp_path):
+    """'nam giới' is the men column. It must not be dropped as a missing value."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Group", "Men", "Women"])
+    ws.append(["55 years and over", 30, 31])
+    ws.append(["20 to 24 years", 20, 21])
+    path = _save(wb, tmp_path, "genders.xlsx")
+    got, conf, reasons, _planned = _ask(
+        path,
+        "Tổng cột Men thuộc nhóm nam giới. Ghi chữ số.",
+    )
+    assert got == "50", (got, conf, reasons)
+
+
 def test_row_after_o_is_not_blocked(tmp_path):
     """ở + a row label is the row itself. A miss must not blank a correct lookup."""
     wb = openpyxl.Workbook()

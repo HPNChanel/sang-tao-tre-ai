@@ -265,6 +265,10 @@ def execute(plan, tables):
             if r.get("scope") is None and not r.get("range") and not (plan.get("table") or {}).get("sheet"):
                 idx = _first_root_scope(view, idx)
         idx = _apply_where(view, idx, r.get("where"))
+        # A filter that keeps no row is not a confident zero. The cue may have
+        # missed a column, a value, or a threshold.
+        if op == "count" and r.get("where") and not idx:
+            raise PlanError("filtered count is empty")
         if op == "count":
             val = len(idx)
         else:

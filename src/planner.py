@@ -2007,10 +2007,27 @@ def _attach_vi_filters(plan, info, original):
         elif keep_scope(cat.get("value")):
             pass
         elif not _explained_as_row(view, cat.get("value")):
-            failed = True
+            # 'nam giới' / 'nữ giới' is already the men or women column or row.
+            # Any other cue that did not bind is still unresolved.
+            if not (_gender_value(cat.get("value")) and _gender_already_chosen(plan, cat.get("value"))):
+                failed = True
     wider = re.sub(r"\s+", " ", fold(original).lower())
     for item in spec["nums"]:
-        col = _bind_threshold(view, item, wider)
+        # 'từ 55 tuổi trở lên' is the row band the translator already rewrote.
+        # One numeric age column still takes the comparison. A band the row
+        # matcher already selected is not a second cutoff, and it must not
+        # be rejected because a year shares the clause.
+        if _spoken_age_band(item):
+            age_cols = _age_columns(view)
+            if len(age_cols) == 1:
+                col = age_cols[0]
+            elif _band_is_a_label(view, item) or _plan_has_other_rows(plan, str(int(float(item["value"]))) if _whole_number(item) else ""):
+                continue
+            else:
+                failed = True
+                continue
+        else:
+            col = _bind_threshold(view, item, wider)
         year_where = None
         # A year outside this clause belongs to the row or column matcher.
         years = list(dict.fromkeys(re.findall(r"\b((?:19|20)\d{2})\b", item.get("window") or "")))
@@ -2028,19 +2045,6 @@ def _attach_vi_filters(plan, info, original):
                 if not (already and all(year in str(name) for name in already)):
                     failed = True
                     continue
-        # 'từ 55 tuổi trở lên' is the row band the translator already rewrote
-        # ('aged 55 years and over'). It is not a cutoff on the measure.
-        # One numeric age column still takes the comparison. If the band is
-        # not a label either, the condition was not attached: leave it blank.
-        if _spoken_age_band(item):
-            age_cols = _age_columns(view)
-            if len(age_cols) == 1:
-                col = age_cols[0]
-            elif _band_is_a_label(view, item):
-                continue
-            else:
-                failed = True
-                continue
         if col is None:
             if _plan_has_threshold(plan, item):
                 continue
@@ -2106,12 +2110,13 @@ def _attach_vi_filters(plan, info, original):
         merged.append(item)
     if merged:
         plan["rows"]["where"] = merged
-    # A row named the same as a filter value, or a scrap of that value,
-    # must not become the only row. The where clause is the subset.
-    values = [item.get("value") for item in merged]
+    # A row named like a filter value, including a shift alias ('sang' / day),
+    # must not become the only counted row. The where clause is the subset.
+    cues = [item.get("value") for item in merged if isinstance(item.get("value"), str)]
+    cues.extend(bound)
     plan["rows"]["paths"] = [
         path for path in plan["rows"]["paths"]
-        if not _label_overlaps_value(path, values)
+        if not _label_overlaps_value(path, cues)
     ]
     info["applied_filter"] = True
 
@@ -2137,6 +2142,36 @@ def _group_scope(view, value):
     if len(parents) == 1:
         return parents[0]
     return None
+
+
+def _gender_value(value):
+    return _norm_token(value) in ("nam", "nu")
+
+
+def _gender_already_chosen(plan, value):
+    """The planner already picked the men or women column, or some other row."""
+    needles = ("men", "male") if _norm_token(value) == "nam" else ("women", "female")
+    blob = _norm_token(" ".join(str(col) for col in (plan.get("columns") or [])))
+    if any(re.search(rf"(?<![a-z0-9]){name}(?![a-z0-9])", blob) for name in needles):
+        return True
+    return _plan_has_other_rows(plan, value)
+
+
+def _whole_number(item):
+    try:
+        value = float(item.get("value"))
+    except (TypeError, ValueError):
+        return False
+    return value == int(value)
+
+
+def _plan_has_other_rows(plan, value):
+    """True when the plan already names a row that is not this filter value."""
+    rows = plan.get("rows") or {}
+    named = list(rows.get("paths") or [])
+    if rows.get("scope"):
+        named.append(rows["scope"])
+    return any(not _label_overlaps_value(path, [value]) for path in named)
 
 
 def _plan_has_threshold(plan, item):
@@ -2235,28 +2270,45 @@ def _year_applied(view, col, year, year_where):
     return len(sheets) == 1 and year in str(sheets[0])
 
 
+def _alias_names(token):
+    """A filter token plus the shift words that mean the same thing."""
+    from .vi import VALUE_ALIASES
+    raw = _norm_token(token)
+    if not raw:
+        return set()
+    names = {raw}
+    for cue, aliases in VALUE_ALIASES.items():
+        pack = {_norm_token(cue)} | {_norm_token(alias) for alias in aliases}
+        if raw in pack:
+            names |= pack
+    return names
+
+
 def _label_overlaps_value(path, values):
     """True when a row label repeats a column-filter value.
 
-    The where clause is the subset. A row named the same as the shift or the
-    code, or a one-letter fragment of a code, must not become the only row.
+    The where clause is the subset. A row named like the shift, an alias of
+    that shift, or a one-letter fragment of a code, must not be the only row.
     """
     leaf = str(path).split("!")[-1].split(" > ")[-1]
     leaf_n = _norm_token(leaf)
     if not leaf_n:
         return False
+    names = set()
     for value in values:
         if not isinstance(value, str):
             continue
         val_n = _norm_token(value)
         if not val_n:
             continue
-        if leaf_n == val_n:
-            return True
+        names |= _alias_names(value)
         if len(leaf_n) <= 2 and leaf_n in val_n:
             return True
         shared = set(tokens(leaf)) & set(tokens(value))
         if any(tok != leaf_n and (len(tok) <= 2 or any(ch.isdigit() for ch in tok)) for tok in shared):
+            return True
+    for name in names:
+        if name and re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", leaf_n):
             return True
     return False
 

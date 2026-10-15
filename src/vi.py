@@ -382,6 +382,11 @@ def _opens_range(value, rest):
     return bool(re.match(rf"\s+(?:\d+(?:\.\d+)?|{_NUMWORD})\b", rest))
 
 
+def _gender_with_gioi(value, rest):
+    """'nam giới' / 'nữ giới' is the men or women group, not a column value."""
+    return value in ("gioi_nam", "nam", "nu") and bool(re.match(r"\s+gioi\b", rest))
+
+
 def _clause(text, start, end):
     """The phrase that holds a threshold, cut at a comma or sentence boundary."""
     left = max(text.rfind(ch, 0, start) for ch in ",.;?")
@@ -429,15 +434,13 @@ def filter_constraints(question: str):
     for m in _TYPED.finditer(text):
         val = m.group(2).lower()
         # 'của nhóm từ 55' — 'từ' opens an age band, it is not a group name.
-        if _opens_range(val, text[m.end():]):
+        # 'nhóm nam giới' is men, already translated, not a missing column.
+        if _opens_range(val, text[m.end():]) or _gender_with_gioi(val, text[m.end():]):
             continue
         add(m.group(1), val)
     for m in _ROLE_VALUE.finditer(text):
         val = m.group(2).lower()
-        # 'ở nhóm nữ giới' is the women section. Translation already says women.
-        if val in ("gioi_nam", "nam", "nu") and re.match(r"\s+gioi\b", text[m.end():]):
-            continue
-        if _opens_range(val, text[m.end():]):
+        if _gender_with_gioi(val, text[m.end():]) or _opens_range(val, text[m.end():]):
             continue
         add(m.group(1), val)
     type_words = set()
@@ -445,7 +448,7 @@ def filter_constraints(question: str):
         type_words.update(phrase.split())
     for m in _GROUP.finditer(text):
         tok = m.group(1).lower()
-        if tok in type_words:
+        if tok in type_words or _gender_with_gioi(tok, text[m.end():]):
             continue
         add(None, "nam" if tok == "gioi_nam" else tok, force=tok in ("gioi_nam", "nam", "nu"))
     for m in re.finditer(r"\b(?:nguoi|nhom)\s+(gioi_nam|nu)\b(?!\s+gioi\b)", text):
@@ -515,7 +518,8 @@ def filter_constraints(question: str):
         # The value after thuộc/ở/tại is a filter even when it is also a gender word.
         # A type word ('thanh' in 'thuộc thành phố') is not itself the value.
         if tok in ("gioi_nam", "nam", "nu"):
-            add(None, "nam" if tok == "gioi_nam" else tok, force=True)
+            if not _gender_with_gioi(tok, text[m.end():]):
+                add(None, "nam" if tok == "gioi_nam" else tok, force=True)
             continue
         if tok in _FILTER_SKIP or tok in type_words:
             continue
