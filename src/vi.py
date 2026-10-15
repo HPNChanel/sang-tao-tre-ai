@@ -208,7 +208,7 @@ def translate(q: str, new_ops: bool = True) -> tuple[str, int]:
     Undiacritic 'nam' is gender or south. 'năm' is five or a year. Shield the
     undiacritic token before folding so a number rule cannot turn it into five.
     """
-    q = re.sub(r"\bnam\b", "gioi_nam", q)
+    q = re.sub(r"\bnam\b", "gioi_nam", q, flags=re.I)
     s = fold(q)
     hits = 0
     patterns = (NEW_OP_KEYWORDS + KEYWORDS) if new_ops else KEYWORDS
@@ -270,32 +270,40 @@ _TYPES = (
 )
 _SHIFT = re.compile(
     r"\b(?:lam(?:\s+viec)?(?:\s+theo)?\s+(?:ca|kip)|ca\s+lam(?:\s+viec)?|kip\s+lam|"
-    r"ca\s+truc|ca\s+(?:la|bang)|kip\s+(?:la|bang))\s+([a-z0-9][a-z0-9_-]*)\b"
+    r"ca\s+truc|ca\s+(?:la|bang)|kip\s+(?:la|bang)|"
+    r"(?:o|tai|thuoc)\s+(?:ca|kip))\s+([a-z0-9][a-z0-9_-]*)\b"
 )
 _TYPED = re.compile(
-    rf"\b(?:o|tai|thuoc|cua)\s+({_TYPES})\s+(?:la\s+|bang\s+)?([a-z0-9][a-z0-9_-]*)\b"
+    rf"\b(?:o|tai|thuoc(?:\s+ve)?|cua)\s+({_TYPES})\s+(?:la\s+|bang\s+)?([a-z0-9][a-z0-9_-]*)\b"
 )
-_PREP = re.compile(r"\b(?:o|tai|thuoc)\s+([a-z0-9][a-z0-9_-]*)\b")
+_PREP = re.compile(r"\b(o|tai|thuoc(?:\s+ve)?)\s+([a-z0-9][a-z0-9_-]*)\b")
+_GROUP = re.compile(
+    r"\b(?:thuoc(?:\s+ve)?|trong\s+nhom|gioi\s+tinh(?:\s+(?:la|bang))?|phai(?:\s+(?:la|bang))?)\s+"
+    r"([a-z0-9][a-z0-9_-]*)\b"
+)
 _INTRO = re.compile(
     r"\bchi (?:xet|loc)\b|\bxet rieng\b|\bgioi han (?:trong|o)\b|\bloc (?:ra|nhung)\b"
-)
-_THRESH = re.compile(
-    r"\b(chua\s+(?:toi|dat|vuot|den|bang)|dat\s+dung|dung\s+bang|bang\s+dung|"
-    r"chinh\s+xac(?:\s+bang)?)"
-    r"(?:\s+muc)?\s+(-?\d+(?:\.\d+)?)\b"
 )
 _NUMWORD = (
     "khong|mot|hai|ba|bon|tu|fiveword|sau|bay|tam|chin|muoi|tram|nghin|ngan|le|linh|ruoi"
 )
-_THRESH_WORD = re.compile(
-    r"\b(chua\s+(?:toi|dat|vuot|den|bang)|dat\s+dung|dung\s+bang|bang\s+dung|"
-    r"chinh\s+xac(?:\s+bang)?)"
-    r"(?:\s+muc)?\s+((?:" + _NUMWORD + r")(?:\s+(?:" + _NUMWORD + r")){0,5})\b"
+# Longer phrases are listed first inside each alternative. 'tren' and 'duoi'
+# are thresholds only when a number follows. 'lon hon' / 'vuot' in a count
+# question are comparisons even when the number cannot be read.
+_CMP_OPS = (
+    (">=", r"(?:lon|nhieu|cao)\s+hon\s+hoac\s+bang|it\s+nhat|toi\s+thieu|khong\s+(?:kem|duoi)"),
+    ("<=", r"(?:nho|it|thap)\s+hon\s+hoac\s+bang|khong\s+(?:qua|vuot)|toi\s+da"),
+    ("<", r"chua\s+(?:toi|dat|vuot|den|bang)|(?:nho|it|thap|kem)\s+hon|duoi"),
+    (">", r"(?:lon|nhieu|cao)\s+hon|vuot(?:\s+qua|\s+muc|\s+hon)?|tren"),
+    ("==", r"dat\s+dung|dung\s+bang|bang\s+dung|chinh\s+xac(?:\s+bang)?"),
 )
-_THRESH_CUE = re.compile(
-    r"\b(chua\s+(?:toi|dat|vuot|den|bang)|dat\s+dung|dung\s+bang|bang\s+dung|"
-    r"chinh\s+xac(?:\s+bang)?)\b"
+_CMP_FIND = re.compile(r"\b(" + "|".join(pat for _, pat in _CMP_OPS) + r")\b")
+_SOFT_CMP = re.compile(r"^(?:tren|duoi)$")
+_COUNT_FRAME = re.compile(
+    r"\b(?:dem|bao nhieu|may\s+(?:nguoi|tinh|dong)|chi\s+xet|"
+    r"nhung\s+(?:nguoi|tinh|dong|ai)|thuoc|lam\s+ca)\b"
 )
+_SCALE_WORD = {"nghin": 1000, "ngan": 1000, "trieu": 1000000, "ty": 1000000000}
 _ROLE_VALUE = re.compile(
     r"\b(?:thuoc|o|tai)\s+([a-z][a-z0-9]{1,20})\s+([a-z0-9][a-z0-9_-]*)\b"
 )
@@ -310,7 +318,7 @@ def _fold_filters(question: str) -> str:
     and stays a word, never a digit.
     """
     raw = re.sub(r"\s+", " ", str(question))
-    raw = re.sub(r"\bnam\b", "gioi_nam", raw)
+    raw = re.sub(r"\bnam\b", "gioi_nam", raw, flags=re.I)
     raw = re.sub(r"\bnăm\b", " fiveword ", raw, flags=re.I)
     raw = re.sub(r"\blăm\b", " fiveword ", raw, flags=re.I)
     return re.sub(r"\s+", " ", fold(raw).lower())
@@ -379,10 +387,17 @@ def _clause(text, start, end):
 def filter_constraints(question: str):
     """Row-filter cues in a Vietnamese question, or None when there are none.
 
-    Recognizes subset frames ('chi xet'), a role plus a value ('lam ca',
-    'o thanh pho', 'thuoc ... '), a value after o/tai/thuoc, and thresholds
-    'chua toi' / 'dat dung'. Grammar words are not values. The caller binds
-    each cue to one column; this function does not look at the table.
+    Recognizes subset frames ('chi xet', 'thuoc', 'trong nhom', 'gioi tinh',
+    'lam ca'), a value after o/tai/thuoc, and comparisons ('chua toi',
+    'dat dung', 'lon hon', 'it nhat', 'vuot', 'tren', 'duoi', and the same
+    words with 'hoac bang'). A number may be digits or words, then nghin /
+    trieu / ty. Grammar words are not values. The caller binds each cue to
+    one column; this function does not look at the table.
+
+    'unparsed' means a cutoff was signaled but its number was not read.
+    A soft word ('tren', 'duoi') counts only when a number follows, so
+    'tren bang' is not a cutoff. 'cao hon ... bao nhieu' is a difference,
+    not a cutoff.
     """
     text = _fold_filters(question)
     cats, seen = [], set()
@@ -408,6 +423,16 @@ def filter_constraints(question: str):
         add(m.group(1), m.group(2))
     for m in _ROLE_VALUE.finditer(text):
         add(m.group(1), m.group(2))
+    type_words = set()
+    for phrase in _TYPES.split("|"):
+        type_words.update(phrase.split())
+    for m in _GROUP.finditer(text):
+        tok = m.group(1).lower()
+        if tok in type_words:
+            continue
+        add(None, "nam" if tok == "gioi_nam" else tok, force=tok in ("gioi_nam", "nam", "nu"))
+    for m in re.finditer(r"\b(?:nguoi|nhom)\s+(gioi_nam|nu)\b", text):
+        add(None, "nu" if m.group(1) == "nu" else "nam", force=True)
     nums = []
     covered = []
 
@@ -415,35 +440,61 @@ def filter_constraints(question: str):
         nums.append({"op": op, "value": float(value), "window": _clause(text, start, end)})
         covered.append((start, end))
 
-    for m in _THRESH.finditer(text):
-        word = re.sub(r"\s+", " ", m.group(1))
-        op = "<" if word.startswith("chua") else "=="
-        add_num(op, m.group(2), m.start(), m.end())
-    for m in _THRESH_WORD.finditer(text):
+    def _op_of(word):
+        word = re.sub(r"\s+", " ", word.strip())
+        for op, pat in _CMP_OPS:
+            if re.fullmatch(pat, word):
+                return op
+        return None
+
+    for m in _CMP_FIND.finditer(text):
         if any(a <= m.start() and m.end() <= b for a, b in covered):
             continue
-        value = _vi_cardinal(m.group(2))
+        word = re.sub(r"\s+", " ", m.group(1))
+        op = _op_of(word)
+        if op is None:
+            continue
+        got = _amount_after(text, m.end())
+        if got is None:
+            continue
+        if _SOFT_CMP.match(word) and got[0] is None:
+            continue
+        value, end = got
+        add_num(op, value, m.start(), end)
+    for m in re.finditer(
+        r"\btu\s+(\d+(?:\.\d+)?)\s+(?:\w+\s+){0,2}?tro\s+(len|xuong)\b", text
+    ):
+        if any(a <= m.start() and m.end() <= b for a, b in covered):
+            continue
+        op = ">=" if m.group(2) == "len" else "<="
+        add_num(op, m.group(1), m.start(), m.end())
+    for m in re.finditer(
+        rf"\btu\s+((?:(?:{_NUMWORD})\s+){{1,8}})tro\s+(len|xuong)\b", text
+    ):
+        if any(a <= m.start() and m.end() <= b for a, b in covered):
+            continue
+        value = _vi_cardinal(m.group(1).strip())
         if value is None:
             continue
-        word = re.sub(r"\s+", " ", m.group(1))
-        op = "<" if word.startswith("chua") else "=="
+        op = ">=" if m.group(2) == "len" else "<="
         add_num(op, value, m.start(), m.end())
     unparsed = False
-    for m in _THRESH_CUE.finditer(text):
+    for m in _CMP_FIND.finditer(text):
         if any(a <= m.start() < b for a, b in covered):
             continue
-        rest = re.split(r"[,.;?]", text[m.end():], maxsplit=1)[0]
-        if re.search(r"\d", rest) or _leading_cardinal(rest) is not None:
+        word = re.sub(r"\s+", " ", m.group(1))
+        if _leave_cutoff(text, m.end(), word):
             continue
         unparsed = True
-    type_words = set()
-    for phrase in _TYPES.split("|"):
-        type_words.update(phrase.split())
     preps = []
+    seen_prep = set()
     for m in _PREP.finditer(text):
-        tok = m.group(1).lower()
-        if tok in preps:
+        kind = "thuoc" if m.group(1).startswith("thuoc") else m.group(1)
+        tok = m.group(2).lower()
+        key = (kind, tok)
+        if key in seen_prep:
             continue
+        seen_prep.add(key)
         # The value after thuộc/ở/tại is a filter even when it is also a gender word.
         # A type word ('thanh' in 'thuộc thành phố') is not itself the value.
         if tok in ("gioi_nam", "nam", "nu"):
@@ -452,8 +503,88 @@ def filter_constraints(question: str):
         if tok in _FILTER_SKIP or tok in type_words:
             continue
         add(None, tok, force=True)
-        preps.append(tok)
+        preps.append({"kind": kind, "value": tok})
     intro = bool(_INTRO.search(text))
     if not cats and not nums and not preps and not intro and not unparsed:
         return None
     return {"cats": cats, "nums": nums, "preps": preps, "intro": intro, "unparsed": unparsed}
+
+
+def _amount_after(text, end):
+    """(value, end) after a comparison cue, or None when no cutoff number is there.
+
+    A 4-digit year, 'năm 2024', and 'hon hay' are not cutoff amounts.
+    '5 nghin' is 5000. Word numbers already fold nghin into the cardinal.
+    """
+    rest = text[end:]
+    if re.match(r"\s+hay\b", rest):
+        return None
+    if re.match(r"\s*(?:fiveword|nam)\s+(?:19|20)\d{2}\b", rest):
+        return None
+    m = re.match(r"\s*(?:muc\s+)?(-?\d+(?:\.\d+)?)", rest)
+    if m:
+        raw = m.group(1)
+        pos = end + m.end()
+        scale = re.match(r"\s+(nghin|ngan|trieu|ty)\b", text[pos:])
+        if scale:
+            return float(raw) * _SCALE_WORD[scale.group(1)], pos + scale.end()
+        if re.fullmatch(r"(?:19|20)\d{2}", raw):
+            return None
+        return float(raw), pos
+    m2 = re.match(r"\s*(?:muc\s+)?", rest)
+    start = end + (m2.end() if m2 else 0)
+    toks = []
+    allowed = set(_ONES) | {"muoi", "tram", "nghin", "ngan", "le", "linh", "ruoi"}
+    for tok in text[start:].split():
+        clean = tok.strip(".,;:!?")
+        if clean not in allowed:
+            break
+        toks.append(clean)
+    if not toks or toks == ["fiveword"] and re.match(
+        r"\s*(?:19|20)\d{2}\b", text[start + len("fiveword"):]
+    ):
+        return None
+    value = _vi_cardinal(" ".join(toks))
+    if value is None:
+        return None
+    m3 = re.match(
+        r"\s*(" + r"[\s.,;:!?]*".join(re.escape(t) for t in toks) + r")[\s.,;:!?]*",
+        text[start:],
+    )
+    if not m3:
+        return None
+    return float(value), start + m3.end()
+
+
+# Cutoffs that blank the question when the number cannot be read.
+# 'cao hon' / 'thap hon' stay out: they introduce a difference ('cao hon ... bao nhieu').
+_CUTOFF_BARE = re.compile(
+    r"^(?:chua\s+(?:toi|dat|vuot|den|bang)|it\s+nhat|toi\s+thieu|toi\s+da|"
+    r"(?:lon|nhieu)\s+hon(?:\s+hoac\s+bang)?|"
+    r"vuot(?:\s+qua|\s+muc|\s+hon)?|khong\s+(?:kem|duoi|qua|vuot))$"
+)
+
+
+def _mid_has_cutoff(mid):
+    """A real cutoff number sits between the cue and 'bao nhieu'. A year does not."""
+    cleaned = re.sub(r"\b(?:fiveword|nam)\s+(?:19|20)\d{2}\b", " ", mid)
+    cleaned = re.sub(r"\b(?:19|20)\d{2}\b", " ", cleaned)
+    if re.search(r"\d", cleaned):
+        return True
+    return _leading_cardinal(cleaned.strip()) is not None
+
+
+def _leave_cutoff(text, end, word):
+    """True when this cue is not an unread cutoff (soft word, or a difference)."""
+    word = re.sub(r"\s+", " ", word.strip())
+    if _SOFT_CMP.match(word) or not _CUTOFF_BARE.match(word):
+        return True
+    after = text[end:end + 80]
+    if re.match(r"\s+hay\b", after):
+        return True
+    found = re.search(r"\bbao nhieu\b", after)
+    if found and not _mid_has_cutoff(after[:found.start()]):
+        return True
+    if not _COUNT_FRAME.search(text):
+        return True
+    return False

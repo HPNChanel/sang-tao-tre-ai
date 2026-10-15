@@ -286,7 +286,7 @@ def _plan_with_confidence(query, tables, strict):
     plan, info = _plan_core(query, tables, strict)
     # A month span must include every column in the range, and a named year
     # must stick to that span. An unapplied year is not answered.
-    _apply_column_span(plan, info, query)
+    _apply_column_span(plan, info, query, original)
     if is_vietnamese(original):
         _attach_vi_filters(plan, info, original)
     if info.get("unresolved_filter"):
@@ -1771,22 +1771,73 @@ def _families_in_text(text):
     return found
 
 
-def _bind_threshold(view, item):
-    """The one numeric column named in the threshold's own clause."""
-    window = item.get("window") or ""
+def _threshold_columns(view, text):
+    """Numeric columns a phrase names, plus the column families it mentions."""
     numeric = view.numeric_cols()
-    families = _families_in_text(window)
+    families = _families_in_text(text)
     hits = []
     for col in numeric:
         named = any(_col_in_family(col, fam) for fam in families)
-        if named or re.search(rf"(?<![a-z0-9]){re.escape(_norm_token(col))}(?![a-z0-9])", window):
+        if named or _header_in_text(col, text):
             hits.append(col)
-    hits = list(dict.fromkeys(hits))
+    return list(dict.fromkeys(hits)), families
+
+
+def _bind_threshold(view, item, wider=""):
+    """The one numeric column named in the threshold's own clause.
+
+    When the clause itself names none, the rest of the question may name one.
+    A year in the text selects the numeric column whose header contains it.
+    Several unnamed numeric columns do not guess.
+    """
+    window = item.get("window") or ""
+    hits, families = _threshold_columns(view, window)
     if len(hits) == 1:
         return hits[0]
+    if len(hits) > 1:
+        return None
+    if wider and wider != window:
+        hits, wider_families = _threshold_columns(view, wider)
+        families = families or wider_families
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            return None
+    blob = window + " " + (wider or "")
+    years = re.findall(r"\b((?:19|20)\d{2})\b", blob)
+    numeric = view.numeric_cols()
+    if len(set(years)) == 1 and not hits:
+        year_hits = [col for col in numeric if _header_has_year(col, years[0])]
+        if len(year_hits) == 1:
+            return year_hits[0]
     if hits or families or len(numeric) != 1:
         return None
     return numeric[0]
+
+
+_HEADER_PART_SKIP = {
+    "thang", "thg", "month", "jan", "feb", "mar", "apr", "may", "jun",
+    "jul", "aug", "sep", "oct", "nov", "dec", "tong", "total",
+}
+
+
+def _header_in_text(col, text):
+    norm = _norm_token(col)
+    if norm and re.search(rf"(?<![a-z0-9]){re.escape(norm)}(?![a-z0-9])", text):
+        return True
+    for part in re.split(r"[^a-z0-9]+", norm):
+        if part in _HEADER_PART_SKIP:
+            continue
+        if (len(part) >= 4 or part.isdigit()) and re.search(
+            rf"(?<![a-z0-9]){re.escape(part)}(?![a-z0-9])", text
+        ):
+            return True
+    return False
+
+
+def _header_has_year(col, year):
+    parts = [p for p in re.split(r"[^a-z0-9]+", _norm_token(col)) if p]
+    return year in parts
 
 
 def _mentionable(view, token):
@@ -1865,21 +1916,33 @@ def _already_restricted(plan):
 
 
 def _asks_row_count(low, original):
-    """The question asks how many rows, even if it also says 'total'."""
+    """The question asks how many rows, even if it also says 'total'.
+
+    'là bao nhiêu' asks for a value. 'hơn bao nhiêu' asks for a difference.
+    Any other 'bao nhiêu' is a count, including 'bao nhiêu tỉnh'.
+    """
     from .vi import fold
-    folded = fold(original).lower()
+    if re.search(r"\bhow many\s+(?:more|less|fewer|higher|lower|greater)\b", low):
+        return False
     if re.search(r"\bhow many\b|\bnumber of\b|\bcount\b", low):
         return True
+    folded = fold(original).lower()
     if re.search(r"\bdem\b", folded):
         return True
-    return bool(re.search(r"\b(?:may|bao nhieu)\s+(?:nguoi|ai|dong|ban|truong hop)\b", folded))
+    if re.search(r"\b(?:la|bang|duoc)\s+bao nhieu\b", folded):
+        return False
+    if re.search(r"\bhon\b.{0,40}\bbao nhieu\b", folded):
+        return False
+    return bool(re.search(r"\b(?:may|bao nhieu)\b", folded))
 
 
 def _promote_filtered_op(plan, info, original):
     """Point a filtered question at an aggregate that actually applies the filter."""
     low = (info.get("body") or "").lower()
     op = plan.get("op")
-    if _asks_row_count(low, original) and op not in ("rank", "nth", "topk_agg"):
+    if op in ("diff", "compare", "ratio", "share", "rank", "nth", "topk_agg"):
+        return True
+    if _asks_row_count(low, original):
         plan["op"] = "count"
         plan["columns"] = []
         return True
@@ -1918,7 +1981,7 @@ def _attach_vi_filters(plan, info, original):
         return
     view = info["view"]
     text = re.sub(r"\s+", " ", fold(original).lower())
-    wheres, bound, failed = [], set(), False
+    wheres, bound, failed, scopes = [], set(), False, []
 
     def take(item, token=None):
         if not item:
@@ -1929,20 +1992,49 @@ def _attach_vi_filters(plan, info, original):
             bound.add(_norm_token(token))
         return True
 
+    def keep_scope(value):
+        scope = _group_scope(view, value)
+        if not scope:
+            return False
+        scopes.append(scope)
+        bound.add(_norm_token(value))
+        return True
+
     for cat in spec["cats"]:
         bound_item = _bind_category(view, cat)
         if bound_item:
             take(bound_item, cat.get("value"))
+        elif keep_scope(cat.get("value")):
+            pass
         elif not _explained_as_row(view, cat.get("value")):
             failed = True
+    wider = re.sub(r"\s+", " ", fold(original).lower())
     for item in spec["nums"]:
-        col = _bind_threshold(view, item)
+        col = _bind_threshold(view, item, wider)
+        year_where = None
+        years = list(dict.fromkeys(_question_years(original)))
+        if len(years) == 1:
+            year = years[0]
+            measure, year_where = _measure_and_year(view, year)
+            if col is not None and _header_has_year(col, year):
+                year_where = None
+            elif year_where and col == year_where["column"] and measure:
+                col = measure
+            elif col is None:
+                col = measure
+            if col is not None and not _year_applied(view, col, year, year_where) and _table_mentions_year(view, year):
+                failed = True
+                continue
         if col is None:
             failed = True
             continue
+        if year_where:
+            wheres.append(year_where)
         wheres.append({"column": col, "op": item["op"], "value": float(item["value"])})
         bound.add(_norm_token(item["value"]))
-    for token in spec["preps"]:
+    for prep in spec["preps"]:
+        token = prep.get("value") if isinstance(prep, dict) else prep
+        kind = prep.get("kind") if isinstance(prep, dict) else "thuoc"
         if _norm_token(token) in bound:
             continue
         status, item = _bind_prep(view, token)
@@ -1950,17 +2042,14 @@ def _attach_vi_filters(plan, info, original):
             failed = True
         elif status == "ok":
             take(item, token)
-        elif not _explained_as_row(view, token):
-            # thuộc/ở/tại named a value and it is not a row either.
+        elif keep_scope(token):
+            pass
+        elif kind == "thuoc" and not _explained_as_row(view, token):
+            # thuộc named a value and it is not a row either.
+            # ở/tại may already be the row the planner selected, so a miss stays quiet.
             failed = True
-    mentioned, ambig = _bind_mentioned_values(view, original, bound)
-    if ambig:
-        failed = True
-    else:
-        for item in mentioned:
-            take(item)
-    if spec.get("unparsed"):
-        failed = True
+    # A free scan of every token blanks questions that were already correct.
+    # Only an explicit 'chỉ xét' frame pulls in other cell values.
     if spec["intro"]:
         extra = _scan_mentions(view, text, bound)
         if extra is None:
@@ -1968,12 +2057,20 @@ def _attach_vi_filters(plan, info, original):
         else:
             for item in extra:
                 take(item)
-    if failed or (spec["intro"] and not wheres and not _already_restricted(plan)):
+    if spec.get("unparsed"):
+        # A comparison was seen and its number was not read. Do not keep the
+        # other filters: a partial subset is a confident wrong count.
+        failed = True
+    if len(set(scopes)) > 1:
+        failed = True
+    if failed or (spec["intro"] and not wheres and not scopes and not _already_restricted(plan)):
         info["unresolved_filter"] = True
         return
-    if not wheres:
+    if scopes and not plan["rows"].get("scope"):
+        plan["rows"]["scope"] = scopes[0]
+    if not wheres and not scopes:
         return
-    if not _promote_filtered_op(plan, info, original):
+    if wheres and not _promote_filtered_op(plan, info, original):
         info["unresolved_filter"] = True
         return
     numeric = set(view.numeric_cols())
@@ -1989,9 +2086,10 @@ def _attach_vi_filters(plan, info, original):
             continue
         seen.add(key)
         merged.append(item)
-    plan["rows"]["where"] = merged
-    # A group value that also touches an entity label must not select that row.
-    # The column filter is the subset. The row stays in the aggregate.
+    if merged:
+        plan["rows"]["where"] = merged
+    # A code fragment of a filter value must not become the selected row.
+    # The row whose name is exactly the value stays.
     values = [item.get("value") for item in merged]
     plan["rows"]["paths"] = [
         path for path in plan["rows"]["paths"]
@@ -2000,21 +2098,103 @@ def _attach_vi_filters(plan, info, original):
     info["applied_filter"] = True
 
 
+def _group_scope(view, value):
+    """A section or parent row named by the filter, or None."""
+    target = _norm_token(value)
+    if not target:
+        return None
+    df = view.df
+    if "_section" in df:
+        for section in df["_section"].dropna().unique():
+            if str(section).strip() and _norm_token(section) == target:
+                return str(section)
+    if "_row_path" not in df:
+        return None
+    paths = [str(path) for path in df["_row_path"].dropna().unique()]
+    parents = []
+    for path in paths:
+        leaf = path.split(" > ")[-1]
+        if _norm_token(leaf) == target and any(other.startswith(path + " > ") for other in paths):
+            parents.append(path)
+    if len(parents) == 1:
+        return parents[0]
+    return None
+
+
+def _question_years(question):
+    from .vi import fold
+    return re.findall(r"\b((?:19|20)\d{2})\b", fold(str(question)))
+
+
+def _measure_and_year(view, year):
+    """A year stored down one column, and the single other numeric column."""
+    year_n = int(year)
+    holders = []
+    for col in view.columns:
+        hits = seen = 0
+        for value in view.df[col]:
+            seen += 1
+            try:
+                if int(float(value)) == year_n:
+                    hits += 1
+            except (TypeError, ValueError):
+                continue
+        if hits and hits < seen:
+            holders.append(col)
+    if len(holders) != 1:
+        return None, None
+    year_col = holders[0]
+    measures = [col for col in view.numeric_cols() if col != year_col]
+    if len(measures) != 1:
+        return None, None
+    return measures[0], {"column": year_col, "op": "==", "value": float(year_n)}
+
+
+def _table_mentions_year(view, year):
+    if any(_header_has_year(col, year) for col in view.columns):
+        return True
+    df = view.df
+    if "_sheet" in df and any(year in str(sheet) for sheet in df["_sheet"].dropna().unique()):
+        return True
+    for col in view.columns:
+        for value in df[col]:
+            try:
+                if int(float(value)) == int(year):
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+def _year_applied(view, col, year, year_where):
+    if year_where:
+        return True
+    if _header_has_year(col, year):
+        return True
+    df = view.df
+    sheets = list(df["_sheet"].dropna().unique()) if "_sheet" in df else []
+    return len(sheets) == 1 and year in str(sheets[0])
+
+
 def _label_overlaps_value(path, values):
-    """True when a row label only shares text with a category value."""
+    """True when a row label is only a fragment of a category value.
+
+    An exact row name stays. 'K' inside the code 'K7' does not.
+    """
     leaf = str(path).split("!")[-1].split(" > ")[-1]
-    leaf_toks = set(tokens(leaf))
     leaf_n = _norm_token(leaf)
-    if not leaf_toks and not leaf_n:
+    if not leaf_n:
         return False
     for value in values:
         if not isinstance(value, str):
             continue
-        val_toks = set(tokens(value))
         val_n = _norm_token(value)
-        if leaf_toks and val_toks and (leaf_toks & val_toks):
+        if not val_n or leaf_n == val_n:
+            continue
+        if len(leaf_n) <= 2 and leaf_n in val_n:
             return True
-        if leaf_n and val_n and leaf_n != val_n and (leaf_n in val_n or val_n in leaf_n):
+        shared = set(tokens(leaf)) & set(tokens(value))
+        if any(tok != leaf_n and (len(tok) <= 2 or any(ch.isdigit() for ch in tok)) for tok in shared):
             return True
     return False
 
@@ -2031,18 +2211,92 @@ for _mi, _names in enumerate(
         _MONTH_INDEX[_name] = _mi
 
 
+_MONTH_WORD = {
+    "mot": 1, "hai": 2, "ba": 3, "tu": 4, "bon": 4, "nam": 5, "fiveword": 5,
+    "sau": 6, "bay": 7, "tam": 8, "chin": 9, "muoi": 10, "muoi mot": 11, "muoi hai": 12,
+}
+
+
 def _month_index(text):
+    """Month number from an English name or a header like 'Tháng 3', 'Thg 3', 'T3'."""
+    raw = _norm_token(text)
     for tok in tokens(str(text)):
         if tok in _MONTH_INDEX:
             return _MONTH_INDEX[tok]
-    return None
+    found = re.search(r"\b(?:thang|thg|th)\s*0?(\d{1,2})\b", raw)
+    if found and 1 <= int(found.group(1)) <= 12:
+        return int(found.group(1))
+    found = re.fullmatch(r"t0?(\d{1,2})", raw.replace(" ", ""))
+    if found and 1 <= int(found.group(1)) <= 12:
+        return int(found.group(1))
+    found = re.search(
+        r"\b(?:thang|thg|th)\s+(muoi\s+(?:mot|hai)|mot|hai|ba|tu|bon|sau|bay|tam|chin|muoi|fiveword|nam)\b",
+        raw,
+    )
+    if not found:
+        return None
+    word = re.sub(r"\s+", " ", found.group(1))
+    return _MONTH_WORD.get(word)
 
 
-def _apply_column_span(plan, info, translated):
+def _view_has_month(view):
+    for col in view.columns:
+        for part in str(col).split(" | "):
+            if _month_index(part) is not None:
+                return True
+    return False
+
+
+def _phrase_month(phrase):
+    return _month_index(phrase)
+
+
+def _vn_month_ranges(original):
+    from .vi import _fold_filters
+    folded = _fold_filters(original or "")
+    found = []
+    pat = (
+        r"\btu\s+((?:thang|thg|th|t)\s*[a-z0-9]+(?:\s+[a-z0-9]+)?)\s+(?:den|toi)\s+"
+        r"((?:thang|thg|th|t)\s*[a-z0-9]+(?:\s+[a-z0-9]+)?)"
+    )
+    for match in re.finditer(pat, folded):
+        start, end = _phrase_month(match.group(1)), _phrase_month(match.group(2))
+        if start is None or end is None or start > end:
+            continue
+        if _year_idiom(match.group(1)) and _year_idiom(match.group(2)):
+            continue
+        found.append((start, end))
+    return found, folded
+
+
+def _year_idiom(phrase):
+    raw = _norm_token(phrase)
+    return bool(re.search(r"\bthang\s+(?:nam|fiveword)\s+(?:19|20)\d{2}\b", raw)) and not re.search(
+        r"\b(?:thang|thg|th)\s*0?\d{1,2}\b", raw
+    )
+
+
+def _apply_year_sheet(plan, view, years):
+    """The named year is the sheet. One matching sheet among several is selected."""
+    df = view.df
+    if "_sheet" not in df or len(set(years)) != 1:
+        return False
+    year = years[0]
+    sheets = list(dict.fromkeys(df["_sheet"].dropna()))
+    matched = [sheet for sheet in sheets if year in str(sheet)]
+    if len(matched) != 1:
+        return False
+    if len(sheets) > 1:
+        plan["table"]["sheet"] = matched[0]
+    return True
+
+
+def _apply_column_span(plan, info, translated, original=""):
     """Expand a named month span to every month in it, under the named year.
 
-    Two endpoints alone are not the span. A year that is not in the headers
-    and not in a single value column cannot be applied, so the answer is blank.
+    Two endpoints alone are not the span. Headers may be 'Mar' or 'Tháng 3'.
+    A year that the table actually carries, and that is not applied, is blank.
+    A table with no month columns is left to the planner.
     """
     low = (translated or "").lower()
     ranges = []
@@ -2051,10 +2305,14 @@ def _apply_column_span(plan, info, translated):
         if start is None or end is None or start > end:
             continue
         ranges.append((start, end))
+    vn_ranges, folded = _vn_month_ranges(original)
+    ranges.extend(vn_ranges)
     if not ranges:
         return
-    years = re.findall(r"\b((?:19|20)\d{2})\b", low)
     view = info["view"]
+    if not _view_has_month(view):
+        return
+    years = re.findall(r"\b((?:19|20)\d{2})\b", low + " " + folded)
     chosen = []
     saw_year = False
     for start, end in ranges:
@@ -2072,7 +2330,13 @@ def _apply_column_span(plan, info, translated):
             if kept:
                 saw_year = True
                 grouped = kept
+            elif _apply_year_sheet(plan, view, years):
+                saw_year = True
             elif _bind_year_rows(plan, view, years):
+                saw_year = True
+            elif plan["columns"] and all(
+                any(year in str(col) for year in years) for col in plan["columns"]
+            ):
                 saw_year = True
             else:
                 info["unresolved_filter"] = True
@@ -2114,41 +2378,6 @@ def _bind_year_rows(plan, view, years):
     plan["rows"].setdefault("where", [])
     plan["rows"]["where"].append({"column": holders[0], "op": "==", "value": float(year)})
     return True
-
-
-def _bind_mentioned_values(view, original, bound):
-    """A token that equals one category cell is a filter. Two columns is unresolved."""
-    from .vi import _FILTER_SKIP, fold
-    raw = re.sub(r"\bnăm\b", " ", str(original), flags=re.I)
-    raw = re.sub(r"\blăm\b", " ", raw, flags=re.I)
-    raw = re.sub(r"\b(mien|phia|huong)\s+nam\b", " ", raw, flags=re.I)
-    text = fold(raw).lower()
-    skip = set(_FILTER_SKIP) | {
-        "mot", "hai", "ba", "bon", "tu", "sau", "bay", "tam", "chin", "muoi",
-        "tram", "nghin", "ngan", "khong", "fiveword", "le", "linh",
-    }
-    texts = _text_columns(view)
-    numeric_bits = set()
-    for col in view.numeric_cols():
-        numeric_bits.update(tokens(col))
-    found, seen = [], set(bound)
-    ambiguous = False
-    for tok in re.findall(r"[a-z0-9]+", text):
-        if tok in skip or tok in seen or len(tok) < 2 or tok in numeric_bits:
-            continue
-        holders = _holders(view, tok, texts)
-        if not holders:
-            continue
-        if len(holders) > 1:
-            ambiguous = True
-            continue
-        item = _eq_where(view, holders[0], tok)
-        if not item:
-            continue
-        found.append(item)
-        seen.add(tok)
-        seen.add(_norm_token(item.get("value")))
-    return found, ambiguous
 
 
 def _confidence(query, plan, info):

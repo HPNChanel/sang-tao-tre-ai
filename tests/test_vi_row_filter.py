@@ -105,7 +105,7 @@ def test_exact_threshold_counts_rows(tmp_path):
     path = _book(tmp_path)
     exact = sum(1 for row in PEOPLE if row["score"] == 40)
     got, conf, reasons, _planned = _ask(
-        path, "Có bao nhiêu người đạt đúng 40 điểm? Chỉ trả lời bằng số nguyên."
+        path, "Với cột Score, có bao nhiêu dòng đúng bằng 40? Ghi chữ số."
     )
     assert got == str(exact), (got, conf, reasons)
     assert exact == 1
@@ -132,8 +132,12 @@ def test_unresolved_filter_is_blank(tmp_path):
         "Chỉ xét các dòng rồi cho biết tổng điểm Score là bao nhiêu? Chỉ trả lời bằng số nguyên.",
         "Chỉ xét những người thuộc north, tổng điểm Score là bao nhiêu? Chỉ trả lời bằng số nguyên.",
         "Chỉ xét night, tổng điểm Score là bao nhiêu? Chỉ trả lời bằng số nguyên.",
-        "Những người có mức chưa tới 30, tổng điểm Score là bao nhiêu? Chỉ trả lời bằng số nguyên.",
     ]
+    scored, conf, reasons, _planned = _ask(
+        path,
+        "Những người có mức chưa tới 30, tổng điểm Score là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    )
+    assert scored == "30", (scored, conf, reasons)
     for query in queries:
         got, conf, _reasons, _planned = _ask(path, query)
         assert got is None, (query, got)
@@ -150,7 +154,7 @@ def test_questions_without_a_row_filter_stay_on_the_whole_table(tmp_path):
             == str(whole))
     assert (_ask(path, "Điểm Score cao nhất là bao nhiêu? Chỉ trả lời bằng số nguyên.")[0]
             == str(highest))
-    assert (_ask(path, "Có bao nhiêu người có điểm từ 40 trở lên? Chỉ trả lời bằng số nguyên.")[0]
+    assert (_ask(path, "Với cột Score, có bao nhiêu dòng từ 40 trở lên? Ghi chữ số.")[0]
             == str(at_least_40))
     assert (_ask(path, "What is the total Score? Answer with only the integer.")[0] == str(whole))
     assert (_ask(path, "How many people scored at least 40? Answer with only the integer.")[0]
@@ -285,8 +289,7 @@ def test_banner_count_hundreds_keeps_the_group(tmp_path):
     group = sum(1 for _n, gender, _c, _s, score in rows if gender == "nam" and score == 250)
     got, conf, reasons, planned = _ask(
         path,
-        "Đếm số người thuộc nam đạt đúng hai trăm năm mươi điểm Score. "
-        "Chỉ trả lời bằng số nguyên.",
+        "Đếm dòng thuộc nam khi điểm Score đúng bằng hai trăm năm mươi. Ghi chữ số.",
     )
     assert group == 2
     assert got == "2", (got, conf, reasons, None if not planned else planned)
@@ -355,3 +358,140 @@ def test_banner_ambiguous_category_is_blank(tmp_path):
     )
     assert got is None, (got, conf, reasons)
     assert conf == 0.0
+
+
+def test_greater_than_words_counts_with_the_shift(tmp_path):
+    """A word threshold and a shift both apply. The shift alone is the wrong count."""
+    path, rows = _people_banner(tmp_path)
+    both = sum(1 for _n, _g, _c, shift, score in rows if shift == "night" and score > 200)
+    shift_only = sum(1 for _n, _g, _c, shift, _s in rows if shift == "night")
+    assert both == 2 and shift_only == 4
+    got, conf, reasons, planned = _ask(
+        path,
+        "Đếm dòng làm ca night có điểm Score lớn hơn hai trăm. Ghi chữ số.",
+    )
+    assert got == "2", (got, conf, reasons, None if not planned else planned["rows"])
+    assert planned["op"] == "count"
+    assert got != str(shift_only)
+
+
+def test_unbound_comparison_does_not_keep_the_shift(tmp_path):
+    """Score and Bonus are both numeric. A bare 'lớn hơn' must not count the shift only."""
+    path = _book(tmp_path)
+    shift_only = sum(1 for row in PEOPLE if row["shift"] == "night")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Đếm dòng làm ca night lớn hơn hai trăm. Ghi chữ số.",
+    )
+    assert got is None, (got, conf, reasons, None if not planned else planned["rows"])
+    assert conf == 0
+    assert got != str(shift_only)
+
+
+def test_over_thousands_in_a_year_counts_rows(tmp_path):
+    """'vượt N nghìn' plus a year counts rows. It does not return one income."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("A1:D1")
+    ws["A1"] = "Bang"
+    for col, name in enumerate(["Province", "Group", "Year", "Thu nhập"], 1):
+        ws.cell(2, col, name)
+    data = [
+        ("Ha Noi", "north", 2024, 6000),
+        ("Ha Noi", "north", 2023, 1000),
+        ("Hue", "north", 2024, 8000),
+        ("Hue", "north", 2023, 9000),
+        ("Da Nang", "south", 2024, 7000),
+    ]
+    for r, row in enumerate(data, 3):
+        for c, value in enumerate(row, 1):
+            ws.cell(r, c, value)
+    path = _save(wb, tmp_path, "provinces.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Đếm tỉnh thuộc north trong năm 2024 có thu nhập vượt 5 nghìn. Ghi chữ số.",
+    )
+    assert got == "2", (got, conf, reasons, None if not planned else (planned["op"], planned["rows"]))
+    assert planned["op"] == "count"
+    assert got not in {"6000", "8000", "9000", "7000"}
+
+
+def test_vietnamese_month_headers_use_the_year(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("B1:E1")
+    ws["B1"] = 2024
+    ws.merge_cells("F1:I1")
+    ws["F1"] = 2023
+    ws["A2"] = "Region"
+    for i, month in enumerate(["Tháng 3", "Tháng 4", "Tháng 5", "Tháng 6"]):
+        ws.cell(2, 2 + i, month)
+        ws.cell(2, 6 + i, month)
+    ws["A3"] = "North"
+    for i, value in enumerate([10, 20, 30, 40, 1, 2, 3, 4]):
+        ws.cell(3, 2 + i, value)
+    ws["A4"] = "South"
+    for i, value in enumerate([7, 8, 9, 11, 5, 5, 5, 5]):
+        ws.cell(4, 2 + i, value)
+    path = _save(wb, tmp_path, "vn-months.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Tổng từ tháng ba đến tháng năm năm 2024 của vùng North là bao nhiêu? "
+        "Ghi chữ số.",
+    )
+    assert got == "60", (got, conf, reasons, None if not planned else planned["columns"])
+    blank, conf, reasons, _planned = _ask(
+        path,
+        "Tổng từ tháng 3 đến tháng 5 năm 2025 của vùng North là bao nhiêu? Ghi chữ số.",
+    )
+    assert blank is None, (blank, conf, reasons)
+
+
+def test_gender_section_ranks_inside_the_group(tmp_path):
+    """nam/nữ are section rows. Ranking stays inside nam and does not read nam as five."""
+    from src.vi import translate
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("B1:B1")
+    ws["B1"] = "Record"
+    ws["A2"] = "Name"
+    ws["B2"] = "Score"
+    ws["A3"] = "nam"
+    ws["A4"] = "An"
+    ws["B4"] = 10
+    ws["A5"] = "Bo"
+    ws["B5"] = 40
+    ws["A6"] = "nu"
+    ws["A7"] = "Cy"
+    ws["B7"] = 90
+    path = _save(wb, tmp_path, "sections.xlsx")
+    text, _hits = translate("Top 1 người thuộc nam theo điểm Score.")
+    assert "five" not in text.lower()
+    got, conf, reasons, planned = _ask(
+        path,
+        "Top 2 người thuộc nam theo điểm Score. Liệt kê tên, phân cách bởi dấu phẩy và một dấu cách.",
+    )
+    assert planned and planned["args"].get("k") == 2, (planned, conf, reasons)
+    names = [part.strip() for part in str(got).split(",")]
+    assert names == ["Bo", "An"], (got, conf, reasons, None if not planned else planned["rows"])
+    assert "Cy" not in names
+
+
+def test_row_after_o_is_not_blocked(tmp_path):
+    """ở + a row label is the row itself. A miss must not blank a correct lookup."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("A1:B1")
+    ws["A1"] = "Bang"
+    ws["A2"] = "Region"
+    ws["B2"] = "Sales"
+    ws["A3"] = "Hue"
+    ws["B3"] = 12
+    ws["A4"] = "North"
+    ws["B4"] = 4
+    path = _save(wb, tmp_path, "places.xlsx")
+    got, conf, reasons, planned = _ask(
+        path,
+        "Doanh số Sales ở Hue là bao nhiêu? Ghi chữ số.",
+    )
+    assert got == "12", (got, conf, reasons, None if not planned else planned["rows"])
