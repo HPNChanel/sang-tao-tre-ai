@@ -292,8 +292,47 @@ def _plan_with_confidence(query, tables, strict):
         vi_factor = 0.9 if hits_base >= 2 else 0.6
     if info.get("abstain"):
         return plan, 0.0, reasons + ["op:abstain"]
+    blocked = _blank_reasons(original, query, plan, info)
+    if blocked:
+        return plan, 0.0, reasons + blocked
     conf, r2 = (_confidence if strict else _confidence_legacy)(query, plan, info)
     return plan, conf * vi_factor, reasons + r2
+
+
+def _blank_reasons(original, translated, plan, info):
+    """Confidence 0 when a remaining generic guard says this plan would be confidently wrong.
+
+    Completeness is decided once, here, before either guard runs. A ranking that
+    already has its measure column and its direction is a no-op, as is a single
+    superlative (argmax/argmin, or nth place 1).
+    """
+    from . import blank_guards as G
+    if G.ranking_ready(plan) or G.single_superlative(plan):
+        return []
+    texts = [original or "", translated or ""]
+    reasons = []
+    if G.shape_mismatch(plan, texts):
+        reasons.append("blank:shape")
+    if _nth_measure_missing(plan, original, translated):
+        reasons.append("blank:nth-column")
+    return reasons
+
+
+def _nth_measure_missing(plan, original, translated):
+    """Nth from place 2 onward, with no measure column. A set column is not re-checked."""
+    from . import blank_guards as G
+    if plan.get("op") != "nth":
+        return False
+    if not G.nth_signal(original, translated):
+        return False
+    args = plan.get("args") or {}
+    try:
+        n = int(args.get("n") or 0)
+    except (TypeError, ValueError):
+        return False
+    if n < 2:
+        return False
+    return not args.get("by")
 
 
 def _named_rank_scope(view, q, matched_rows):

@@ -75,9 +75,15 @@ def compatible(expected: str, got: str) -> bool:
     return False
 
 
-def answer_ok(expected: str, ans: str, fmt: dict) -> bool:
+def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan: dict | None = None) -> bool:
     if ans is None or str(ans).strip() == "":
         return False
+    from . import blank_guards as G
+    # A ranking that already has its column and direction, or a single superlative,
+    # is not rejected on shape. The same predicate gates the pre-exec blanks.
+    if not (G.ranking_ready(plan) or G.single_superlative(plan)):
+        if not _answer_counts(ans, fmt, query, plan):
+            return False
     a = str(ans).strip()
     num = re.fullmatch(r"-?\d+(\.\d+)?", a) is not None
     if expected == "yesno":
@@ -93,3 +99,22 @@ def answer_ok(expected: str, ans: str, fmt: dict) -> bool:
     if expected == "label":
         return not num or fmt.get("kind") == "list"
     return True
+
+
+def _answer_counts(ans: str, fmt: dict, query: str | None, plan: dict | None) -> bool:
+    """A demanded pair needs two elements. A list of labels is not a single number."""
+    from . import blank_guards as G
+    fmt = fmt or {}
+    if G.pair_demanded(fmt, query) and G.item_count(ans, fmt) != 2:
+        return False
+    blob = query or ""
+    if G.asks_single_number(blob, fmt) and G.label_list(ans, fmt):
+        return False
+    if G.asks_list(blob, fmt) and G.single_number(ans) and _aggregate_answer(plan):
+        return False
+    return True
+
+
+def _aggregate_answer(plan: dict | None) -> bool:
+    op = (plan or {}).get("op")
+    return op in {"sum", "mean", "count", "max", "min", "topk_agg"}

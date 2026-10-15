@@ -23,7 +23,7 @@ def execute(plan, tables, query=None):
         except Exception:
             pass
         exp = expected_type(q, plan.get("format") or {})
-        if not answer_ok(exp, ans, plan.get("format") or {}):
+        if not answer_ok(exp, ans, plan.get("format") or {}, q, plan):
             print(f"[exec] answer {ans!r} does not fit expected type {exp} -> fallback", file=sys.stderr)
             return None
     return ans
