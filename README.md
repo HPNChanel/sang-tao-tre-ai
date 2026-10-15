@@ -12,7 +12,7 @@ To enable the fallback planner (qwen/qwen3.7-flash via OpenRouter), set:
 ```
 export OPENROUTER_API_KEY=...        # never stored in source
 export COST_CAP_USD=0.02             # optional per-question cap (hard max 0.09)
-export QWEN_PRICE_IN_PER_M=0.50 QWEN_PRICE_OUT_PER_M=2.00   # optional, USD per 1M tokens
+export QWEN_PRICE_IN_PER_M=0.0345 QWEN_PRICE_OUT_PER_M=0.1495   # optional override; defaults = priciest OpenRouter endpoint as of 2026-10-15
 ```
 The LLM only converts a question into a JSON plan; code computes the answer.
 
