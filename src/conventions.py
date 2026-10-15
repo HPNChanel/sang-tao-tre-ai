@@ -30,3 +30,8 @@ EXCLUDE_SUBTOTALS_IN_AGGREGATES = True
 # separator) unless the wording/format asks for exactly one result (singular 'which <noun>',
 # 'the ...', name/int format with no count) -> keep the first and log the tie to stderr.
 TIES_RETURN_ALL = True
+
+# Rule planner confidence below this -> code_planner.plan returns None (LLM fallback) instead of guessing.
+PLAN_CONFIDENCE_THRESHOLD = 0.5
+# Post-exec: blank the answer (-> fallback) if its shape contradicts the expected answer type.
+POST_EXEC_TYPE_CHECK = True

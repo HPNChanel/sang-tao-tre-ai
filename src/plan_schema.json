@@ -51,7 +51,7 @@
      "items": {
       "type": "string"
      },
-     "description": "row labels or ' > ' paths, in question order"
+     "description": "row labels or ' > ' paths, in question order; prefix 'Sheet!' to pick a row from one sheet of a stacked table"
     },
     "scope": {
      "type": [

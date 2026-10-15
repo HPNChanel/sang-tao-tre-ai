@@ -194,6 +194,24 @@ def strip_instruction(query, spec):
 
 
 def plan_question(query: str, tables) -> dict:
+    return plan_with_confidence(query, tables)[0]
+
+
+def plan_with_confidence(query: str, tables):
+    """-> (plan, confidence in [0,1], reasons). Vietnamese questions are keyword-translated first."""
+    from .vi import is_vietnamese, translate
+    reasons = []
+    vi_factor = 1.0
+    if is_vietnamese(query):
+        query, hits = translate(query)
+        vi_factor = 0.9 if hits >= 2 else 0.6
+        reasons.append(f"vi:{hits}")
+    plan, info = _plan_core(query, tables)
+    conf, r2 = _confidence(query, plan, info)
+    return plan, conf * vi_factor, reasons + r2
+
+
+def _plan_core(query: str, tables):
     spec = parse_instruction(query)
     body = strip_instruction(query, spec)
     low = body.lower()
@@ -215,8 +233,8 @@ def plan_question(query: str, tables) -> dict:
             s += 0.5
         s += 0.01 * min(len(v.df), 50)
         if best is None or s > best[0]:
-            best = (s, vi, v, cols, rows)
-    _, vi, view, cols, rows = best
+            best = (s, vi, v, cols, rows, set(ccov) | set(rcov))
+    _, vi, view, cols, rows, best_cov = best
     # a 'Total' sub-column chosen by preference is dropped when a specific sibling is also chosen
     names = [c for c, _ in cols]
     def _par(c):
@@ -264,9 +282,11 @@ def plan_question(query: str, tables) -> dict:
     if spec.kind == "yesno":
         plan["op"] = "compare"
         args["cmp"] = "<" if re.search(r"\b(less|lower|smaller|fewer|below|under)\b", low) else ">"
-    elif re.search(r"\brank\b|\bdescending\b|\bascending\b", low):
+    elif re.search(r"\brank\b|\bdescending\b|\bascending\b|\bfrom (most|highest|largest|greatest|biggest|least|fewest|lowest|smallest) to (fewest|least|lowest|smallest|most|highest|largest|greatest|biggest)\b|\bin (descending|ascending) order\b", low):
         plan["op"] = "rank"
-        args["order"] = "asc" if "ascending" in low else "desc"
+        asc = re.search(r"ascending|from (least|fewest|lowest|smallest) to", low)
+        args["order"] = "asc" if asc else "desc"
+        plan["rows"]["paths"] = []
         lm = re.search(r":\s*([^.?]+)", body)
         if lm:
             names = [n.strip() for n in re.split(r",\s*(?:and\s+)?|\s+and\s+", lm.group(1)) if n.strip()]
@@ -335,13 +355,31 @@ def plan_question(query: str, tables) -> dict:
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
+    if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "topk_agg", "nth") and not plan["rows"]["where"]:
+        conds = _conditions(body, view, plan["columns"], num_cols)
+        if conds:
+            plan["rows"]["where"] = conds
+            cc = {w["column"] for w in conds}
+            rest = [c for c in plan["columns"] if c not in cc]
+            plan["columns"] = rest or plan["columns"]
+            plan["rows"]["paths"] = [p for p in plan["rows"]["paths"]] if plan["op"] not in ("max", "min", "mean", "sum") else plan["rows"]["paths"]
+    if view.stacked and plan["op"] in ("compare", "diff", "values", "ratio") and len(set(plan["rows"]["paths"])) == 1:
+        sheets = []
+        for sname in dict.fromkeys(view.df["_sheet"]):
+            m = re.search(rf"\b{re.escape(str(sname).lower())}\b", low)
+            if m:
+                sheets.append((m.start(), sname))
+        if len(sheets) >= 2:
+            p0 = plan["rows"]["paths"][0]
+            plan["rows"]["paths"] = [f"{sn}!{p0}" for _, sn in sorted(sheets)]
+            plan["table"]["sheet"] = None
     if plan["op"] in ("sum", "mean", "diff", "compare", "ratio", "share", "argmax", "argmin", "rank"):
         plan["columns"] = [c for c in plan["columns"] if c in num_cols or c.endswith(" | *") or c == "*"]
     if plan["op"] in ("lookup", "values") and (len(plan["rows"]["paths"]) * max(1, len(plan["columns"])) > 1 or spec.kind == "list"):
         plan["op"] = "values"
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
         plan["columns"] = ["*"]
-    return plan
+    return plan, {"view": view, "q": q, "rows": rows, "cols_cov": best_cov, "body": body}
 
 
 def _label_range(label):
@@ -400,17 +438,83 @@ def _choose_over(plan, view, rows, cols, low):
             plan["rows"]["paths"] = []
 
 
+_COND_PRE = {"at least": ">=", "no less than": ">=", "more than": ">", "greater than": ">", "over": ">", "above": ">",
+             "older than": ">", "at most": "<=", "no more than": "<=", "less than": "<", "fewer than": "<",
+             "below": "<", "under": "<", "younger than": "<"}
+
+
+def _condition_column(window, view, cols, num_cols):
+    if re.search(r"\b(aged?|old|older|young|younger|years? old)\b", window):
+        agec = [c for c in num_cols if re.search(r"\bage\b", str(c), re.I)]
+        if agec:
+            return agec[0]
+    m, _ = match_columns(view, Query(window))
+    m = [c for c, _ in m if c in num_cols]
+    if m:
+        return m[0]
+    c = [x for x in cols if x in num_cols]
+    return (c or num_cols[-1:] or [None])[0]
+
+
 def _conditions(body, view, cols, num_cols):
     out = []
-    m = re.search(r"\b(at least|no less than|more than|greater than|over|above|at most|no more than|less than|fewer than|below|under)\s+(-?\d+(?:\.\d+)?)", body.lower())
-    if m:
-        op = {"at least": ">=", "no less than": ">=", "more than": ">", "greater than": ">", "over": ">", "above": ">",
-              "at most": "<=", "no more than": "<=", "less than": "<", "fewer than": "<", "below": "<", "under": "<"}[m.group(1)]
-        c = [x for x in cols if x in num_cols] or num_cols[-1:]
+    low = body.lower()
+    pre = "|".join(sorted(_COND_PRE, key=len, reverse=True))
+    for m in re.finditer(rf"\b({pre})\s+(-?\d+(?:\.\d+)?)", low):
+        if m.group(1) == "over" and re.match(r"\s*(years?|and over)", low[m.end():]):
+            continue
+        w = low[max(0, m.start() - 40): m.end() + 20]
+        c = _condition_column(w, view, cols, num_cols)
         if c:
-            out.append({"column": c[0], "op": op, "value": float(m.group(2))})
+            out.append({"column": c, "op": _COND_PRE[m.group(1)], "value": float(m.group(2))})
+    for m in re.finditer(r"(-?\d+(?:\.\d+)?)\s+(?:[a-z]+\s+)?(?:or|and)\s+(higher|more|older|above|greater|over|up|lower|less|fewer|younger|below|under)\b", low):
+        op = ">=" if m.group(2) in ("higher", "more", "older", "above", "greater", "over", "up") else "<="
+        w = low[max(0, m.start() - 40): m.end() + 10]
+        c = _condition_column(w, view, cols, num_cols)
+        if c and not (len(m.group(1)) == 4 and m.group(1).startswith(("19", "20")) and c == m.group(1)):
+            out.append({"column": c, "op": op, "value": float(m.group(1))})
     y = re.search(r"\b(?:in|during|of)\s+((?:19|20)\d{2})\b", body)
     if y and view.date_cols():
         dc = [c for c in cols if c in view.date_cols()] or view.date_cols()
         out.append({"column": dc[0], "op": "year==", "value": int(y.group(1))})
     return out
+
+
+OP_WORDS = set("""total sum combined average mean highest lowest most least fewest largest smallest maximum minimum
+greater less more fewer higher lower exceed difference absolute change rank order descending ascending share
+proportion percentage percent ratio rate which who what how many much second third first youngest oldest earliest latest
+compare between across all both respectively value number answer""".split())
+
+
+def _confidence(query, plan, info):
+    from .answer_type import compatible, expected_type, plan_type
+    view, q = info["view"], info["q"]
+    reasons, c = [], 1.0
+    exp = expected_type(query, plan["format"])
+    got = plan_type(plan, view)
+    if not compatible(exp, got):
+        return 0.0, [f"type:{exp}!={got}"]
+    op, cols, rows = plan["op"], plan["columns"], plan["rows"]
+    nnum = len(view.numeric_cols())
+    nrows = len(rows["paths"])
+    if op in ("lookup", "values"):
+        if not nrows and not cols:
+            c *= 0.3; reasons.append("lookup:no-match")
+        elif not cols and nnum > 1:
+            c *= 0.6; reasons.append("lookup:no-col")
+    if op in ("compare", "diff", "ratio"):
+        if max(nrows, 1) * max(len(cols), 1) < 2 and not any(str(x).endswith("*") for x in cols):
+            c *= 0.3; reasons.append(f"{op}:<2 values")
+    if op in ("argmax", "argmin") and (plan["args"].get("over") == "rows") and not cols and nnum > 1:
+        c *= 0.5; reasons.append("arg:no-col")
+    if op in ("mean", "max", "min") and not cols and nnum > 1:
+        c *= 0.6; reasons.append("agg:no-col")
+    # how much of the question's content is explained by matched names
+    from .textmatch import tokens as _t
+    content = [p for t, p in q.toks if t not in OP_WORDS and not t.isdigit() or t.isdigit()]
+    cov = info.get("cols_cov") or set()
+    if content:
+        ratio = len([p for p in content if p in cov]) / len(content)
+        if ratio < 0.2:
+            c *= 0.6; reasons.append(f"coverage:{ratio:.2f}")
+    return c, reasons

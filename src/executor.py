@@ -33,7 +33,10 @@ def _resolve_rows(view, paths):
     df = view.df
     groups = []
     for p in paths:
-        m = df.index[df["_row_path"] == p].tolist()
+        sheet = None
+        if "!" in p and view.stacked:
+            sheet, p = p.split("!", 1)
+        m = df.index[(df["_row_path"] == p) & ((df["_sheet"] == sheet) if sheet else True)].tolist()
         if not m:
             leaf = strip_footnotes(p.split(" > ")[-1])
             m = df.index[df["_label"] == leaf].tolist()[:1]
@@ -266,6 +269,9 @@ def execute(plan, tables):
             val = val[0]
     elif op == "rank":
         c = cols[0] if cols else view.numeric_cols()[0]
+        if not groups:
+            idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
+            groups = [[i] for i in idx]
         names = args.get("names") or [df.at[g[0], "_label"] for g in groups]
         vals = [_col_values(view, c, g).sum() for g in groups]
         order = sorted(range(len(vals)), key=lambda k: vals[k], reverse=args.get("order", "desc") == "desc")
