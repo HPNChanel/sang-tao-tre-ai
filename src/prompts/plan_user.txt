@@ -1,0 +1,8 @@
+PLAN SCHEMA:
+{schema}
+
+TABLES (summary):
+{tables}
+
+QUESTION:
+{query}
