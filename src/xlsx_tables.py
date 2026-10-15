@@ -23,7 +23,8 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 NA_TOKENS = {"", "-", "–", "—", "(na)", "na", "n/a", "(x)", "(z)", "(d)", "(s)", "...", "…", "x", "(b)"}
-_FOOT_RE = re.compile(r"(\s*\(\d{1,2}\))+\s*$|\s+\d{1,2}/\s*$|\s*\\\d+\\\s*$")
+_SUP = "¹²³⁴⁵⁶⁷⁸⁹⁰"
+_FOOT_RE = re.compile(r"(\s*\(\d{1,2}\))+\s*$|\s+\d{1,2}/\s*$|\s*\\\d+\\\s*$|[" + _SUP + r"]+\s*$|\s*\((p|r|e|p\)\s*\(r)\)\s*$|\s*\*+\s*$")
 _NOTE_RE = re.compile(r"^\s*(footnotes?|note|notes|source|sources|\(\d+\)|\d+/|\*)", re.I)
 
 
@@ -64,7 +65,7 @@ def to_number(v):
     s = str(v).strip().replace("\u00a0", "")
     if s.lower() in NA_TOKENS:
         return None
-    s = re.sub(r"(?<=\d)\(\d{1,2}\)$|\s+\d/$", "", s)  # trailing footnote marker
+    s = re.sub(r"(?<=\d)\(\d{1,2}\)$|\s+\d/$|[¹²³⁴⁵⁶⁷⁸⁹⁰]+$|\s*\([a-zA-Z]\)$|\*+$", "", s).strip()  # footnote markers
     neg = s.startswith("(") and s.endswith(")")
     s = s.strip("()").replace(",", "").replace("$", "").replace("%", "").strip()
     try:
@@ -139,19 +140,33 @@ def _is_year(v):
 
 
 def load_tables(path, sheets=None) -> list[Table]:
+    from . import conventions as C
+    from .formula_eval import FormulaEvaluator
     wb_v = openpyxl.load_workbook(path, data_only=True)
     wb_f = openpyxl.load_workbook(path, data_only=False)
+    ev = FormulaEvaluator(wb_f, wb_v)
     out = []
     for name in wb_v.sheetnames:
         if sheets and name not in sheets:
             continue
         ws = wb_v[name]
+        if C.SKIP_HIDDEN_SHEETS and ws.sheet_state != "visible":
+            continue
         if ws.max_row == 0 or ws.max_column == 0:
             continue
-        # merges/alignment from formula workbook are identical; values from cached
         g, indent, vmerge, hspan = _grid(ws)
-        if all(_empty(v) for row in g for v in row):
-            g, indent, vmerge, hspan = _grid(wb_f[name])
+        if C.EVALUATE_UNCACHED_FORMULAS:
+            wf = wb_f[name]
+            for row in wf.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str) and cell.value.startswith("="):
+                        r, c = cell.row - 1, cell.column - 1
+                        if r < len(g) and c < len(g[r]) and (g[r][c] is None or not C.PREFER_CACHED_FORMULA_VALUES):
+                            g[r][c] = ev.value(name, cell.coordinate)
+        if not C.INCLUDE_HIDDEN_ROWS:
+            for rr, d in ws.row_dimensions.items():
+                if d.hidden and rr - 1 < len(g):
+                    g[rr - 1] = [None] * len(g[rr - 1])
         out.extend(_split_tables(name, g, indent, vmerge, hspan))
     return out
 
@@ -171,12 +186,19 @@ def _row_kind(g, r, vmerge, ncols, lc):
             return "note"
         return "section"
     has_val = any(_is_value(v) for v in vals)
-    label_empty = _empty(label) or (r, lc) in vmerge and r > 0 and g[r - 1][lc] == label
+    label_empty = _empty(label) or ((r, lc) in vmerge and r > 0 and g[r - 1][lc] == label
+                                    and (not has_val or all(_is_year(v) or isinstance(v, str) for v in vals)))
     if label_empty:
         return "header"
     if has_val:
         # all-year rows with a label are still header-ish (e.g. 'Characteristic | 2023')
-        if all(_is_year(v) for v in vals) and len(set(map(str, vals))) == 1:
+        if len(vals) >= 2 and all(_is_year(v) for v in vals) and len(set(map(str, vals))) == 1:
+            return "header"
+        prev = next((g[k] for k in range(r - 1, -1, -1) if any(not _empty(x) for x in g[k])), None)
+        prev_blank = r == 0 or all(_empty(x) for x in g[r - 1])
+        prev_title = prev is not None and len({clean_text(x) for x in prev if not _empty(x)}) == 1
+        if all(_is_year(v) for v in vals) and isinstance(label, str) and (len(vals) >= 2 or any(isinstance(v, str) for v in vals)) and (
+                prev_blank or prev is None or prev_title or any(isinstance(v, str) for v in vals)):
             return "header"
         return "data"
     return "header" if all(isinstance(v, str) for v in vals) else "data"
@@ -227,6 +249,10 @@ def _split_tables(sheet, g, indent, vmerge, hspan):
             pass
         body = []
         while r < nrows and kinds[r] in ("data", "section", "blank", "note"):
+            if kinds[r] == "section":
+                nxt = next((k for k in kinds[r + 1:] if k != "blank"), None)
+                if nxt == "header":
+                    break
             if kinds[r] == "note":
                 # a note followed by more data is inline; otherwise stop
                 nxt = next((k for k in kinds[r + 1:] if k != "blank"), None)
@@ -236,6 +262,8 @@ def _split_tables(sheet, g, indent, vmerge, hspan):
             r += 1
         notes = []
         while r < nrows and kinds[r] in ("note", "blank", "section") and not _starts_header(kinds, r):
+            if kinds[r] == "section" and next((k for k in kinds[r + 1:] if k != "blank"), None) == "header":
+                break
             if kinds[r] != "blank":
                 notes.append(clean_text(" ".join(str(v) for v in dict.fromkeys(g[r]) if not _empty(v))))
             r += 1

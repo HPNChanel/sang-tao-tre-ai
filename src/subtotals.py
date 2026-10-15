@@ -42,8 +42,13 @@ def detect_subtotals(df: pd.DataFrame, value_cols=None, min_frac=0.6) -> pd.Data
     labels = df["_row_path"].astype(str).tolist() if "_row_path" in df else [""] * n
     cue = [bool(_CUE.search(l.split(" > ")[-1])) for l in labels]
     X = df[value_cols].to_numpy(dtype=float) if value_cols else np.zeros((n, 0))
+    leafs = [l.split(" > ")[-1] for l in labels]
+    if len(value_cols) < 2:  # one value column: sums are too easy to hit by chance
+        X = X[:, :0]
     for i in range(n - 2, -1, -1):
         target = X[i]
+        if target.size == 0:
+            break
         if np.all(np.isnan(target)):
             continue
         acc = np.zeros(len(value_cols)); nan_mask = np.zeros(len(value_cols), bool)
@@ -64,6 +69,8 @@ def detect_subtotals(df: pd.DataFrame, value_cols=None, min_frac=0.6) -> pd.Data
             # stop early if every comparable column already exceeds target (all-positive data)
             if np.all((acc > np.abs(target) * 1.01 + 1) | np.isnan(target)) and np.all(np.nan_to_num(X[i:j]) >= 0):
                 break
+        if best and any(leafs[u] == leafs[i] for u in best[0]):
+            best = None  # repeated labels (vertically merged groups) are not subtotal children
         if best and not cue[i]:
             # identities like a = b + (a - b) (e.g. balance rows) are not subtotals:
             # without a label cue, reject runs containing negative values
