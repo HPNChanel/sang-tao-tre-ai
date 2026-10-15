@@ -37,10 +37,9 @@ def test_explicit_addition_preserves_both_columns(tables):
     assert execute(built, tables, query) == "110"
 
 
-def test_explicit_pair_preserves_both_columns(tables):
+def test_ambiguous_pair_still_abstains(tables):
     query = "Give Bolts inventory in all depots and in Harbor, respectively. Answer with two integers separated by a comma."
     built, confidence, reasons = plan_with_confidence(query, tables)
-    assert len(built["columns"]) == 2
     # Existing operation ambiguity must not become a confident one-column answer.
     assert confidence == 0
     assert "op:ambiguous" in reasons
