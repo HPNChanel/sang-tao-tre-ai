@@ -2,7 +2,7 @@ name: Linux verification (free public runner)
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, codex/free-linux-ci]
   workflow_dispatch:
 
 permissions:
