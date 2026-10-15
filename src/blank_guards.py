@@ -1,21 +1,13 @@
 """Generic blanks for plans that would otherwise be confident and wrong.
 
-Signals come from the question wording (English or Vietnamese, digits or number
-words). Nothing here is keyed to a file, an id, a column name, or a question.
+Two checks remain: the answer type, and an nth rank (place 2 or later) that
+has no measure column. A ranking that already has its measure column and its
+direction is left alone. Nothing here is keyed to a file, an id, a column
+name, or a question.
 """
 from __future__ import annotations
 
 import re
-
-_EN_NUM = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-    "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-}
-_VI_NUM = {
-    "mot": 1, "hai": 2, "ba": 3, "bon": 4, "nam": 5, "sau": 6,
-    "bay": 7, "tam": 8, "chin": 9, "muoi": 10,
-}
-_NUM = {**_EN_NUM, **_VI_NUM}
 
 _SUP_DESC = (
     "largest|highest|most|greatest|biggest|oldest|latest|top"
@@ -38,119 +30,6 @@ _LABEL_OPS = {"rank", "argmax", "argmin"}
 def fold_text(text: str) -> str:
     from .vi import fold
     return fold(text or "").lower()
-
-
-def _kpat() -> str:
-    words = "|".join(sorted(_NUM, key=len, reverse=True))
-    return rf"(\d+|{words})"
-
-
-def _kval(raw: str):
-    if not raw:
-        return None
-    if str(raw).isdigit():
-        if len(raw) == 4 and raw.startswith(("19", "20")):
-            return None
-        return int(raw)
-    return _NUM.get(raw)
-
-
-def _collect_ks(text: str) -> list[int]:
-    """Top-N counts written in the question. 'at least 60' is not a count of items."""
-    if not text:
-        return []
-    low = fold_text(text)
-    kp = _kpat()
-    found = []
-
-    def add(raw, start, end):
-        before = low[:start]
-        after = low[end:]
-        if re.search(r"\bat\s+(?:least|most)\s+$", before) or re.search(r"\bat\s+$", before):
-            return
-        # '20 or more … largest' and 'span 9 and over' are thresholds, not a row count.
-        if re.match(r"\s+(?:or|and|to|years?|tuoi|aged)\b", after):
-            return
-        # 'năm 2024' is a calendar year. Bare 'năm' before a superlative is still five.
-        if raw == "nam" and re.match(r"\s+(?:19|20)\d{2}\b", after):
-            return
-        k = _kval(raw)
-        if k and k >= 2:
-            found.append(k)
-
-    for m in re.finditer(rf"\b(?:top|bottom)\s+{kp}\b", low):
-        add(m.group(1), m.start(1), m.end(1))
-    for m in re.finditer(rf"\b{kp}(?:\s+\w+){{0,6}}?\s+(?:{_SUP})\b", low):
-        add(m.group(1), m.start(1), m.end(1))
-    for m in re.finditer(rf"\b(?:{_SUP})\s+{kp}\b", low):
-        add(m.group(1), m.start(1), m.end(1))
-    for m in re.finditer(rf"\b{kp}\s+dong\s+(?:dau|cuoi)\b", low):
-        add(m.group(1), m.start(1), m.end(1))
-    for m in re.finditer(rf"\bdong\s+(?:dau|cuoi)\s+{kp}\b", low):
-        add(m.group(1), m.start(1), m.end(1))
-    return found
-
-
-def topn_signal(texts) -> int | None | str:
-    """The one N in a top-N signal, 'ambiguous' when several N disagree, else None."""
-    ks = []
-    for text in texts:
-        ks.extend(_collect_ks(text or ""))
-    uniq = list(dict.fromkeys(ks))
-    if not uniq:
-        return None
-    if len(uniq) > 1:
-        return "ambiguous"
-    return uniq[0]
-
-
-def _sort_votes(low: str) -> set[str]:
-    """Direction words left after a top-N/bottom-N operator is removed.
-
-    'top 10 smallest' is one ascending cue. 'top' there is the operator, not a
-    second direction. 'from highest to lowest' is one descending phrase.
-    """
-    low = re.sub(rf"\b(?:top|bottom)\s+{_kpat()}\b", " ", low)
-    votes = set()
-    if re.search(r"\bfrom (?:highest|largest|most|greatest|biggest) to\b", low):
-        votes.add("desc")
-        low = re.sub(
-            r"\bfrom (?:highest|largest|most|greatest|biggest) to "
-            r"(?:lowest|smallest|least|fewest|highest|largest)\b",
-            " ", low)
-    if re.search(r"\bfrom (?:lowest|smallest|least|fewest) to\b", low):
-        votes.add("asc")
-        low = re.sub(
-            r"\bfrom (?:lowest|smallest|least|fewest) to "
-            r"(?:highest|largest|most|greatest|biggest|lowest|smallest)\b",
-            " ", low)
-    if re.search(rf"\b(?:{_SUP_DESC}|descending|giam dan)\b", low):
-        votes.add("desc")
-    if re.search(rf"\b(?:{_SUP_ASC}|ascending|tang dan)\b", low):
-        votes.add("asc")
-    return votes
-
-
-def _votes(texts) -> set[str]:
-    votes = set()
-    for text in texts:
-        if text:
-            votes |= _sort_votes(fold_text(text))
-    return votes
-
-
-def direction(texts) -> str | None:
-    """'asc' or 'desc' when the question names one sort direction."""
-    votes = _votes(texts)
-    if len(votes) == 1:
-        return votes.pop()
-    return None
-
-
-def direction_conflict(texts) -> bool:
-    """True when the question states both directions, not when a cue is missing."""
-    votes = _votes(texts)
-    return "asc" in votes and "desc" in votes
 
 
 def nth_signal(original: str, translated: str) -> bool:
@@ -285,34 +164,27 @@ def single_superlative(plan: dict | None) -> bool:
     return False
 
 
-def plan_is_complete(plan: dict | None) -> bool:
-    """A rank or top-k plan that already has N, a column, and a direction.
+def ranking_ready(plan: dict | None) -> bool:
+    """Rank, measure column, and direction are already set.
 
-    Guards do not second-guess a plan in this state.
+    rank, nth, and topk_agg are ready when args.by is set and args.order is
+    asc or desc. The count N is not required, and a set column is not matched
+    against the question again. argmax and argmin are ready when a measure
+    column is set; the operation is the direction.
     """
     if not plan:
         return False
-    if plan.get("op") not in ("rank", "topk_agg"):
-        return False
+    op = plan.get("op")
     args = plan.get("args") or {}
-    try:
-        k = int(args.get("k"))
-    except (TypeError, ValueError):
-        return False
-    if k < 2 or args.get("order") not in ("asc", "desc"):
-        return False
-    by = args.get("by")
-    cols = [c for c in (plan.get("columns") or []) if c]
-    return bool(by or cols)
+    if op in ("rank", "nth", "topk_agg"):
+        return bool(args.get("by")) and args.get("order") in ("asc", "desc")
+    if op in ("argmax", "argmin"):
+        return any(c for c in (plan.get("columns") or []) if c)
+    return False
 
 
 def shape_mismatch(plan: dict, texts) -> bool:
-    """List question answered by a numeric aggregate, or a single-number question answered by labels.
-
-    A single superlative (argmax/argmin) and a complete rank plan are left alone.
-    """
-    if single_superlative(plan) or plan_is_complete(plan):
-        return False
+    """List question answered by a numeric aggregate, or a single-number question answered by labels."""
     fmt = plan.get("format") or {}
     blob = " ".join(t for t in texts if t)
     op = plan.get("op")

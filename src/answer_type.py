@@ -79,8 +79,9 @@ def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan
     if ans is None or str(ans).strip() == "":
         return False
     from . import blank_guards as G
-    # A finished rank plan, or a single superlative, is not rejected on shape.
-    if not (G.plan_is_complete(plan) or G.single_superlative(plan)):
+    # A ranking that already has its column and direction, or a single superlative,
+    # is not rejected on shape. The same predicate gates the pre-exec blanks.
+    if not (G.ranking_ready(plan) or G.single_superlative(plan)):
         if not _answer_counts(ans, fmt, query, plan):
             return False
     a = str(ans).strip()

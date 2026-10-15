@@ -300,131 +300,39 @@ def _plan_with_confidence(query, tables, strict):
 
 
 def _blank_reasons(original, translated, plan, info):
-    """Confidence 0 when a generic guard says this plan would be confidently wrong.
+    """Confidence 0 when a remaining generic guard says this plan would be confidently wrong.
 
-    A complete rank plan (N, column, and direction) is a no-op for every guard.
-    A single superlative (argmax/argmin, or nth place 1) never triggers top-N, nth, or shape.
+    Completeness is decided once, here, before either guard runs. A ranking that
+    already has its measure column and its direction is a no-op, as is a single
+    superlative (argmax/argmin, or nth place 1).
     """
     from . import blank_guards as G
-    if G.plan_is_complete(plan):
+    if G.ranking_ready(plan) or G.single_superlative(plan):
         return []
     texts = [original or "", translated or ""]
-    single = G.single_superlative(plan)
     reasons = []
-    if _unscoped_lookup(plan, info):
-        reasons.append("blank:lookup-row")
-    if not single and _topn_must_blank(plan, info, texts):
-        reasons.append("blank:topn")
-    if not single and G.shape_mismatch(plan, texts):
+    if G.shape_mismatch(plan, texts):
         reasons.append("blank:shape")
-    if not single and G.nth_signal(original, translated) and not _nth_column_resolved(plan, info, texts):
+    if _nth_measure_missing(plan, original, translated):
         reasons.append("blank:nth-column")
     return reasons
 
 
-def _unscoped_lookup(plan, info):
-    """Single-cell lookup with no row path and no where on a multi-row table."""
-    if plan.get("op") != "lookup":
-        return False
-    rows = plan.get("rows") or {}
-    if rows.get("paths") or rows.get("where") or rows.get("scope") or rows.get("range"):
-        return False
-    view = info.get("view")
-    if view is None:
-        return False
-    return len(view.df) > 1
-
-
-def _topn_must_blank(plan, info, texts):
-    """Blank a non-top-N plan only when the question has one clear top-N count.
-
-    A complete plan and a single superlative are not blanked here. An unsure
-    signal (no N, or several N) does not fire.
-    """
+def _nth_measure_missing(plan, original, translated):
+    """Nth from place 2 onward, with no measure column. A set column is not re-checked."""
     from . import blank_guards as G
-    if G.plan_is_complete(plan) or G.single_superlative(plan):
-        return False
-    signal = G.topn_signal(texts)
-    if signal is None or signal == "ambiguous":
-        return False
-    if _scalar_extreme_ok(plan, info, texts):
-        return False
-    return True
-
-
-def _scalar_extreme_ok(plan, info, texts):
-    """'highest 3 ... integer' and 'top 2 ... integer' stay a single extreme."""
-    from . import blank_guards as G
-    fmt = plan.get("format") or {}
-    op = plan.get("op")
-    if op not in ("max", "min"):
-        return False
-    if fmt.get("kind") not in ("int", "decimal", "number"):
-        return False
-    blob = " ".join(texts)
-    if G.asks_list(blob, fmt):
-        return False
-    if G.direction_conflict(texts):
-        return False
-    want = G.direction(texts)
-    if op == "max" and want == "asc":
-        return False
-    if op == "min" and want == "desc":
-        return False
-    return _guard_column_resolved(plan, info, texts)
-
-
-def _guard_column_resolved(plan, info, texts):
-    """One ranking column: the only measure, or one column the question names."""
-    view = info.get("view")
-    if view is None:
-        return False
-    by = (plan.get("args") or {}).get("by")
-    blob = " ".join(texts)
-    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
-    if len(num) <= 1:
-        return True
-    hits = _named_measures(view, blob)
-    if len(hits) == 1:
-        return by in (None, hits[0])
-    if len(hits) > 1:
-        best = _dominant_measure(hits, blob)
-        if best is None:
-            return False
-        return by in (None, best)
-    return False
-
-
-def _named_measures(view, text):
-    q = Query(text)
-    hits = []
-    for c in view.numeric_cols():
-        if _is_total_col(c):
-            continue
-        parts = [p for p in str(c).split(" | ") if p and p != "*"]
-        if any(q.match(p)[0] >= 0.5 for p in parts):
-            hits.append(c)
-    return hits
-
-
-def _dominant_measure(hits, text):
-    q = Query(text)
-    scored = []
-    for c in hits:
-        parts = [p for p in str(c).split(" | ") if p and p != "*"]
-        score = sum(1 for p in parts if q.match(p)[0] >= 0.5)
-        scored.append((score, c))
-    if not scored:
-        return None
-    best = max(s for s, _ in scored)
-    top = [c for s, c in scored if s == best]
-    return top[0] if len(top) == 1 and best > 0 else None
-
-
-def _nth_column_resolved(plan, info, texts):
     if plan.get("op") != "nth":
         return False
-    return _guard_column_resolved(plan, info, texts)
+    if not G.nth_signal(original, translated):
+        return False
+    args = plan.get("args") or {}
+    try:
+        n = int(args.get("n") or 0)
+    except (TypeError, ValueError):
+        return False
+    if n < 2:
+        return False
+    return not args.get("by")
 
 
 def _named_rank_scope(view, q, matched_rows):

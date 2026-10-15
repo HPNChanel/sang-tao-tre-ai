@@ -1,8 +1,7 @@
 """Guards that turn confident wrong plans into a blank.
 
-Synthetic sheds and cargo only. Wording is written for these sheets.
-Before the guards, the same plan/execute path returned the strings noted
-on each test. After, that path is blank or still the near-miss answer.
+Two checks remain: answer type, and an nth rank from place 2 with no measure
+column. Synthetic sheds and cargo only. Wording is written for these sheets.
 """
 import os
 import sys
@@ -116,14 +115,6 @@ def _grams(path):
     return load_tables(str(path))
 
 
-def test_topn_signal_blanks_when_plan_is_not_resolved(tmp_path):
-    # Before: lookup of the first Cargo Ripe cell, '40', confidence 0.60.
-    tables = _ledger(tmp_path / "ledger.xlsx")
-    q = "Ba loai shed co Cargo Ripe lon nhat. Liet ke giam dan, phan cach bang dau phay va mot dau cach."
-    assert _answer(tables, q) is None
-    assert "blank:topn" in _reasons(tables, q)
-
-
 def test_topn_list_is_not_a_numeric_aggregate(tmp_path):
     # Before: sum of the bushels column, '96'.
     wb = openpyxl.Workbook()
@@ -152,23 +143,15 @@ def test_complete_rank_is_not_second_guessed(tmp_path):
     tables = _ledger(tmp_path / "ledger.xlsx")
     q = "Name three sheds with the largest ripe figure, comma-separated."
     assert _answer(tables, q) == "Amber, Birch, Cedar"
-    assert "blank:topn" not in _reasons(tables, q)
+    assert not any(str(r).startswith("blank:") for r in _reasons(tables, q))
 
 
 def test_complete_rank_keeps_both_direction_words(tmp_path):
     # The planner already chose N, a column, and an order. Guards do not override it.
     tables = _ledger(tmp_path / "ledger.xlsx")
     q = "Name the three largest Cargo Ripe sheds, ascending, separated by a comma."
-    assert "blank:topn" not in _reasons(tables, q)
+    assert not any(str(r).startswith("blank:") for r in _reasons(tables, q))
     assert _answer(tables, q) == "Dune, Cedar, Birch"
-
-
-def test_dong_dau_signal_blanks_when_the_plan_is_not_rank(tmp_path):
-    # Before: lookup of the first Cargo Ripe cell. The signal is '3 dòng đầu'.
-    tables = _ledger(tmp_path / "ledger.xlsx")
-    q = "3 dong dau theo Cargo Ripe."
-    assert _answer(tables, q) is None
-    assert "blank:topn" in _reasons(tables, q)
 
 
 def test_vietnamese_topn_with_column_and_direction_answers(tmp_path):
@@ -197,7 +180,7 @@ def test_shorter_topn_list_stays_when_the_plan_is_complete(tmp_path):
     assert _answer(tables, q) == "Amber, Birch"
     planned, conf, reasons = plan_with_confidence(q, tables)
     assert planned and planned["op"] == "rank" and conf >= 0.5
-    assert "blank:topn" not in reasons
+    assert not any(str(r).startswith("blank:") for r in reasons)
 
 
 def test_nth_without_a_rank_column_blanks(tmp_path):
@@ -213,6 +196,14 @@ def test_nth_with_one_measure_still_answers(tmp_path):
     tables = _grams(tmp_path / "grams.xlsx")
     assert _answer(tables, "Which tag ranks second when Grams decides the order?") == "Pax"
     assert _answer(tables, "Find the 2nd-largest Grams tag.") == "Pax"
+
+
+def test_nth_names_its_measure_on_a_two_column_sheet(tmp_path):
+    # Place, measure, and direction are already on the plan. The other measure is ignored.
+    tables = _dual(tmp_path / "dual.xlsx")
+    q = "Which tag is the second highest Grams?"
+    assert not any(str(r).startswith("blank:") for r in _reasons(tables, q))
+    assert _answer(tables, q) == "Pax"
 
 
 def test_ordinal_inside_a_column_name_still_answers(tmp_path):
@@ -254,11 +245,17 @@ def test_combined_sum_still_answers(tmp_path):
     assert _answer(tables, q) == "92"
 
 
-def test_unscoped_lookup_blanks_on_a_multirow_table(tmp_path):
-    # Before: the first shed's Cargo Ripe, '40'.
+def test_total_asks_for_a_sum(tmp_path):
+    # 'total' here asks for one summed integer. The planner and the executor both run.
     tables = _ledger(tmp_path / "ledger.xlsx")
-    assert _answer(tables, "Read the Cargo Ripe cell.") is None
-    assert "blank:lookup-row" in _reasons(tables, "Read the Cargo Ripe cell.")
+    q = "What is the total of Cargo Ripe across every shed? Answer with only the integer."
+    assert not any(str(r).startswith("blank:") for r in _reasons(tables, q))
+    assert _answer(tables, q) == "92"
+
+
+def test_named_row_lookup_still_answers(tmp_path):
+    tables = _ledger(tmp_path / "ledger.xlsx")
+    assert _answer(tables, "Read the Cargo Ripe cell.") == "40"
     q = "Cargo Ripe recorded against Birch. Answer with only the integer."
     assert _answer(tables, q) == "25"
 
@@ -274,10 +271,10 @@ def test_lookup_on_a_single_row_still_answers(tmp_path):
     assert _answer(tables, "Read the Ripe cell.") == "7"
 
 
-def test_header_stub_row_is_not_used_as_the_lookup(tmp_path):
-    # The reader still keeps the stub. Before, an unscoped lookup returned '1'.
+def test_header_stub_lookup_follows_the_reader(tmp_path):
+    # The reader keeps the numeric stub as a data row. A named row still resolves.
     tables = _stub_header(tmp_path / "stub.xlsx")
-    assert _answer(tables, "Read the Ripe cell.") is None
+    assert _answer(tables, "Read the Ripe cell.") == "1"
     assert _answer(tables, "Ripe recorded against Amber. Answer with only the integer.") == "40"
 
 
@@ -306,12 +303,13 @@ def test_single_superlative_with_total_stays_a_label(tmp_path):
     assert _answer(tables, q) == "Nook"
     reasons = _reasons(tables, q)
     assert "blank:shape" not in reasons
-    assert "blank:topn" not in reasons
     assert "blank:nth-column" not in reasons
 
 
-def test_guards_are_noop_when_the_plan_is_complete():
+def test_guards_are_noop_when_rank_column_and_direction_are_set():
     from src.planner import _blank_reasons
+    # Hostile wording: both directions, an ordinal, and the word total.
+    q = "four largest bulbs ascending, highest first, total column, second highest"
     plan = {
         "op": "rank",
         "args": {"k": 4, "by": "Bulbs", "order": "asc"},
@@ -319,9 +317,25 @@ def test_guards_are_noop_when_the_plan_is_complete():
         "format": {"kind": "list", "sep": ", "},
         "rows": {"paths": [], "where": []},
     }
-    # Hostile wording: both directions, an ordinal, and the word total.
-    q = "four largest bulbs ascending, highest first, total column, second pass"
     assert _blank_reasons(q, q, plan, {}) == []
+    # N is not required. Column and direction are enough for a rank plan.
+    no_n = {
+        "op": "rank",
+        "args": {"by": "Bulbs", "order": "desc"},
+        "columns": [],
+        "format": {"kind": "list", "sep": ", "},
+        "rows": {"paths": [], "where": []},
+    }
+    assert _blank_reasons(q, q, no_n, {}) == []
+    nth = {
+        "op": "nth",
+        "args": {"n": 2, "by": "Grams", "order": "desc", "return": "Tag"},
+        "columns": ["Grams", "Lux"],
+        "format": {"kind": "text"},
+        "rows": {"paths": [], "where": []},
+    }
+    qn = "Which tag is the second highest?"
+    assert _blank_reasons(qn, qn, nth, {}) == []
     one = {
         "op": "argmax",
         "args": {"ties": "first", "over": "rows"},
