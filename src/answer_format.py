@@ -17,6 +17,7 @@ class FormatSpec:
     sep: str = ", "
     order: list[str] = field(default_factory=list)
     instruction: str = ""
+    thousands: bool = False        # '1,234' digit grouping requested
 
 
 def _instr(q: str) -> str:
@@ -40,6 +41,8 @@ def parse_instruction(query: str) -> FormatSpec:
     order = re.search(r"order\s+[`'\"]([^`'\"]+)[`'\"]", ins) or re.search(r"as\s+`([^`]+)`", ins)
     if order:
         spec.order = [s.strip() for s in order.group(1).split(",")]
+    spec.thousands = bool(re.search(r"(formatted|written) with commas|with (a )?(thousands?|comma) separators?|"
+                                    r"comma as (the )?thousands? separator|with commas\b", low))
     if re.search(r"\byes or no\b|'yes' or 'no'|\"yes\" or \"no\"", low):
         spec.kind = "yesno"; return spec
     is_list = bool(cnt) or "separated by" in low or "separating" in low or len(spec.order) > 1
@@ -64,7 +67,12 @@ def _round(x, d):
     return Decimal(str(x)).quantize(Decimal(1).scaleb(-d), rounding=ROUND_HALF_UP)
 
 
-def _fmt_scalar(v, kind, d=None):
+def _fmt_scalar(v, kind, d=None, thousands=False):
+    if thousands and kind in ("int", "number", "decimal"):
+        f = float(v)
+        if kind == "decimal":
+            return f"{_round(f, d):,.{d}f}"
+        return f"{int(_round(f, 0)):,}" if kind == "int" or f.is_integer() else f"{f:,}"
     if kind == "int":
         return str(int(_round(float(v), 0)))
     if kind == "decimal":
@@ -83,4 +91,4 @@ def format_answer(value, spec: FormatSpec) -> str:
     if spec.kind == "list":
         vals = list(value) if isinstance(value, (list, tuple)) else [value]
         return spec.sep.join(_fmt_scalar(v, spec.item_kind, spec.decimals) for v in vals)
-    return _fmt_scalar(value, spec.kind, spec.decimals)
+    return _fmt_scalar(value, spec.kind, spec.decimals, spec.thousands)

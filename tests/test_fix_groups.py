@@ -57,3 +57,29 @@ def test_vi_average_is_value(tmp_path):
         ws.append([n, s])
     f = tmp_path / "s.xlsx"; wb.save(f)
     assert _ans(f, "Điểm trung bình của tất cả mọi người là bao nhiêu? Chỉ trả lời bằng số, làm tròn đến 2 chữ số thập phân.") == "80.33"
+
+
+# ---- top N / ties / thousands separator
+@pytest.fixture
+def people(tmp_path):
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["First", "Last", "Score"])
+    for r in [("An", "Ka", 70), ("Bo", "Lu", 95), ("Cu", "Mo", 88), ("Di", "No", 95), ("Em", "Op", 60)]:
+        ws.append(list(r))
+    f = tmp_path / "p.xlsx"; wb.save(f); return f
+
+
+def test_top_n_list(people):
+    assert _ans(people, "List the three highest scorers. Answer with the last names in descending order of score, separated by a comma and one space.") == "Lu, No, Mo"
+
+
+def test_ties_share_top(people):
+    assert _ans(people, "Which people share the top score? Answer with the last names in table order, separated by a comma and one space.") == "Lu, No"
+
+
+def test_thousands_separator(tmp_path):
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["Item", "Units"]); ws.append(["Alpha", 1234567]); ws.append(["Beta", 89])
+    f = tmp_path / "u.xlsx"; wb.save(f)
+    assert _ans(f, "How many units did Alpha sell? Answer with the number formatted with commas.") == "1,234,567"
+    assert _ans(f, "How many units did Alpha sell? Answer with only the integer.") == "1234567"

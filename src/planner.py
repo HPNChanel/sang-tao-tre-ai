@@ -268,7 +268,8 @@ def _plan_core(query: str, tables, strict=False):
                      "exclude_subtotals": C.EXCLUDE_SUBTOTALS_IN_AGGREGATES, "where": []},
             "columns": cols, "op": "lookup", "args": {},
             "format": {"kind": spec.kind, "decimals": spec.decimals, "count": spec.count,
-                       "item_kind": spec.item_kind, "sep": spec.sep, "order": spec.order}}
+                       "item_kind": spec.item_kind, "sep": spec.sep, "order": spec.order,
+                       "thousands": spec.thousands}}
     if re.search(r"yyyy-mm-dd|\bdate\b.*format", query.lower()):
         plan["format"]["kind"] = "date"
     if view.stacked:
@@ -296,6 +297,10 @@ def _plan_core(query: str, tables, strict=False):
         re.search(r"\bthe ()(youngest|oldest)\b(?! \w+ (?:people|persons))", low)
     _unused = re.search(r"\b(" + "|".join(ORD) + r"|\d+(?:st|nd|rd|th))[- ](" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
     topk = re.search(r"\b(?:among|of) the (\w+) (" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
+    topn = None if topk else _top_n(low, view, spec, num_cols)
+    if topn and topn[3]:
+        cols = [topn[3]] + [c for c in cols if c != topn[3]]
+        plan["columns"] = cols
     if spec.kind == "yesno":
         plan["op"] = "compare"
         args["cmp"] = "<" if re.search(r"\b(less|lower|smaller|fewer|below|under)\b", low) else ">"
@@ -313,7 +318,14 @@ def _plan_core(query: str, tables, strict=False):
                 rr, _ = match_rows(view, Query(n))
                 paths.append(rr[0][0] if rr else n)
             plan["rows"]["paths"] = paths
-    elif re.search(r"\bshare\b|\bproportion\b|percentage of|what percent", low):
+    elif topn and spec.kind == "list":
+        plan["op"] = "rank"
+        args["k"] = topn[0]
+        args["order"] = "desc" if re.fullmatch(SUP_MAX, topn[1]) else "asc"
+        plan["rows"]["paths"] = []
+        if topn[2]:
+            args["return"] = topn[2]
+    elif re.search(r"\bshare\b|\bproportion\b|percentage of|what percent", low) and not _SHARE_TIE.search(low):
         plan["op"] = "share"
         args["percent"] = True
     elif re.search(r"\(([^()/]+)/([^()]+)\)|\bratio\b|\brate\b.*/", body):
@@ -378,6 +390,12 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
+    if plan["op"] in ("argmax", "argmin") and args.get("over") == "rows" and spec.instruction and not args.get("return"):
+        # 'Answer with the last names ...' -> return that column instead of the row label
+        ic, _ = match_columns(view, Query(spec.instruction))
+        ic = [c for c, _ in ic if c not in num_cols and c != view.label_name]
+        if ic:
+            args["return"] = ic[0]
     if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
         # a section named in the question ('of men', 'among women') scopes row aggregates
@@ -411,6 +429,37 @@ def _plan_core(query: str, tables, strict=False):
         plan["columns"] = ["*"]
     return plan, {"view": view, "q": q, "rows": rows, "cols_cov": best_cov, "body": body,
                   "views": views, "vscores": vscores, "vi": vi, "spec": spec}
+
+
+_SHARE_TIE = re.compile(r"\bshare (the|a) (same|top|highest|lowest|first|maximum|minimum)\b")
+
+
+def _top_n(low, view, spec, num_cols):
+    """'top 3 X by Y', 'the three highest scorers', 'name the 2 largest ...' -> (k, sup word, return col, by col)."""
+    sup = SUP_MAX + "|" + SUP_MIN
+    nw = "|".join(NUMW)
+    m = re.search(rf"\b(?:top|bottom)\s+(\d+|{nw})\b", low) or re.search(rf"\b(?:the\s+)?(\d+|{nw})\s+({sup})\b", low)
+    if not m:
+        return None
+    k = int(m.group(1)) if m.group(1).isdigit() else NUMW[m.group(1)]
+    if k < 2:
+        return None
+    word = m.group(2) if m.lastindex >= 2 and m.group(2) else ("lowest" if "bottom" in m.group(0) else "highest")
+    ret = by = None
+    if spec.instruction:
+        ic, _ = match_columns(view, Query(spec.instruction))
+        ic = [c for c, _ in ic if c not in num_cols]
+        ret = ic[0] if ic else None
+    tail = Query(low[m.end():])
+    bc, _ = match_columns(view, tail)
+    bc = [c for c, _ in bc if c in num_cols]
+    by = bc[0] if bc else None
+    if by is None:
+        # agent nouns: 'scorers' -> Score, 'earners' -> Earnings
+        words = [re.sub(r"(ers|er|rs)$", "", w) for w in re.findall(r"[a-z]{4,}", low[m.end():])]
+        hit = [c for c in num_cols for w in words if len(w) >= 4 and any(t.startswith(w) for t in tokens(str(c).split(" | ")[-1]))]
+        by = hit[0] if hit else None
+    return k, word, ret, by
 
 
 def _label_range(label):

@@ -272,6 +272,9 @@
      "items": {
       "type": "string"
      }
+    },
+    "thousands": {
+     "type": "boolean"
     }
    }
   }

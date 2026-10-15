@@ -266,7 +266,7 @@ def execute(plan, tables):
             vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}
             vals = {i: v for i, v in vals.items() if isinstance(v, (int, float, np.floating)) and not math.isnan(v)}
             best = _pick(list(vals), lambda i: sign * tf(vals[i]), plan, "rows")
-            val = [df.at[b, "_label"] for b in best]
+            val = [_ret(view, b, args.get("return")) for b in best]
         if isinstance(val, list) and len(val) == 1:
             val = val[0]
     elif op == "rank":
@@ -274,10 +274,10 @@ def execute(plan, tables):
         if not groups:
             idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
             groups = [[i] for i in idx]
-        names = args.get("names") or [df.at[g[0], "_label"] for g in groups]
+        names = args.get("names") or [_ret(view, g[0], args.get("return")) for g in groups]
         vals = [_col_values(view, c, g).sum() for g in groups]
         order = sorted(range(len(vals)), key=lambda k: vals[k], reverse=args.get("order", "desc") == "desc")
-        val = [names[k] for k in order]
+        val = [names[k] for k in order][: args.get("k") or None]
     elif op in ("nth", "topk_agg"):
         idx = _aggregate_rows(view, plan, base)
         idx = _apply_where(view, idx, r.get("where"))
@@ -345,7 +345,8 @@ def _first_root_scope(view, idx):
 
 def to_spec(fmt: dict) -> FormatSpec:
     return FormatSpec(kind=fmt.get("kind", "text"), decimals=fmt.get("decimals"), count=fmt.get("count"),
-                      item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [])
+                      item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [],
+                      thousands=bool(fmt.get("thousands")))
 
 
 def answer(plan, tables) -> str:

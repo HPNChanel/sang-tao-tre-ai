@@ -77,6 +77,8 @@ def answer_ok(expected: str, ans: str, fmt: dict) -> bool:
     if ans is None or str(ans).strip() == "":
         return False
     a = str(ans).strip()
+    if fmt.get("thousands"):
+        a = a.replace(",", "") if re.fullmatch(r"-?\d{1,3}(,\d{3})*(\.\d+)?", a) else a
     num = re.fullmatch(r"-?\d+(\.\d+)?", a) is not None
     if expected == "yesno":
         return a in ("Yes", "No")
