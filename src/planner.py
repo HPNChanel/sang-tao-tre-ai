@@ -369,8 +369,9 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
-    if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
+    if plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
+        # a section named in the question ('of men', 'among women') scopes row aggregates
         secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
         hit = [x for x in secs if q.match(x)[0] == 1.0]
         if len(hit) == 1:
@@ -477,11 +478,32 @@ def _condition_column(window, view, cols, num_cols):
     return (c or num_cols[-1:] or [None])[0]
 
 
+def _label_spans(low, view):
+    """Spans of the question that spell out a row label containing a number ('55 years and over'):
+    such numbers name a row, they are not a filter threshold."""
+    spans = []
+    for lab in dict.fromkeys(view.df["_label"].astype(str)):
+        lab = strip_footnotes(lab).lower().strip()
+        if not re.search(r"\d", lab) or len(lab) < 4:
+            continue
+        for v in {lab, re.sub(r"\s+years?\b", "", lab)}:
+            for m in re.finditer(re.escape(v), low):
+                spans.append((m.start(), m.end()))
+    return spans
+
+
+def _in_spans(m, spans):
+    return any(a <= m.start() < b or a < m.end() <= b for a, b in spans)
+
+
 def _conditions(body, view, cols, num_cols):
     out = []
     low = body.lower()
     pre = "|".join(sorted(_COND_PRE, key=len, reverse=True))
+    lab_spans = _label_spans(low, view)
     for m in re.finditer(rf"\b({pre})\s+(-?\d+(?:\.\d+)?)", low):
+        if _in_spans(m, lab_spans):
+            continue
         if m.group(1) == "over" and re.match(r"\s*(years?|and over)", low[m.end():]):
             continue
         w = low[max(0, m.start() - 40): m.end() + 20]
@@ -489,6 +511,8 @@ def _conditions(body, view, cols, num_cols):
         if c:
             out.append({"column": c, "op": _COND_PRE[m.group(1)], "value": float(m.group(2))})
     for m in re.finditer(r"(-?\d+(?:\.\d+)?)\s+(?:[a-z]+\s+)?(?:or|and)\s+(higher|more|older|above|greater|over|up|lower|less|fewer|younger|below|under)\b", low):
+        if _in_spans(m, lab_spans):
+            continue
         op = ">=" if m.group(2) in ("higher", "more", "older", "above", "greater", "over", "up") else "<="
         w = low[max(0, m.start() - 40): m.end() + 10]
         c = _condition_column(w, view, cols, num_cols)
