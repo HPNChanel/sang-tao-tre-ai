@@ -88,6 +88,8 @@ class Table:
     df: pd.DataFrame
     header_rows: list[int] = field(default_factory=list)
     label_col: str = ""
+    # True when the caption/year-banner pass rewrote this table's header.
+    title_skipped: bool = False
 
     def __repr__(self):
         return f"Table({self.sheet}!{self.cell_range}, {self.df.shape}, title={self.title[:40]!r})"
@@ -356,13 +358,17 @@ def _split_tables(sheet, g, indent, vmerge, hspan):
         return []
     # pure index column like 'Indent Level' containing small ints: detect, use as indent
     lc = _label_col(g, ncols)
-    kinds = _refine_row_kinds(g, [_row_kind(g, r, vmerge, ncols, lc) for r in range(nrows)], ncols, lc)
+    raw_kinds = [_row_kind(g, r, vmerge, ncols, lc) for r in range(nrows)]
+    kinds = _refine_row_kinds(g, raw_kinds, ncols, lc)
     # first header block: rows before first data that are 'header' or the row
     # immediately preceding data with all-text values
     tables = []
     r = 0
     title_lines, pending_notes = [], []
+    region_start = 0
     while r < nrows:
+        if not title_lines:
+            region_start = r
         # gather title/notes until header or data
         while r < nrows and kinds[r] in ("blank", "note", "section") and not _starts_header(kinds, r):
             if kinds[r] != "blank":
@@ -400,7 +406,9 @@ def _split_tables(sheet, g, indent, vmerge, hspan):
                 notes.append(clean_text(" ".join(str(v) for v in dict.fromkeys(g[r]) if not _empty(v))))
             r += 1
         if any(kinds[b] == "data" for b in body):
-            tables.append(_build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes))
+            # The new path rewrote a caption above the header, or a year banner that was data.
+            skipped = any(raw_kinds[i] != kinds[i] for i in range(region_start, r))
+            tables.append(_build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes, skipped))
             title_lines = []
         else:
             title_lines += [clean_text(g[b][lc]) for b in body if not _empty(g[b][lc])]
@@ -411,7 +419,7 @@ def _starts_header(kinds, r):
     return kinds[r] == "header"
 
 
-def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
+def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes, title_skipped=False):
     data_rows = [b for b in body if any(not _empty(g[b][c]) for c in range(ncols))]
     # no text labels anywhere: the corner cell is a value (a year), not a row name
     lc_is_value = not _has_text_label(g, list(hdr) + list(data_rows), lc)
@@ -493,7 +501,7 @@ def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
     r1 = data_rows[-1] + 1
     rng = f"{get_column_letter(min([lc] + data_cols) + 1)}{r0}:{get_column_letter(max(data_cols + [lc]) + 1)}{r1}"
     return Table(sheet, rng, " / ".join(title_lines), notes, meta, df,
-                 [h + 1 for h in hdr], label_name)
+                 [h + 1 for h in hdr], label_name, bool(title_skipped))
 
 
 def summarize(tables: list[Table], max_chars: int = 4000, sample_rows: int = 3) -> str:

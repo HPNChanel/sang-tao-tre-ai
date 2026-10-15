@@ -40,6 +40,7 @@ class View:
         self.columns = [c for c in self.df.columns if not str(c).startswith("_") and c != self.label_name]
         self.title = " / ".join(dict.fromkeys(t.title for t in tables if t.title))
         self.meta = " ".join(m for t in tables for m in t.meta)
+        self.title_skipped = any(getattr(t, "title_skipped", False) for t in tables)
 
     def numeric_cols(self):
         return [c for c in self.columns if pd.api.types.is_numeric_dtype(self.df[c])]
@@ -305,8 +306,15 @@ def _blank_reasons(original, translated, plan, info):
     Completeness is decided once, here, before either guard runs. A ranking that
     already has its measure column and its direction is a no-op, as is a single
     superlative (argmax/argmin, or nth place 1).
+
+    A table whose header was recovered by dropping a leading caption (or by
+    promoting a year banner) only keeps a simple lookup or an unfiltered
+    aggregate. Count, a filter followed by an aggregate, a value pair, and a
+    year difference are one blank.
     """
     from . import blank_guards as G
+    if _refined_header_block(plan, info):
+        return ["blank:refined-header"]
     if G.ranking_ready(plan) or G.single_superlative(plan):
         return []
     texts = [original or "", translated or ""]
@@ -316,6 +324,49 @@ def _blank_reasons(original, translated, plan, info):
     if _nth_measure_missing(plan, original, translated):
         reasons.append("blank:nth-column")
     return reasons
+
+
+_FILTER_AGG = {"sum", "mean", "max", "min"}
+
+
+def _refined_header_block(plan, info):
+    """Count, filter-then-aggregate, value pair, or year difference on a rewritten table."""
+    view = (info or {}).get("view")
+    if view is None or not getattr(view, "title_skipped", False):
+        return False
+    op = plan.get("op")
+    rows = plan.get("rows") or {}
+    if op == "count":
+        return True
+    filtered = bool(rows.get("where") or rows.get("range") or rows.get("scope") or rows.get("leaf_only"))
+    if op == "topk_agg" or (op in _FILTER_AGG and filtered):
+        return True
+    if _value_pair(plan):
+        return True
+    if _year_difference(plan):
+        return True
+    return False
+
+
+def _value_pair(plan):
+    """Two cells asked together. A longer list is not a pair."""
+    if plan.get("op") != "values":
+        return False
+    cols = plan.get("columns") or []
+    paths = (plan.get("rows") or {}).get("paths") or []
+    n = (len(paths) or 1) * (len(cols) or 1)
+    return n == 2
+
+
+def _year_difference(plan):
+    """A difference whose two operands are year headers, as columns or as rows."""
+    if plan.get("op") != "diff":
+        return False
+    cols = plan.get("columns") or []
+    paths = (plan.get("rows") or {}).get("paths") or []
+    year_cols = [c for c in cols if _col_year(c)]
+    year_paths = [p for p in paths if _col_year(str(p).split(" > ")[-1])]
+    return len(year_cols) >= 2 or len(year_paths) >= 2
 
 
 def _nth_measure_missing(plan, original, translated):
