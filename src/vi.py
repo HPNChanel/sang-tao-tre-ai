@@ -70,19 +70,9 @@ def _vi_card_sup(m):
     return _CARD[m.group(1)] + " " + _SUP_VI[m.group(2)]
 
 
-# (folded Vietnamese regex, English replacement). Order matters: longer phrases first.
-KEYWORDS = [
-    # instructions
-    (r"chi (tra loi|ghi|dien) (bang )?so nguyen( duong)?", " Answer with only the integer."),
-    (r"chi (tra loi|ghi|dien) (bang )?so,? lam tron (den )?(\d+) chu so thap phan", r" Answer with only the number rounded to \4 decimal places."),
-    (r"lam tron (den )?(\d+) chu so thap phan", r" rounded to \2 decimal places"),
-    (r"chi (tra loi|ghi) (co|yes) hoac (khong|no)", " Answer with only Yes or No."),
-    (r"chi (tra loi|ghi) (ten|nhan)", " Answer with only the name."),
-    (r"chi (tra loi|ghi) (so )?nam", " Answer with only the 4-digit year."),
-    (r"(tra loi|ghi) theo dinh dang yyyy-mm-dd", " Answer in YYYY-MM-DD format."),
-    (r"phan cach (boi|bang) dau phay( va mot dau cach)?", " separated by a comma and one space"),
-    (r"\bliet ke\b", " list "),
-    # operation phrasing, before the generic cardinal/superlative swaps (folded, so dấu or not)
+# Operation phrases added for paraphrases. Longer forms stay ahead of the generic
+# cardinal/superlative swaps. new_ops=False leaves these out.
+NEW_OP_KEYWORDS = [
     (r"\b(cao|thap|lon|nho|nhieu|it)\s+nhat\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", _sup_then_ord),
     (r"\b(cao|thap|lon|nho|nhieu|it)\s+thu\s+(nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b", _sup_then_ord),
     (r"\bhang\s+(nhat|nhi|ba|tu|nam|sau|bay|tam|chin|muoi)\b", _hang_ord),
@@ -96,6 +86,21 @@ KEYWORDS = [
     (r"\bcap\s+(diem|gia tri|so lieu|ket qua)\b", r" pair of \1 "),
     (r"\b(top|bottom)\s+(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b", _top_vi_card),
     (r"\b(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+(cao|thap|lon|nho|nhieu|it)\s+nhat\b", _vi_card_sup),
+]
+
+
+# (folded Vietnamese regex, English replacement). Order matters: longer phrases first.
+KEYWORDS = [
+    # instructions
+    (r"chi (tra loi|ghi|dien) (bang )?so nguyen( duong)?", " Answer with only the integer."),
+    (r"chi (tra loi|ghi|dien) (bang )?so,? lam tron (den )?(\d+) chu so thap phan", r" Answer with only the number rounded to \4 decimal places."),
+    (r"lam tron (den )?(\d+) chu so thap phan", r" rounded to \2 decimal places"),
+    (r"chi (tra loi|ghi) (co|yes) hoac (khong|no)", " Answer with only Yes or No."),
+    (r"chi (tra loi|ghi) (ten|nhan)", " Answer with only the name."),
+    (r"chi (tra loi|ghi) (so )?nam", " Answer with only the 4-digit year."),
+    (r"(tra loi|ghi) theo dinh dang yyyy-mm-dd", " Answer in YYYY-MM-DD format."),
+    (r"phan cach (boi|bang) dau phay( va mot dau cach)?", " separated by a comma and one space"),
+    (r"\bliet ke\b", " list "),
     # 'năm' + noun (not a 4-digit year, not a function word) is the cardinal five; same for other cardinals
     (rf"\b(mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+(?!(?:{_NOT_NOUN})\b)([a-z]{{2,}})\b", _card_repl),
     (r"\btrong\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+nguoi\s+(?:lon tuoi|gia)\s+nhat\b",
@@ -190,11 +195,16 @@ KEYWORDS = [
 ]
 
 
-def translate(q: str) -> tuple[str, int]:
-    """Return (rewritten query, number of keyword hits). Entity names keep their original form."""
+def translate(q: str, new_ops: bool = True) -> tuple[str, int]:
+    """Return (rewritten query, number of keyword hits). Entity names keep their original form.
+
+    new_ops=False skips the operation phrases added for paraphrases (rank, difference,
+    top-N number words, pair). Callers use that when those phrases did not resolve.
+    """
     s = fold(q)
     hits = 0
-    for pat, rep in KEYWORDS:
+    patterns = (NEW_OP_KEYWORDS + KEYWORDS) if new_ops else KEYWORDS
+    for pat, rep in patterns:
         s, n = re.subn(pat, rep, s, flags=re.I)
         hits += n
     s = re.sub(r"\s+", " ", s).strip()

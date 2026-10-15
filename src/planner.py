@@ -259,13 +259,22 @@ def plan_with_confidence(query: str, tables, strict=None):
 
 def _plan_with_confidence(query, tables, strict):
     from .vi import is_vietnamese, translate
+    original = query
     reasons = []
     vi_factor = 1.0
+    hits = hits_base = 0
     if is_vietnamese(query):
-        query, hits = translate(query)
+        query, hits = translate(query, new_ops=True)
+        _, hits_base = translate(original, new_ops=False)
         vi_factor = 0.9 if hits >= 2 else 0.6
         reasons.append(f"vi:{hits}")
     plan, info = _plan_core(query, tables, strict)
+    # A new operation phrase only keeps its confidence when column, row, operand and N
+    # each resolve once. Otherwise abstain, so a former blank stays blank.
+    if _new_op_blocked(plan, info, original):
+        return plan, 0.0, reasons + ["op:ambiguous"]
+    if is_vietnamese(original) and not _new_op_committed(plan, info, original):
+        vi_factor = 0.9 if hits_base >= 2 else 0.6
     if info.get("abstain"):
         return plan, 0.0, reasons + ["op:abstain"]
     conf, r2 = (_confidence if strict else _confidence_legacy)(query, plan, info)
@@ -548,9 +557,11 @@ def _plan_core(query: str, tables, strict=False):
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
         plan["columns"] = ["*"]
     abstain = _unhandled_op(op_low, plan)
+    fresh = _fresh_op(plan, low, op_low, topn, _topn_lists(query, spec))
     return plan, {"view": view, "q": q, "rows": rows, "cols_cov": best_cov, "body": body,
                   "ambiguous_rank_scope": ambiguous_rank_scope,
-                  "views": views, "vscores": vscores, "vi": vi, "spec": spec, "abstain": abstain}
+                  "views": views, "vscores": vscores, "vi": vi, "spec": spec, "abstain": abstain,
+                  "fresh_op": fresh}
 
 
 def _label_range(label):
@@ -897,6 +908,10 @@ def _drop_label_filters(where, paths, cols):
     return kept
 
 
+_DIFF_LEGACY = (
+    r"how (?:many|much) (?:more|less|fewer|higher|lower)"
+    r"|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b"
+)
 _DIFF_SRC = (
     r"how (?:many|much) (?:more|less|fewer|higher|lower|greater|bigger|smaller)\b"
     r"|how (?:many|much) (?:is|was|were|are|did|does|do)\b.{0,40}?\b(?:more|higher|greater|bigger|less|lower|smaller|fewer)\b"
@@ -904,6 +919,23 @@ _DIFF_SRC = (
     r"|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b"
     r"|\bexceed(?:s|ed)?\b|\bminus\b|\bsubtract(?:ed|ing)?\b"
     r"|\bchenh(?: lech| nhau)?\b|\bhieu so\b|\bkhac nhau\b|\bkhac biet\b"
+)
+# Phrases this PR added. A hit is not enough: the column, row, operand and N must each be unique.
+_NEW_OP_CUE_RE = re.compile(
+    r"\b(cao|thap|lon|nho|nhieu|it)\s+(?:nhat\s+)?thu\s+(?:nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b"
+    r"|\bhang\s+(?:nhat|nhi|ba|tu|nam|sau|bay|tam|chin|muoi)\b"
+    r"|\b(?:dung|xep)\s+thu\s+(?:nhat|hai|nhi|ba|tu|nam|sau|bay|tam|chin|muoi|\d+)\b"
+    r"|\bhon\b.{0,50}?\bbao nhieu\b"
+    r"|\bchenh nhau\b|\bkhac nhau\b|\bkhac biet\b|\bhieu giua\b|\bhieu cua\b"
+    r"|\btru\b|\blan luot\b|\bca hai\b"
+    r"|\bcap\s+(?:diem|gia tri|so lieu|ket qua)\b"
+    r"|\b(?:top|bottom)\s+(?:mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b"
+    r"|\b(?:mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\s+(?:cao|thap|lon|nho|nhieu|it)\s+nhat\b"
+    r"|\branks?\s+(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\b"
+    r"|by how much|\bexceed(?:s|ed)?\b|\bminus\b|\bsubtract(?:ed|ing)?\b"
+    r"|how (?:many|much) (?:greater|bigger|smaller)\b"
+    r"|\b(?:highest|lowest|largest|smallest|most|least)\s+(?:two|three|four|five|six|seven|eight|nine|ten|\d+)\b"
+    r"|\brespectively\b|\bpair of\b"
 )
 
 
@@ -934,6 +966,181 @@ def _unhandled_op(op_low, plan):
     return False
 
 
+def _legacy_nth(low):
+    m = re.search(r"\b(" + "|".join(ORD) + r"|\d+(?:st|nd|rd|th))[- ](" + SUP_MAX + "|" + SUP_MIN + r")\b", low)
+    if m:
+        return True
+    return bool(re.search(r"\bthe ()(youngest|oldest)\b(?! \w+ (?:people|persons))", low))
+
+
+def _fresh_op(plan, low, op_low, topn, lists):
+    """True when this plan used an operation path that main did not have."""
+    op = plan["op"]
+    if op == "rank" and topn and (not lists or topn.get("via") == "rev"):
+        return True
+    if op == "nth" and not _legacy_nth(low):
+        return True
+    if op == "diff" and not re.search(_DIFF_LEGACY, low):
+        return True
+    if op == "values" and re.search(r"\b(pair|respectively|both)\b", op_low):
+        return True
+    return False
+
+
+def _fold_q(text):
+    from .vi import fold
+    return fold(text).lower()
+
+
+def _new_op_keyword_hit(original):
+    return bool(_NEW_OP_CUE_RE.search(_fold_q(original)))
+
+
+def _schema_tokens(view):
+    labs = list(view.columns)
+    if "_label" in view.df:
+        labs.extend(str(x) for x in view.df["_label"])
+    out = set()
+    for lab in labs:
+        out.update(re.findall(r"[a-z0-9]+", _fold_q(lab)))
+    return out
+
+
+# Only the operation words themselves. Text that sits between 'hơn' and 'bao nhiêu'
+# names an operand, not the operation, and must not count as a header collision.
+_CUE_WORDS = {
+    "cao", "thap", "lon", "nho", "nhieu", "it", "thu", "hang", "dung", "xep",
+    "hon", "chenh", "khac", "biet", "hieu", "tru", "luot", "cap", "nhat", "nhi",
+    "top", "bottom", "rank", "ranks", "exceed", "exceeds", "exceeded", "minus",
+    "subtract", "subtracted", "subtracting", "respectively", "highest", "lowest",
+    "largest", "smallest", "most", "least", "pair", "greater", "bigger", "smaller",
+}
+
+
+def _cue_tokens(original):
+    text = _fold_q(original)
+    out = set()
+    for m in _NEW_OP_CUE_RE.finditer(text):
+        out.update(re.findall(r"[a-z0-9]+", m.group(0)))
+    return {t for t in out if t in _CUE_WORDS}
+
+
+def _cue_in_schema(original, view):
+    """The operation phrase is also a header or a row label, so it may name that field."""
+    return bool(_cue_tokens(original) & _schema_tokens(view))
+
+
+def _named_numeric(body, view):
+    found, _ = match_columns(view, Query(body))
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    return [c for c, _ in found if c in num]
+
+
+def _measure_unique(plan, info):
+    """One measure column, or exactly one column the question names."""
+    view = info["view"]
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    by = plan["args"].get("by")
+    if by == "age":
+        return len(view.date_cols()) == 1 or _birth_column(view) is not None
+    if len(num) <= 1:
+        return True
+    named = _named_numeric(info.get("body") or "", view)
+    if len(named) != 1:
+        return False
+    if by in (None, named[0]):
+        return True
+    cols = [c for c in plan["columns"] if c in num]
+    return cols == [named[0]] or by == named[0]
+
+
+def _digit_could_be_value(plan, view, original):
+    """A digit used as N also occurs as a stored value, so it may not be a count."""
+    k = plan["args"].get("k")
+    if k is None:
+        return False
+    try:
+        k = int(k)
+    except (TypeError, ValueError):
+        return False
+    if not re.search(rf"\b{k}\b", _fold_q(original)):
+        return False
+    for col in view.numeric_cols():
+        for v in view.df[col]:
+            try:
+                if float(v) == float(k):
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+def _subset_missing(plan, original):
+    """The wording asks for a group, and no row subset was resolved."""
+    if plan["op"] not in ("rank", "topk_agg", "nth"):
+        return False
+    if plan["op"] == "topk_agg" and plan["args"].get("by") and plan["args"].get("k"):
+        return False
+    if not re.search(r"\b(among|within|inside|subset|nhom)\b", _fold_q(original)):
+        return False
+    rows = plan["rows"]
+    return not (rows["paths"] or rows.get("scope") or rows.get("where") or rows.get("range"))
+
+
+def _operands_unique(plan, info):
+    view = info["view"]
+    op = plan["op"]
+    num = [c for c in view.numeric_cols() if not _is_total_col(c)]
+    cols = [c for c in plan["columns"] if c in num or str(c).endswith(" | *") or c == "*"]
+    paths = plan["rows"]["paths"]
+    if op == "diff":
+        pair_rows = len(paths) == 2 and len(cols) == 1
+        pair_cols = len(paths) == 1 and len(cols) == 2
+        return (pair_rows or pair_cols) and _measure_unique(plan, info)
+    if op == "nth":
+        return bool(plan["args"].get("n")) and _measure_unique(plan, info) and (
+            plan["args"].get("by") or len(num) == 1)
+    if op == "rank":
+        return bool(plan["args"].get("k")) and _measure_unique(plan, info)
+    if op == "topk_agg":
+        return bool(plan["args"].get("k") and plan["args"].get("by")) and _measure_unique(plan, info)
+    if op == "values":
+        cells = len(paths) * max(1, len(plan["columns"]))
+        return cells == 2 and _measure_unique(plan, info)
+    return False
+
+
+def _new_op_resolved(plan, info, original):
+    if _cue_in_schema(original, info["view"]):
+        return False
+    if _digit_could_be_value(plan, info["view"], original):
+        return False
+    if _subset_missing(plan, original):
+        return False
+    return _operands_unique(plan, info)
+
+
+def _guarded_op(plan, info, original):
+    op = plan["op"]
+    if op in ("nth", "rank", "diff", "topk_agg"):
+        return True
+    if op == "values" and re.search(r"\b(pair|respectively|both)\b", _fold_q(original) + " " + _fold_q(info.get("body") or "")):
+        return True
+    return False
+
+
+def _new_op_blocked(plan, info, original):
+    triggered = _new_op_keyword_hit(original) or info.get("fresh_op")
+    if not triggered or not _guarded_op(plan, info, original):
+        return False
+    return not _new_op_resolved(plan, info, original)
+
+
+def _new_op_committed(plan, info, original):
+    triggered = _new_op_keyword_hit(original) or info.get("fresh_op")
+    return bool(triggered and _guarded_op(plan, info, original) and _new_op_resolved(plan, info, original))
+
+
 def _top_n(low, view, spec, num_cols, row_paths):
     """'top 3 by score', 'the three highest', 'bottom 2', 'which 3 were admitted earliest'.
 
@@ -956,6 +1163,7 @@ def _top_n(low, view, spec, num_cols, row_paths):
             continue  # 'at least 60' is a threshold, not a count of items
         cands.append((m, "rev", m.start(2), m.end(2), m.group(2), m.group(1)))
     chosen = None
+    via = None
     for m, kind, start, end, raw, word in cands:
         if raw.isdigit() and len(raw) == 4 and raw.startswith(("19", "20")):
             continue
@@ -965,6 +1173,7 @@ def _top_n(low, view, spec, num_cols, row_paths):
         if not _k_marked(low, start, end, raw, kind, view):
             continue
         chosen = (k, word, m)
+        via = kind
         break
     if not chosen:
         return None
@@ -983,7 +1192,7 @@ def _top_n(low, view, spec, num_cols, row_paths):
         ic = [c for c, _ in ic if c not in num_cols and c not in dates]
         ret = ic[0] if ic else None
     values = _wants_measure_values(low)
-    return {"k": k, "word": word, "ret": ret, "by": by, "over": over, "values": values}
+    return {"k": k, "word": word, "ret": ret, "by": by, "over": over, "values": values, "via": via}
 
 
 def _measure_column(low, match, view, pool):

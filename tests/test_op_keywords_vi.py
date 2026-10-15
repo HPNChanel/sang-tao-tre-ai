@@ -1,9 +1,7 @@
-"""Paraphrased and Vietnamese operation wording.
+"""Paraphrased operation wording on a made-up kiln log.
 
-Synthetic workbooks only. A second-highest, a difference, a top-N (digits or
-number words such as ba/năm/mười), and a pair must not fall through to lookup,
-sum, or count. When the operation is still not clear, the planner abstains.
-A number that only names a row or column is not a filter and not k.
+Every question is written for this file. Column names, numbers, and sentence
+shapes are not taken from an evaluation set. Ambiguous matches must abstain.
 """
 import os
 import sys
@@ -28,6 +26,14 @@ def _save(tmp_path, name, headers, rows):
     return str(path)
 
 
+def _kiln(tmp_path):
+    # Grams never equals 2, 3, 4, 5, or 10, so those counts are not also cell values.
+    return _save(tmp_path, "kiln.xlsx", ["Tag", "Grams"], [
+        ("Nia", 88), ("Pax", 63), ("Quill", 52), ("Ren", 41), ("Sol", 36),
+        ("Uma", 29), ("Vex", 18), ("Wren", 14), ("Yul", 11), ("Zed", 7), ("Ohm", 6),
+    ])
+
+
 def _ask(path, q):
     tables = load_tables(path)
     planned = plan(q, tables, os.path.basename(path))
@@ -35,134 +41,123 @@ def _ask(path, q):
     return execute(planned, tables, q)
 
 
-def _scores(tmp_path):
-    return _save(tmp_path, "scores.xlsx", ["Name", "Score"], [
-        ("An", 90), ("Bo", 70), ("Cy", 50), ("Di", 30), ("Ed", 20),
-        ("Fa", 15), ("Gia", 12), ("Ha", 9), ("In", 6), ("Jo", 4), ("Ko", 1),
-    ])
-
-
-def test_second_highest_english_paraphrases(tmp_path):
-    path = _scores(tmp_path)
-    assert _ask(path, "What is the second highest score? Answer with only the integer.") == "70"
-    assert _ask(path, "What is the 2nd-highest score? Answer with only the integer.") == "70"
-    assert _ask(path, "Which person ranks second by score? Answer with only the name.") == "Bo"
-
-
-def test_second_highest_vietnamese(tmp_path):
-    path = _scores(tmp_path)
-    assert _ask(path, "Điểm cao thứ hai là bao nhiêu? Chỉ trả lời bằng số nguyên.") == "70"
-    assert _ask(path, "Diem cao thu hai la bao nhieu? Chi tra loi bang so nguyen.") == "70"
-    assert _ask(path, "Người xếp thứ hai theo điểm là ai? Chỉ trả lời tên.") == "Bo"
-
-
-def test_difference_english_paraphrases(tmp_path):
-    path = _scores(tmp_path)
-    assert _ask(path, "By how much does Bo exceed Cy? Answer with only the integer.") == "20"
-    assert _ask(path, "How much greater is Bo's score than Cy's? Answer with only the integer.") == "20"
-    assert _ask(path, "Bo minus Cy on Score. Answer with only the integer.") == "20"
-
-
-def test_difference_vietnamese(tmp_path):
-    path = _scores(tmp_path)
-    assert _ask(path, "Bo hơn Cy bao nhiêu điểm? Chỉ trả lời bằng số nguyên.") == "20"
-    assert _ask(path, "Bo hon Cy bao nhieu diem? Chi tra loi bang so nguyen.") == "20"
-    assert _ask(path, "Chênh lệch điểm giữa Bo và Cy là bao nhiêu? Chỉ trả lời bằng số nguyên.") == "20"
-    assert _ask(path, "Chenh lech diem giua Bo va Cy la bao nhieu? Chi tra loi bang so nguyen.") == "20"
-
-
-def test_topn_number_words_and_reversed_order(tmp_path):
-    path = _scores(tmp_path)
-    assert _ask(path, "What are the three highest scores?") == "90, 70, 50"
-    assert _ask(path, "the five lowest scores") == "1, 4, 6, 9, 12"
-    assert _ask(path, "the highest three scores") == "90, 70, 50"
-    assert _ask(path, "Năm điểm thấp nhất.") == "1, 4, 6, 9, 12"
-    assert _ask(path, "top ba điểm") == "90, 70, 50"
-    assert _ask(path, "mười điểm cao nhất") == "90, 70, 50, 30, 20, 15, 12, 9, 6, 4"
-
-
-def test_pair_of_values(tmp_path):
-    path = _scores(tmp_path)
-    assert _ask(path, "What are the scores of Bo and Cy? separated by a comma and one space.") == "70, 50"
-    assert _ask(path, "Điểm của Bo và Cy lần lượt là bao nhiêu?") == "70, 50"
-    assert _ask(path, "Diem cua Bo va Cy lan luot.") == "70, 50"
-
-
-def test_compare_yes_no_vietnamese(tmp_path):
-    path = _scores(tmp_path)
-    q = "Điểm của Bo có cao hơn Cy không? Chỉ trả lời Yes hoặc No."
-    assert _ask(path, q) == "Yes"
-    q = "Bo co diem cao hon Cy khong? Answer with only Yes or No."
-    assert _ask(path, q) == "Yes"
-
-
-def test_plain_lookup_stays(tmp_path):
-    path = _scores(tmp_path)
-    assert _ask(path, "What is Bo's score? Answer with only the integer.") == "70"
-
-
-def test_abstain_when_operation_is_not_determined(tmp_path):
-    path = _scores(tmp_path)
+def _blank(path, q):
     tables = load_tables(path)
-    # one side of a difference: used to return Bo's score
-    q = "By how much does the score exceed? Answer with only the integer."
-    assert plan(q, tables) is None
+    assert plan(q, tables, os.path.basename(path)) is None
     _, conf, reasons = plan_with_confidence(q, tables)
     assert conf < 0.5 and reasons
-    q = "Bo minus. Answer with only the integer."
-    assert plan(q, tables) is None
-    # top-N plus a single integer instruction disagrees; do not emit Bo's score
-    q = "What is Bo's score for the top five? Answer with only the integer."
-    assert plan(q, tables) is None
 
 
-def test_label_number_is_not_a_filter_or_k(tmp_path):
-    path = _save(tmp_path, "bands.xlsx", ["Band", "Employed"], [
-        ("16 to 24 years", 10),
-        ("25 to 54 years", 40),
-        ("55 years and over", 15),
-        ("Group 3", 7),
+def test_second_place_english_paraphrases(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "Which tag ranks second when Grams decides the order?") == "Pax"
+    assert _ask(path, "Find the 2nd-largest Grams tag.") == "Pax"
+
+
+def test_second_place_vietnamese(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "Tìm thẻ có Grams lớn thứ hai.") == "Pax"
+    assert _ask(path, "Tim the co Grams lon thu hai.") == "Pax"
+    assert _ask(path, "Thẻ xếp thứ hai theo Grams là thẻ nào?") == "Pax"
+
+
+def test_gap_english_paraphrases(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "Nia minus Pax, measured in Grams.") == "25"
+    assert _ask(path, "By how much does Nia exceed Pax on Grams?") == "25"
+    assert _ask(path, "How much greater is Nia than Pax in Grams?") == "25"
+
+
+def test_gap_vietnamese(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "Grams của Nia hơn Grams của Pax bao nhiêu?") == "25"
+    assert _ask(path, "Grams cua Nia hon Grams cua Pax bao nhieu?") == "25"
+    assert _ask(path, "Grams giữa Nia với Pax chênh nhau.") == "25"
+    assert _ask(path, "Grams giua Nia voi Pax chenh nhau.") == "25"
+
+
+def test_headings_number_words_and_reversed(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "four largest amounts of Grams") == "88, 63, 52, 41"
+    assert _ask(path, "the largest four amounts of Grams") == "88, 63, 52, 41"
+    assert _ask(path, "Grams: ba lớn nhất.") == "Nia, Pax, Quill"
+    assert _ask(path, "Grams: ba lon nhat.") == "Nia, Pax, Quill"
+    assert _ask(path, "Grams: năm nhỏ nhất.") == "Ohm, Zed, Yul, Wren, Vex"
+    assert _ask(path, "Grams: muoi lon nhat.") == "Nia, Pax, Quill, Ren, Sol, Uma, Vex, Wren, Yul, Zed"
+
+
+def test_two_tags_respectively(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "Grams for Nia and Pax, respectively.") == "88, 63"
+    assert _ask(path, "Grams của Nia và Pax lần lượt.") == "88, 63"
+    assert _ask(path, "Grams cua Nia va Pax lan luot.") == "88, 63"
+
+
+def test_yes_no_vietnamese(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "Nia có Grams lớn hơn Pax không?") == "Yes"
+    assert _ask(path, "Nia co Grams lon hon Pax khong? Respond yes or no.") == "Yes"
+
+
+def test_plain_cell_stays_a_lookup(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "Grams recorded against Pax.") == "63"
+
+
+def test_unfinished_phrase_abstains(tmp_path):
+    path = _kiln(tmp_path)
+    _blank(path, "By how much does Grams exceed?")
+    _blank(path, "Nia minus.")
+
+
+def test_ambiguous_new_keywords_abstain(tmp_path):
+    # Two measures, and the phrase never names one of them.
+    dual = _save(tmp_path, "dual.xlsx", ["Tag", "Grams", "Lux"], [
+        ("Nia", 88, 3), ("Pax", 63, 9), ("Quill", 52, 8),
+    ])
+    _blank(dual, "Tim muc lon thu hai.")
+    _blank(dual, "Tìm mức lớn thứ hai.")
+
+    # The operation word is also a row label.
+    labeled = _save(tmp_path, "labeled.xlsx", ["Tag", "Grams", "Lux"], [
+        ("Exceed", 88, 3), ("Pax", 63, 9),
+    ])
+    _blank(labeled, "By how much would exceed move the dock shipment today?")
+
+    # 41 is both a count candidate and a stored Grams value.
+    _blank(dual, "Show the highest 41 tags from the dock log today.")
+
+    # A group is named, but the sheet has no such rows.
+    _blank(path_of(tmp_path), "Within the coastal cluster, show four largest Grams tags.")
+
+
+def path_of(tmp_path):
+    return _kiln(tmp_path)
+
+
+def test_label_number_is_not_a_cutoff(tmp_path):
+    path = _save(tmp_path, "shelves.xlsx", ["Shelf", "Jars"], [
+        ("crate 8", 4),
+        ("span 20 or more", 9),
+        ("wide bin", 40),
+        ("slot D", 2),
     ])
     tables = load_tables(path)
-    q = "How many employed are 55 or older? Answer with only the integer."
-    assert _ask(path, q) == "15"
+    q = "How many jars sit on span 20 or more?"
+    assert _ask(path, q) == "9"
     planned = plan(q, tables)
     assert planned["rows"]["where"] == []
 
-    q = "Which band of 55 years and over has the highest employed? Answer with only the name."
+    q = "Which shelf of span 20 or more carries the largest jars?"
     planned = plan(q, tables)
-    assert planned["args"].get("k") != 55
-    assert all(w.get("value") != 55 and w.get("value") != 55.0 for w in planned["rows"]["where"])
-    assert execute(planned, tables, q) == "25 to 54 years"
+    assert planned["args"].get("k") != 20
+    assert all(w.get("value") != 20 and w.get("value") != 20.0 for w in planned["rows"]["where"])
+    assert execute(planned, tables, q) == "wide bin"
 
-    q = "Which 3 groups have the most employed? separated by a comma and one space."
-    assert _ask(path, q) == "25 to 54 years, 55 years and over, 16 to 24 years"
-
-
-def test_explicit_threshold_still_counts(tmp_path):
-    path = _scores(tmp_path)
-    assert _ask(path, "How many people scored at least 60? Answer with only the integer.") == "2"
+    q = "Which 4 shelves hold the most jars?"
+    assert _ask(path, q) == "wide bin, span 20 or more, crate 8, slot D"
 
 
-def test_fixture_operation_shapes_unchanged(tmp_path):
-    """Plan shape for the public Vietnamese and top-N questions, on a stand-in table."""
-    path = _save(tmp_path, "ind.xlsx", ["Industry", "Employed"], [("A", 100), ("B", 80), ("C", 10)])
-    tables = load_tables(path)
-    cases = [
-        ("Hai ngành nào có nhiều người từ 55 tuổi trở lên có việc làm nhất? "
-         "Chỉ trả lời tên ngành, theo thứ tự giảm dần, phân cách bằng dấu phẩy và một dấu cách.",
-         "rank", 2),
-        ("Which three industries employed the most people aged 16 to 19 years? "
-         "Answer with the industry names, largest first, separated by a comma and one space.",
-         "rank", 3),
-        ("Trong năm người lớn tuổi nhất, điểm cao nhất là bao nhiêu? Chỉ trả lời bằng số nguyên.",
-         "topk_agg", 5),
-        ("Tổng số người đi làm của nam giới từ 20 đến 24 tuổi là bao nhiêu? Chỉ trả lời bằng số nguyên.",
-         "sum", None),
-        ("Ở phụ nữ, nhóm tuổi nào có đông người làm nông nghiệp nhất (cột Total)? Chỉ trả lời tên nhóm tuổi.",
-         "argmax", None),
-    ]
-    for q, op, k in cases:
-        planned = plan(q, tables)
-        assert planned["op"] == op, q
-        assert planned["args"].get("k") == k
+def test_threshold_wording_still_counts(tmp_path):
+    path = _kiln(tmp_path)
+    assert _ask(path, "How many tags carry Grams of 60 or more?") == "2"
