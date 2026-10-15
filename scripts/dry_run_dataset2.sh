@@ -86,6 +86,7 @@ run_pack() {
   env -u OPENROUTER_API_KEY python3 - "$data" "$OUTPUT" <<'PY'
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 data, output = sys.argv[1], Path(sys.argv[2])
@@ -96,7 +97,9 @@ subprocess.check_call(
 )
 if zip_path.exists():
     zip_path.unlink()
-subprocess.check_call(["zip", "-q", "-X", "-j", str(zip_path), str(csv_path)])
+# stdlib only: member name is submission.csv at the archive root
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    zf.write(csv_path, arcname="submission.csv")
 PY
 }
 
@@ -126,9 +129,9 @@ PY
 else
   parsed=$(env -u OPENROUTER_API_KEY python3 - "$data" "$OUTPUT" <<'PY'
 import resource
-import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 data, output = sys.argv[1], Path(sys.argv[2])
@@ -143,7 +146,8 @@ if rc:
     sys.exit(rc)
 if zip_path.exists():
     zip_path.unlink()
-subprocess.check_call(["zip", "-q", "-X", "-j", str(zip_path), str(csv_path)])
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    zf.write(csv_path, arcname="submission.csv")
 elapsed = time.perf_counter() - t0
 self_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 child_kb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
