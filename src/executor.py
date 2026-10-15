@@ -277,6 +277,9 @@ def execute(plan, tables):
             val = _pick(list(per), lambda s: sign * tf(per[s]), plan, "sheets")
         else:
             idx = _aggregate_rows(view, plan, base)
+            # A whole-population total is not a candidate category even when
+            # intermediate groups are explicitly eligible for comparison.
+            idx = [i for i in idx if not TOTAL_LABEL.search(str(df.at[i, "_label"]))]
             idx = _first_root_scope(view, idx) if r.get("scope") is None else idx
             c = cols[0] if cols else view.numeric_cols()[0]
             vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}

@@ -522,7 +522,8 @@ def _plan_core(query: str, tables, strict=False):
                 rr, _ = match_rows(view, Query(n))
                 paths.append(rr[0][0] if rr else n)
             plan["rows"]["paths"] = paths
-    elif re.search(r"\bshare\b|\bproportion\b|percentage of|what percent", low):
+    elif re.search(r"\bshare\b|\bproportion\b|percentage of|what percent", low) \
+            and not ((sup_max or sup_min) and which and spec.kind == "name"):
         plan["op"] = "share"
         args["percent"] = True
     elif re.search(r"\(([^()/]+)/([^()]+)\)|\bratio\b|\brate\b.*/", body):
@@ -596,6 +597,12 @@ def _plan_core(query: str, tables, strict=False):
     if intersected_column and plan["op"] == "sum":
         # The 'in all' phrase was column context, not an aggregation instruction.
         plan["op"] = "lookup"
+    # Category extrema compare stored category measures, including intermediate
+    # groups. Subtotal exclusion is for additive/leaf-only questions; the global
+    # total remains excluded by the extrema executor.
+    if plan["op"] in ("argmax", "argmin") and args.get("over", "rows") == "rows" \
+            and re.search(r"\bcategor(?:y|ies)\b", low) and not plan["rows"]["leaf_only"]:
+        plan["rows"]["exclude_subtotals"] = False
     if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
         secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
