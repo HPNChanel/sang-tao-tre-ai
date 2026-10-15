@@ -49,4 +49,4 @@ def strict_active(strict=None):
         return bool(strict)
     if STRICT_CONFIDENCE is not None:
         return bool(STRICT_CONFIDENCE)
-    return bool(os.environ.get("OPENROUTER_API_KEY"))
+    return bool(os.getenv("OPENROUTER_API_KEY"))
