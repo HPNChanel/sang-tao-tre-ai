@@ -78,8 +78,11 @@ def compatible(expected: str, got: str) -> bool:
 def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan: dict | None = None) -> bool:
     if ans is None or str(ans).strip() == "":
         return False
-    if not _answer_counts(ans, fmt, query, plan):
-        return False
+    from . import blank_guards as G
+    # A finished rank plan, or a single superlative, is not rejected on shape.
+    if not (G.plan_is_complete(plan) or G.single_superlative(plan)):
+        if not _answer_counts(ans, fmt, query, plan):
+            return False
     a = str(ans).strip()
     num = re.fullmatch(r"-?\d+(\.\d+)?", a) is not None
     if expected == "yesno":

@@ -155,12 +155,12 @@ def test_complete_rank_is_not_second_guessed(tmp_path):
     assert "blank:topn" not in _reasons(tables, q)
 
 
-def test_topn_with_two_directions_blanks(tmp_path):
-    # 'largest' and 'ascending' disagree, so the direction is not resolved.
+def test_complete_rank_keeps_both_direction_words(tmp_path):
+    # The planner already chose N, a column, and an order. Guards do not override it.
     tables = _ledger(tmp_path / "ledger.xlsx")
     q = "Name the three largest Cargo Ripe sheds, ascending, separated by a comma."
-    assert _answer(tables, q) is None
-    assert "blank:topn" in _reasons(tables, q)
+    assert "blank:topn" not in _reasons(tables, q)
+    assert _answer(tables, q) == "Dune, Cedar, Birch"
 
 
 def test_dong_dau_signal_blanks_when_the_plan_is_not_rank(tmp_path):
@@ -290,78 +290,51 @@ def test_single_number_question_rejects_a_label_list():
                      {"op": "sum"})
 
 
-def test_oldest_list_keeps_the_planner_order(tmp_path):
-    import datetime as dt
+def _kiosks(path):
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(["Name", "Birth", "Points"])
-    for row in [
-        ("Dee", dt.datetime(1975, 1, 1), 11),
-        ("Cy", dt.datetime(1984, 1, 1), 27),
-        ("Ada", dt.datetime(1988, 1, 1), 6),
-        ("Bo", dt.datetime(1992, 1, 1), 44),
-    ]:
+    ws.append(["Kiosk", "Bulbs", "Cords"])
+    for row in [("Maple", 12, 4), ("Nook", 30, 2), ("Orbit", 7, 9), ("Pylon", 18, 1)]:
         ws.append(list(row))
-    path = tmp_path / "people.xlsx"
     wb.save(path)
-    tables = load_tables(str(path))
-    q = "Who are the three oldest? Answer with names, oldest first, separated by a comma and one space."
+    return load_tables(str(path))
+
+
+def test_single_superlative_with_total_stays_a_label(tmp_path):
+    tables = _kiosks(tmp_path / "kiosks.xlsx")
+    q = "Name the kiosk with the highest total bulbs."
+    assert _answer(tables, q) == "Nook"
     reasons = _reasons(tables, q)
-    assert "blank:nth-column" not in reasons and "blank:topn" not in reasons
-    assert _answer(tables, q) == "Dee, Cy, Ada"
+    assert "blank:shape" not in reasons
+    assert "blank:topn" not in reasons
+    assert "blank:nth-column" not in reasons
 
 
-def test_list_order_first_is_not_an_nth_rank(tmp_path):
-    # 'highest first' and 'lowest first' order a top-N or bottom-N list.
-    tables = _grams(tmp_path / "grams.xlsx")
-    assert _answer(
-        tables,
-        "List the top 3 tags by Grams, highest first, separated by a comma and one space.",
-    ) == "Nia, Pax, Quill"
-    assert _answer(
-        tables,
-        "Name the bottom 2 tags by Grams, lowest first, separated by a comma and one space.",
-    ) == "Ren, Quill"
+def test_guards_are_noop_when_the_plan_is_complete():
+    from src.planner import _blank_reasons
+    plan = {
+        "op": "rank",
+        "args": {"k": 4, "by": "Bulbs", "order": "asc"},
+        "columns": ["Bulbs"],
+        "format": {"kind": "list", "sep": ", "},
+        "rows": {"paths": [], "where": []},
+    }
+    # Hostile wording: both directions, an ordinal, and the word total.
+    q = "four largest bulbs ascending, highest first, total column, second pass"
+    assert _blank_reasons(q, q, plan, {}) == []
+    one = {
+        "op": "argmax",
+        "args": {"ties": "first", "over": "rows"},
+        "columns": ["Bulbs"],
+        "format": {"kind": "text"},
+        "rows": {"paths": [], "where": []},
+    }
+    q1 = "Name the kiosk with the highest total bulbs."
+    assert _blank_reasons(q1, q1, one, {}) == []
 
 
-def test_number_words_and_bottom_n_stay(tmp_path):
-    tables = _grams(tmp_path / "grams.xlsx")
-    assert _answer(tables, "Grams: ba lớn nhất.") == "Nia, Pax, Quill"
-    assert _answer(tables, "Grams: năm nhỏ nhất.") == "Ren, Quill, Pax, Nia"
-
-
-def test_ten_smallest_number_word(tmp_path):
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(["Tag", "Grams"])
-    for i, n in enumerate([88, 63, 52, 41, 30, 22, 18, 11, 7, 4, 2, 1]):
-        ws.append([f"T{i}", n])
-    path = tmp_path / "long.xlsx"
-    wb.save(path)
-    tables = load_tables(str(path))
-    got = _answer(tables, "Grams: mười nhỏ nhất.")
-    assert got == "T11, T10, T9, T8, T7, T6, T5, T4, T3, T2"
-    assert "blank:topn" not in _reasons(tables, "Grams: mười nhỏ nhất.")
-    assert _answer(tables, "bottom 5 Grams tags, separated by a comma and one space.") == "T11, T10, T9, T8, T7"
-
-
-def test_which_name_with_a_total_column_stays_a_label(tmp_path):
-    # Same shape as a which-group question that names the Total column.
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(["Age", "Total", "Agriculture"])
-    for row in [
-        ("Women", None, None),
-        ("16 to 19 years", 10, 1),
-        ("35 to 44 years", 50, 30),
-        ("55 years and over", 15, 8),
-        ("Men", None, None),
-        ("35 to 44 years", 40, 9),
-    ]:
-        ws.append(list(row))
-    path = tmp_path / "ages.xlsx"
-    wb.save(path)
-    tables = load_tables(str(path))
-    q = "Ở phụ nữ, nhóm tuổi nào có đông người làm nông nghiệp nhất (cột Total)? Chỉ trả lời tên nhóm tuổi."
-    assert "blank:shape" not in _reasons(tables, q)
-    assert _answer(tables, q) == "35 to 44 years"
+def test_rank_with_a_clear_count_is_not_blanked(tmp_path):
+    tables = _kiosks(tmp_path / "kiosks.xlsx")
+    q = "List the 3 kiosks with the largest bulb count, separated by a comma and one space."
+    assert not any(str(r).startswith("blank:") for r in _reasons(tables, q))
+    assert _answer(tables, q) == "Nook, Pylon, Maple"

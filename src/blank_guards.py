@@ -153,25 +153,6 @@ def direction_conflict(texts) -> bool:
     return "asc" in votes and "desc" in votes
 
 
-def date_order_cues(texts) -> set[str]:
-    """Order of a date column. Earlier dates sort ascending.
-
-    Oldest and earliest are ascending. Youngest and latest are descending.
-    This follows the column type, not a column name.
-    """
-    votes = set()
-    for text in texts:
-        if not text:
-            continue
-        low = fold_text(text)
-        low = re.sub(rf"\b(?:top|bottom)\s+{_kpat()}\b", " ", low)
-        if re.search(r"\b(?:oldest|earliest|som nhat)\b", low):
-            votes.add("asc")
-        if re.search(r"\b(?:youngest|latest|tre nhat|muon nhat|gan nhat)\b", low):
-            votes.add("desc")
-    return votes
-
-
 def nth_signal(original: str, translated: str) -> bool:
     """Ordinal rank (2nd-largest, ranks third, thứ 3, lớn thứ hai). Not 'thứ tự'."""
     original = original or ""
@@ -289,8 +270,49 @@ def label_list(ans, fmt) -> bool:
     return bool(parts) and all(not single_number(p) for p in parts)
 
 
+def single_superlative(plan: dict | None) -> bool:
+    """N=1: argmax/argmin, or an nth plan whose place is first."""
+    if not plan:
+        return False
+    op = plan.get("op")
+    if op in ("argmax", "argmin"):
+        return True
+    if op == "nth":
+        try:
+            return int((plan.get("args") or {}).get("n") or 0) <= 1
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def plan_is_complete(plan: dict | None) -> bool:
+    """A rank or top-k plan that already has N, a column, and a direction.
+
+    Guards do not second-guess a plan in this state.
+    """
+    if not plan:
+        return False
+    if plan.get("op") not in ("rank", "topk_agg"):
+        return False
+    args = plan.get("args") or {}
+    try:
+        k = int(args.get("k"))
+    except (TypeError, ValueError):
+        return False
+    if k < 2 or args.get("order") not in ("asc", "desc"):
+        return False
+    by = args.get("by")
+    cols = [c for c in (plan.get("columns") or []) if c]
+    return bool(by or cols)
+
+
 def shape_mismatch(plan: dict, texts) -> bool:
-    """List question answered by a numeric aggregate, or a single-number question answered by labels."""
+    """List question answered by a numeric aggregate, or a single-number question answered by labels.
+
+    A single superlative (argmax/argmin) and a complete rank plan are left alone.
+    """
+    if single_superlative(plan) or plan_is_complete(plan):
+        return False
     fmt = plan.get("format") or {}
     blob = " ".join(t for t in texts if t)
     op = plan.get("op")

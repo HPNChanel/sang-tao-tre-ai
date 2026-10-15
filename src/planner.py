@@ -300,17 +300,24 @@ def _plan_with_confidence(query, tables, strict):
 
 
 def _blank_reasons(original, translated, plan, info):
-    """Confidence 0 when a generic guard says this plan would be confidently wrong."""
+    """Confidence 0 when a generic guard says this plan would be confidently wrong.
+
+    A complete rank plan (N, column, and direction) is a no-op for every guard.
+    A single superlative (argmax/argmin, or nth place 1) never triggers top-N, nth, or shape.
+    """
     from . import blank_guards as G
+    if G.plan_is_complete(plan):
+        return []
     texts = [original or "", translated or ""]
+    single = G.single_superlative(plan)
     reasons = []
     if _unscoped_lookup(plan, info):
         reasons.append("blank:lookup-row")
-    if _topn_must_blank(plan, info, texts):
+    if not single and _topn_must_blank(plan, info, texts):
         reasons.append("blank:topn")
-    if G.shape_mismatch(plan, texts):
+    if not single and G.shape_mismatch(plan, texts):
         reasons.append("blank:shape")
-    if G.nth_signal(original, translated) and not _nth_column_resolved(plan, info, texts):
+    if not single and G.nth_signal(original, translated) and not _nth_column_resolved(plan, info, texts):
         reasons.append("blank:nth-column")
     return reasons
 
@@ -329,78 +336,20 @@ def _unscoped_lookup(plan, info):
 
 
 def _topn_must_blank(plan, info, texts):
-    """Blank only a plan that is missing a top-N shape or contradicts a clear cue.
+    """Blank a non-top-N plan only when the question has one clear top-N count.
 
-    An unsure signal (several N, or no direction word) does not fire. A rank or
-    top-k plan that already has N and a direction is kept unless the question
-    states both directions or the plan order opposes the one clear direction.
+    A complete plan and a single superlative are not blanked here. An unsure
+    signal (no N, or several N) does not fire.
     """
     from . import blank_guards as G
+    if G.plan_is_complete(plan) or G.single_superlative(plan):
+        return False
     signal = G.topn_signal(texts)
-    if signal == "ambiguous":
-        signal = None
-    if _topn_plan_has_n_and_direction(plan):
-        return _direction_contradicts(plan, info, texts)
-    if signal is None:
+    if signal is None or signal == "ambiguous":
         return False
     if _scalar_extreme_ok(plan, info, texts):
         return False
     return True
-
-
-def _topn_plan_has_n_and_direction(plan):
-    op = plan.get("op")
-    if op not in ("rank", "topk_agg"):
-        return False
-    args = plan.get("args") or {}
-    try:
-        k = int(args.get("k"))
-    except (TypeError, ValueError):
-        return False
-    if k < 2:
-        return False
-    return args.get("order") in ("asc", "desc")
-
-
-def _direction_contradicts(plan, info, texts):
-    """Opposing direction words, or one clear direction against the plan order.
-
-    On a date column, oldest/earliest sort ascending and youngest/latest sort
-    descending. That uses the column type only, never a column name or an age key.
-    """
-    from . import blank_guards as G
-    if G.direction_conflict(texts) and _rank_column_type(plan, info) != "date":
-        return True
-    expect = _expected_order(plan, info, texts)
-    if expect is None:
-        return False
-    order = (plan.get("args") or {}).get("order")
-    if order not in ("asc", "desc"):
-        return False
-    return order != expect
-
-
-def _expected_order(plan, info, texts):
-    from . import blank_guards as G
-    if _rank_column_type(plan, info) == "date":
-        cues = G.date_order_cues(texts)
-        if len(cues) == 1:
-            return cues.pop()
-        return None
-    return G.direction(texts)
-
-
-def _rank_column_type(plan, info):
-    """'date', 'number', or None from the column's type. Names are not consulted."""
-    view = info.get("view")
-    by = (plan.get("args") or {}).get("by")
-    if view is None or not by:
-        return None
-    if by in view.date_cols():
-        return "date"
-    if by in view.numeric_cols():
-        return "number"
-    return None
 
 
 def _scalar_extreme_ok(plan, info, texts):
