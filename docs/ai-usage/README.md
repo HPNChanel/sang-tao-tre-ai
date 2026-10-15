@@ -31,7 +31,7 @@ Nguyên văn đã che của 8 prompt #17 sẽ bổ sung sau.
 
 KSP2, nhánh `ksp2/submission-adapter`.
 
-Một prompt, đã chạy. Dockerfile ở root và sáu đối số cuộc thi. Không đổi logic trả lời. SHA: chờ SHA.
+Một prompt, đã chạy. Dockerfile ở root và sáu đối số cuộc thi. Không đổi logic trả lời. SHA: #20 merge `47c1e20`.
 
 ## #19
 
