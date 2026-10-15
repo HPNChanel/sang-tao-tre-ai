@@ -611,6 +611,11 @@ def _plan_core(query: str, tables, strict=False):
             fmt["item_kind"] = "number"
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
         plan["columns"] = ["*"]
+    # An explicit horizontal mean uses individual cells, not a wildcard (which
+    # the executor sums per row) or its implicit first-column fallback.
+    if plan["op"] == "mean" and not plan["columns"] and len(plan["rows"]["paths"]) == 1 \
+            and re.search(r"\bacross all\b", low):
+        plan["columns"] = list(num_cols)
     abstain = _unhandled_op(op_low, plan)
     # A refused top-N (scalar number, or a count that is also a stored value) keeps
     # the older max/lookup. That leftover phrase is not an unparsed operation.

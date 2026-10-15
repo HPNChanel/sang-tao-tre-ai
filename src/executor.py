@@ -246,7 +246,8 @@ def execute(plan, tables):
             val = len(idx)
         else:
             cs = cols or (["*"] if op == "sum" and len(view.numeric_cols()) > 1 else view.numeric_cols()[:1])
-            cs = _drop_total_cols(view, cs, idx)
+            if op == "sum":
+                cs = _drop_total_cols(view, cs, idx)
             series = pd.concat([_col_values(view, c, idx) for c in cs], ignore_index=True)
             if series.map(lambda v: isinstance(v, (dt.date, dt.datetime))).any():
                 s = [v for v in series if isinstance(v, (dt.date, dt.datetime))]
