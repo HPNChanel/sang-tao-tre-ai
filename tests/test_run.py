@@ -27,7 +27,7 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
     logs = [json.loads(l) for l in open(out.parent / "run_log.jsonl")]
     assert len(logs) == 20
     for l in logs:
-        assert set(l) == {"id", "tokens", "cost_usd"} and l["tokens"] == 0 and l["cost_usd"] == 0
+        assert {"id", "tokens", "cost_usd", "completion_tokens", "reasoning_tokens", "attempts"} == set(l) and l["tokens"] == 0 and l["cost_usd"] == 0
 
 
 def test_budget_cap():
