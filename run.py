@@ -10,6 +10,40 @@ from src import seams, llm_client, plan_validate  # noqa: E402
 PLAN_SCHEMA_FILE = Path(__file__).resolve().parent / "src" / "plan_schema.json"
 
 
+def _rule_answer(query, tables, fname, strict=None):
+    """Rule planner + executor. strict=False is the no-key path."""
+    plan = seams.code_plan(query, tables, fname, strict)
+    return seams.execute(plan, tables, query) if plan else None
+
+
+def _llm_then_rule(q, tables, fname, budget):
+    """LLM plan, or the non-strict rule answer if the LLM fails for any reason.
+
+    Failure includes exceptions, HTTP errors, timeouts, unparseable JSON, schema
+    rejection, an executor error on the LLM plan, and the cost cap. The fallback
+    is plan(..., strict=False), so a fake key plus a dead LLM matches a no-key run.
+    """
+    query = q["query"]
+    ans = None
+    try:
+        schema = PLAN_SCHEMA_FILE.read_text() if PLAN_SCHEMA_FILE.exists() else "{}"
+        plan = llm_client.llm_plan(query, summarize(tables), schema, budget,
+                                   validate=plan_validate.validate, qid=q.get("id", ""))
+        if plan is None:
+            print(f"[schema] {q.get('id')}: no schema-valid LLM plan "
+                  f"(attempts={budget.attempts}, cap/retries exhausted); "
+                  f"using non-strict planner",
+                  file=sys.stderr)
+        else:
+            ans = seams.execute(plan, tables, query)
+    except Exception as e:
+        print(f"[warn] {q.get('id')}: LLM {type(e).__name__}: {e}", file=sys.stderr)
+        ans = None
+    if ans is None:
+        ans = _rule_answer(query, tables, fname, False)
+    return ans
+
+
 def answer_one(q, data_dir, cache):
     budget = llm_client.Budget()
     fname = q.get("file_name", "")
@@ -21,17 +55,9 @@ def answer_one(q, data_dir, cache):
             cache.clear()  # keep RAM low: only one workbook in memory
             cache[fname] = load_tables(str(path))
         tables = cache[fname]
-        plan = seams.code_plan(q["query"], tables, fname)
-        ans = seams.execute(plan, tables, q["query"]) if plan else None
+        ans = _rule_answer(q["query"], tables, fname)
         if ans is None and llm_client.enabled() and seams.have_executor():
-            schema = PLAN_SCHEMA_FILE.read_text() if PLAN_SCHEMA_FILE.exists() else "{}"
-            plan = llm_client.llm_plan(q["query"], summarize(tables), schema, budget,
-                                       validate=plan_validate.validate, qid=q.get("id", ""))
-            if plan is None:
-                print(f"[schema] {q.get('id')}: no schema-valid LLM plan "
-                      f"(attempts={budget.attempts}, cap/retries exhausted); answer blank",
-                      file=sys.stderr)
-            ans = seams.execute(plan, tables, q["query"]) if plan else None
+            ans = _llm_then_rule(q, tables, fname, budget)
     except Exception as e:  # never crash the whole run
         print(f"[warn] {q.get('id')}: {type(e).__name__}: {e}", file=sys.stderr)
         ans = None
