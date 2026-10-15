@@ -406,6 +406,18 @@ def _plan_core(query: str, tables, strict=False):
     label_cols = [c for c, _ in cols if c == view.label_name]
     cols = [c for c, _ in cols if c != view.label_name]
     row_paths = [p for p, _ in rows]
+    # 'in all ... and in <subset>' constrains one population. It does not add
+    # the encompassing column to its subset. Explicit arithmetic/list requests
+    # retain both operands, and multiple specific columns remain unresolved.
+    intersected_column = False
+    if len(cols) > 1 and re.search(r"\band in\b", low) and not re.search(
+            r"\b(sum|total|combined|altogether|difference|compare|ratio|both|respectively)\b", low) \
+            and spec.kind != "list":
+        broad = [c for c in cols if re.match(r"all\b", str(c).split(" | ")[-1], re.I)]
+        specific = [c for c in cols if c not in broad]
+        if broad and len(specific) == 1 and all(_par(c) and _par(c) == _par(specific[0]) for c in broad):
+            cols = specific
+            intersected_column = True
 
     plan = {"version": 1,
             "table": {"index": view.idx[0], "sheet": None, "title_hint": None, "stack_sheets": view.stacked},
@@ -549,6 +561,9 @@ def _plan_core(query: str, tables, strict=False):
     elif spec.kind == "list":
         plan["op"] = "values"
     else:
+        plan["op"] = "lookup"
+    if intersected_column and plan["op"] == "sum":
+        # The 'in all' phrase was column context, not an aggregation instruction.
         plan["op"] = "lookup"
     if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
