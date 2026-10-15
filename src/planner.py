@@ -435,7 +435,8 @@ def _plan_core(query: str, tables, strict=False):
     # retain both operands, and multiple specific columns remain unresolved.
     intersected_column = False
     if len(cols) > 1 and re.search(r"\band in\b", low) and not re.search(
-            r"\b(sum|total|combined|altogether|difference|compare|ratio|both|respectively)\b", low) \
+            r"\b(sum|total|combined|altogether|difference|compare|ratio|both|respectively|average|mean|share|proportion|percentage|percent)\b"
+            + "|" + _DIFF_SRC + rf"|\b({SUP_MAX}|{SUP_MIN})\b", low) \
             and spec.kind != "list":
         broad = [c for c in cols if re.match(r"all\b", str(c).split(" | ")[-1], re.I)]
         specific = [c for c in cols if c not in broad]
