@@ -1,8 +1,8 @@
-"""Top-N and bottom-N questions (tn01–tn11, tn04 and tn12 left out).
+"""Top-N and bottom-N questions (tn01–tn11; tn04 and tn12 left out).
 
 Workbooks are the public data pack: $AIPROJ_DATA_DIR, otherwise
 <data>/Public data 1, with files in xlsx_files/ or the pack root.
-A missing workbook is skipped; a wrong answer is an xfail, not a per-question rule.
+The set is skipped only when that directory is absent.
 """
 import json
 import os
@@ -29,12 +29,11 @@ def _pack_dir():
     return Path(__file__).resolve().parents[1] / "data" / "Public data 1"
 
 
-def _workbook(file_name):
-    root = _pack_dir()
+def _workbook(root, file_name):
     for path in (root / "xlsx_files" / file_name, root / file_name):
         if path.is_file():
             return path
-    pytest.skip(f"{file_name} is not in the public data pack")
+    raise FileNotFoundError(f"{file_name} is not in {root}")
 
 
 def _matches(got, expected):
@@ -56,9 +55,11 @@ def _matches(got, expected):
 
 @pytest.mark.parametrize("case", _CASES, ids=[c["id"] for c in _CASES])
 def test_fg_topn(case):
-    path = _workbook(case["file_name"])
+    root = _pack_dir()
+    if not root.is_dir():
+        pytest.skip("public data directory is absent")
+    path = _workbook(root, case["file_name"])
     tables = load_tables(str(path))
     query = case["query"]
     got = execute(plan(query, tables, case["file_name"]), tables, query)
-    if not _matches(got, case["expected"]):
-        pytest.xfail(f"got {got!r}, expected {case['expected']!r}")
+    assert _matches(got, case["expected"]), f"got {got!r}, expected {case['expected']!r}"
