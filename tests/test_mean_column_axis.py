@@ -43,4 +43,3 @@ def test_named_measure_mean_stays_vertical(tmp_path):
     built = plan(query, tables)
     assert built["columns"] == ["Copper"]
     assert execute(built, tables, query) == "6"
-
