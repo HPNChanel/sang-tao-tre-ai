@@ -2,15 +2,14 @@
 """Time cached and uncached runs on a generated workbook.
 
 The pack is built by the dataset-2 generator (40,000 people rows). Queries are
-generic templates over that workbook, not contest items. Uncached timing uses
-a same-mix sample when the full set would repeat a multi-minute parse per query.
+generic templates over that workbook, not contest items. Both modes run the
+full query list at the default 20s answer timeout.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import os
 import re
 import subprocess
 import sys
@@ -100,6 +99,31 @@ def percentile(values, p):
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo)
 
 
+def blanks(path: Path):
+    rows = list(csv.reader(path.open(encoding="utf-8")))
+    return [row[0] for row in rows[1:] if len(row) < 2 or row[1] == ""]
+
+
+def timed_out_ids(path: Path):
+    found = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith("[timed-out] "):
+            continue
+        rest = line[len("[timed-out] "):].strip()
+        if rest and rest != "none":
+            found = [part.strip() for part in rest.split(",") if part.strip()]
+        else:
+            found = []
+    return found
+
+
+def child_hwm_mb(path: Path):
+    match = re.search(r"\[child-hwm-kb\] (\d+)", path.read_text(encoding="utf-8", errors="replace"))
+    if not match:
+        return 0.0
+    return int(match.group(1)) / 1024.0
+
+
 def run_mode(data: Path, out: Path, extra):
     out.parent.mkdir(parents=True, exist_ok=True)
     stamp = out.with_suffix(out.suffix + ".time")
@@ -108,7 +132,7 @@ def run_mode(data: Path, out: Path, extra):
         "/usr/bin/time", "-v", "-o", str(stamp),
         sys.executable, str(ROOT / "run.py"),
         "--data", str(data), "--out", str(out),
-        "--query-timeout", "60", *extra,
+        *extra,
     ]
     env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
     with open(err, "w", encoding="utf-8") as handle:
@@ -117,7 +141,18 @@ def run_mode(data: Path, out: Path, extra):
         raise SystemExit(f"run.py exited {proc.returncode}; see {err}")
     wall, rss = parse_time(stamp)
     times = parse_query_times(err)
-    return {"wall_s": wall, "rss_mb": rss, "times": times, "csv": out, "err": err}
+    child = child_hwm_mb(err)
+    return {
+        "wall_s": wall,
+        "rss_mb": rss,
+        "child_rss_mb": child,
+        "peak_rss_mb": max(rss, child),
+        "times": times,
+        "csv": out,
+        "err": err,
+        "blanks": blanks(out),
+        "timed_out": timed_out_ids(err),
+    }
 
 
 def summarize(label, stats, query_count, estimated=False):
@@ -130,6 +165,10 @@ def summarize(label, stats, query_count, estimated=False):
         "p95": percentile(times, 0.95),
         "max": max(times) if times else float("nan"),
         "rss_mb": stats["rss_mb"],
+        "child_rss_mb": stats["child_rss_mb"],
+        "peak_rss_mb": stats["peak_rss_mb"],
+        "blanks": len(stats["blanks"]),
+        "timed_out": stats["timed_out"],
         "estimated": estimated,
         "ran": len(times),
     }
@@ -138,7 +177,6 @@ def summarize(label, stats, query_count, estimated=False):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--queries", type=int, default=300)
-    ap.add_argument("--uncached-sample", type=int, default=20)
     ap.add_argument("--work", type=Path, default=None)
     args = ap.parse_args(argv)
     if not Path("/usr/bin/time").is_file():
@@ -149,62 +187,58 @@ def main(argv=None):
     write_pack(full)
     rows = queries(args.queries)
     write_queries(full, rows)
-    sample_n = min(args.uncached_sample, args.queries)
-    sample = work / "sample"
-    sample.mkdir(parents=True, exist_ok=True)
-    # Same workbook bytes; only the query list is shorter.
-    os.symlink(full / "xlsx_files", sample / "xlsx_files")
-    write_queries(sample, rows[:sample_n])
 
     print(f"work={work}", flush=True)
-    print(f"cached sample n={sample_n}", flush=True)
-    cached_sample = run_mode(sample, work / "sample-cached.csv", [])
-    print(f"uncached sample n={sample_n}", flush=True)
-    uncached_sample = run_mode(sample, work / "sample-uncached.csv", ["--no-cache"])
-    same = cached_sample["csv"].read_bytes() == uncached_sample["csv"].read_bytes()
-    print(f"sample csv identical={same}", flush=True)
-    if not same:
-        raise SystemExit("cached and uncached sample CSVs differ")
-
-    print(f"cached full n={args.queries}", flush=True)
+    print(f"cached full n={args.queries} timeout=20s", flush=True)
     cached_full = run_mode(full, work / "full-cached.csv", [])
-    # Sample answers must match the same ids in the full cached file.
-    full_rows = list(csv.reader(cached_full["csv"].open(encoding="utf-8")))
-    full_ans = {row[0]: row[1] for row in full_rows[1:]}
-    sample_rows = list(csv.reader(cached_sample["csv"].open(encoding="utf-8")))
-    for row in sample_rows[1:]:
-        if full_ans.get(row[0]) != row[1]:
-            raise SystemExit(f"full run disagrees on {row[0]}")
+    print(
+        f"cached wall={cached_full['wall_s']:.1f}s blanks={len(cached_full['blanks'])} "
+        f"timed_out={cached_full['timed_out'] or 'none'}",
+        flush=True,
+    )
+    print(f"uncached full n={args.queries} timeout=20s", flush=True)
+    uncached_full = run_mode(full, work / "full-uncached.csv", ["--no-cache"])
+    same = cached_full["csv"].read_bytes() == uncached_full["csv"].read_bytes()
+    print(f"full csv identical={same}", flush=True)
+    if not same:
+        raise SystemExit("cached and uncached CSVs differ")
 
     cached = summarize("cached", cached_full, args.queries)
-    uncached = summarize("uncached (estimated)", uncached_sample, args.queries, estimated=True)
+    uncached = summarize("uncached", uncached_full, args.queries)
     slow = sum(1 for row in rows if row["kind"] == "record")
     fast = args.queries - slow
 
     def cell(stats):
-        wall = stats["wall_s"]
-        note = " estimated" if stats["estimated"] else ""
         return (
-            f"{wall:.1f}{note}",
+            f"{stats['wall_s']:.1f}",
             f"{stats['p50']:.3f}",
             f"{stats['p95']:.3f}",
             f"{stats['max']:.3f}",
-            f"{stats['rss_mb']:.1f}",
+            f"{stats['peak_rss_mb']:.1f}",
+            str(stats["blanks"]),
         )
 
     print()
-    print(f"templates: {fast} sheet-level, {slow} record-level (every 10th). timeout=60s")
-    print(f"uncached measured on {sample_n} queries with the same mix; wall scaled by {args.queries}/{sample_n}.")
-    print(f"sample CSV diff: identical ({sample_n} rows)")
+    print(f"templates: {fast} sheet-level, {slow} record-level (every 10th). answer timeout=20s, preload=120s")
+    print("peak RSS is the greater of the parent ru_maxrss and the sampled fork-child VmHWM.")
+    print(f"full CSV diff: identical ({args.queries} rows)")
+    print(f"cached timed-out: {cached['timed_out'] or 'none'}")
+    print(f"uncached timed-out: {uncached['timed_out'] or 'none'}")
     print()
-    print("| mode | wall s | per-query p50 | p95 | max | peak RSS MiB |")
-    print("|---|---:|---:|---:|---:|---:|")
+    print("| mode | wall s | per-query p50 | p95 | max | peak RSS MiB | blanks |")
+    print("|---|---:|---:|---:|---:|---:|---:|")
     for stats in (cached, uncached):
-        wall, p50, p95, mx, rss = cell(stats)
-        print(f"| {stats['label']} | {wall} | {p50} | {p95} | {mx} | {rss} |")
+        wall, p50, p95, mx, rss, blank_n = cell(stats)
+        print(f"| {stats['label']} | {wall} | {p50} | {p95} | {mx} | {rss} | {blank_n} |")
     print()
-    print(f"uncached measured wall_s={uncached_sample['wall_s']:.3f} rss_mb={uncached_sample['rss_mb']:.1f}")
-    print(f"cached measured wall_s={cached_full['wall_s']:.3f} rss_mb={cached_full['rss_mb']:.1f} queries={len(cached_full['times'])}")
+    print(
+        f"cached parent_rss_mb={cached_full['rss_mb']:.1f} child_rss_mb={cached_full['child_rss_mb']:.1f} "
+        f"queries={len(cached_full['times'])}"
+    )
+    print(
+        f"uncached parent_rss_mb={uncached_full['rss_mb']:.1f} child_rss_mb={uncached_full['child_rss_mb']:.1f} "
+        f"queries={len(uncached_full['times'])}"
+    )
     return 0
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """python run.py --data D --out O/submission.csv [--log run_log.jsonl]"""
-import argparse, csv, ctypes, gc, json, os, select, signal, sys, time
+import argparse, csv, ctypes, gc, json, multiprocessing, os, pickle, signal, sys, tempfile, time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -12,6 +12,7 @@ PLAN_SCHEMA_FILE = Path(__file__).resolve().parent / "src" / "plan_schema.json"
 _SHEET_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm", ".xls")
 _MISS = object()
 DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_PRELOAD_S = 120.0
 DEFAULT_RSS_MB = 640
 
 
@@ -29,6 +30,9 @@ class _RunState:
         self.pending = 0
         self.child = None
         self.flushing = False
+        self.timed_out = []
+        self.deadline_skip = []
+        self.child_hwm_kb = 0
 
 
 _RUN = _RunState()
@@ -240,19 +244,57 @@ def _rss_setting(cli):
     return float(raw)
 
 
-def _deadline(timeout):
-    if timeout is None:
-        timeout = _timeout_setting(None)
-    timeout = float(timeout)
-    if timeout <= 0:
-        return None
-    return time.monotonic() + timeout
+def _preload_setting(cli):
+    if cli is not None:
+        return float(cli)
+    raw = os.environ.get("DS2_PRELOAD_TIMEOUT", "").strip()
+    if not raw:
+        return DEFAULT_PRELOAD_S
+    return float(raw)
 
 
-def _remain(deadline):
-    if deadline is None:
+def _positive_timeout(value):
+    """A positive limit in seconds, or None when the limit is disabled."""
+    if value is None:
+        value = _timeout_setting(None)
+    value = float(value)
+    if value <= 0:
         return None
-    return deadline - time.monotonic()
+    return value
+
+
+def _fork_context():
+    try:
+        return multiprocessing.get_context("fork")
+    except ValueError:
+        return None
+
+
+def _want_fork(force_in_process=False):
+    """True when children can be created with the fork start method.
+
+    Fork shares the parent's parsed tables. Spawn, Windows, --in-process,
+    and DS2_IN_PROCESS stay in this process. A thread cannot be killed, and
+    signal.alarm is not available on Windows, so that path has no per-query
+    interrupt.
+    """
+    if force_in_process:
+        return False
+    flag = os.environ.get("DS2_IN_PROCESS", "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        return False
+    method = os.environ.get("DS2_START_METHOD", "").strip().lower()
+    if method and method != "fork":
+        return False
+    if not hasattr(os, "fork"):
+        return False
+    return _fork_context() is not None
+
+
+def _remaining(started, limit):
+    if limit is None:
+        return None
+    return limit - (time.monotonic() - started)
 
 
 def _on_alarm(signum, frame):
@@ -260,11 +302,17 @@ def _on_alarm(signum, frame):
 
 
 def _run_alarmed(fn, timeout):
-    """Run fn on this thread. SIGALRM interrupts Python code, including openpyxl's cell loop."""
+    """Interrupt fn on this thread. Used only for the parent-side LLM step.
+
+    This is not the no-fork fallback. That path cannot interrupt a query that
+    has already started.
+    """
     if timeout is None:
         return fn()
     if timeout <= 0:
         raise _QueryTimedOut()
+    if not hasattr(signal, "SIGALRM") or not hasattr(signal, "setitimer"):
+        return fn()
     previous = signal.signal(signal.SIGALRM, _on_alarm)
     signal.setitimer(signal.ITIMER_REAL, max(float(timeout), 1e-3))
     try:
@@ -288,108 +336,199 @@ def _kill_pid(pid):
         pass
 
 
-def _run_forked(fn, timeout):
-    """Run fn in a child. The parent's cache is not in the child's writes.
+_PENDING = None
 
-    join-equivalent: the parent waits on the result pipe and SIGKILLs the
-    child when the timeout fires, including when fn is inside a C extension.
+
+def _reset_child_signals():
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        if hasattr(signal, "setitimer"):
+            try:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            except Exception:
+                pass
+
+
+def _fork_target(conn):
+    """Run the callable inherited from the parent. Tables are not pickled."""
+    _reset_child_signals()
+    fn = _PENDING
+    try:
+        conn.send((True, fn()))
+    except BaseException as exc:
+        try:
+            conn.send((False, f"{type(exc).__name__}: {exc}"))
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _proc_hwm_kb(pid):
+    try:
+        with open(f"/proc/{pid}/status", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except OSError:
+        return 0
+    return 0
+
+
+def _note_child_hwm(pid):
+    kb = _proc_hwm_kb(pid)
+    if kb > _RUN.child_hwm_kb:
+        _RUN.child_hwm_kb = kb
+
+
+def _run_forked(fn, timeout):
+    """Run fn in a forked child and SIGKILL it when timeout fires.
+
+    The child is started with multiprocessing's fork context, so it shares
+    the parent's cache via copy-on-write. fn's return value is pickled back;
+    callers must keep that value small (an answer, or True after a file dump).
+    timeout None runs fn here. timeout <= 0 means the budget is already spent.
     """
+    global _PENDING
     if timeout is None:
         return fn()
     if timeout <= 0:
         raise _QueryTimedOut()
-    if not hasattr(os, "fork"):
-        return _run_alarmed(fn, timeout)
-    read_fd, write_fd = os.pipe()
+    ctx = _fork_context()
+    if ctx is None:
+        raise RuntimeError("fork is not available")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    _PENDING = fn
+    proc = ctx.Process(target=_fork_target, args=(child_conn,))
     try:
-        pid = os.fork()
-    except OSError:
-        os.close(read_fd)
-        os.close(write_fd)
-        return _run_alarmed(fn, timeout)
-    if pid == 0:
-        os.close(read_fd)
-        try:
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            signal.signal(signal.SIGTERM, signal.SIG_DFL)
-            signal.signal(signal.SIGALRM, signal.SIG_DFL)
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            try:
-                ans = fn()
-                if ans is not None and not isinstance(ans, str):
-                    ans = str(ans)
-                payload = json.dumps({"ok": True, "ans": ans}, ensure_ascii=False).encode()
-            except BaseException as exc:
-                payload = json.dumps(
-                    {"ok": False, "err": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False
-                ).encode()
-            try:
-                view = payload
-                while view:
-                    n = os.write(write_fd, view)
-                    if n <= 0:
-                        break
-                    view = view[n:]
-            except Exception:
-                pass
-        finally:
-            try:
-                os.close(write_fd)
-            except Exception:
-                pass
-            os._exit(0)
-    os.close(write_fd)
-    _RUN.child = pid
-    timed_out = False
-    chunks = []
+        proc.start()
+    except Exception:
+        _PENDING = None
+        parent_conn.close()
+        child_conn.close()
+        raise
+    # The child already copied this page. Drop the parent's reference.
+    _PENDING = None
+    child_conn.close()
+    _RUN.child = proc.pid
     try:
-        end = time.monotonic() + float(timeout)
-        while True:
-            remain = end - time.monotonic()
+        deadline = time.monotonic() + float(timeout)
+        message = None
+        while message is None:
+            _note_child_hwm(proc.pid)
+            remain = deadline - time.monotonic()
             if remain <= 0:
-                timed_out = True
-                break
-            try:
-                ready, _, _ = select.select([read_fd], [], [], remain)
-            except InterruptedError:
+                raise _QueryTimedOut()
+            if not parent_conn.poll(remain):
                 continue
-            if not ready:
-                timed_out = True
-                break
             try:
-                chunk = os.read(read_fd, 65536)
-            except InterruptedError:
-                continue
-            if not chunk:
-                break
-            chunks.append(chunk)
-        if timed_out:
-            raise _QueryTimedOut()
-        try:
-            msg = json.loads(b"".join(chunks).decode("utf-8"))
-        except Exception as exc:
-            raise RuntimeError(f"worker reply: {exc}") from exc
-        if not msg.get("ok"):
-            raise RuntimeError(msg.get("err") or "worker failed")
-        return msg.get("ans")
+                message = parent_conn.recv()
+            except EOFError as exc:
+                raise RuntimeError("worker reply missing") from exc
+        ok, payload = message
+        if not ok:
+            raise RuntimeError(payload)
+        return payload
     finally:
         try:
-            os.close(read_fd)
-        except OSError:
+            parent_conn.close()
+        except Exception:
             pass
-        if _RUN.child == pid:
+        if proc.is_alive():
+            _note_child_hwm(proc.pid)
+            proc.kill()
+        proc.join(timeout=5)
+        if proc.is_alive():
+            _kill_pid(proc.pid)
+            proc.join(timeout=1)
+        if _RUN.child == proc.pid:
             _RUN.child = None
-        _kill_pid(pid)
+        if not proc.is_alive():
+            try:
+                proc.close()
+            except Exception:
+                pass
 
 
-def _load_for_query(cache, path, deadline):
+def _dump_tables(path, dest):
+    tables = load_tables(str(path))
+    partial = dest + ".writing"
+    with open(partial, "wb") as handle:
+        pickle.dump(tables, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(partial, dest)
+    return True
+
+
+def _load_killable(path, timeout):
+    """Parse path in a child and unpickle the tables into this process.
+
+    Killing the child is what stops a stuck parse. The parent stores the
+    tables only after they unpickle, so a killed child cannot half-fill the cache.
+    """
+    fd, dest = tempfile.mkstemp(prefix="ds2-tables-", suffix=".pkl")
+    os.close(fd)
+    partial = dest + ".writing"
+    try:
+        _run_forked(lambda: _dump_tables(path, dest), timeout)
+        with open(dest, "rb") as handle:
+            return pickle.load(handle)
+    finally:
+        for name in (dest, partial):
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
+
+
+def _load_into_parent(path, use_fork, preload_timeout):
+    """Parse outside the per-query answer limit.
+
+    With fork, the loader child is killed at preload_timeout. Without fork the
+    parse runs to completion; it cannot be interrupted.
+    """
+    limit = float(preload_timeout)
+    if (not use_fork) or limit <= 0:
+        return load_tables(str(path))
+    return _load_killable(path, limit)
+
+
+def _cached_tables(cache, path, use_fork, preload_timeout):
     hit = cache.lookup(path)
     if hit is not _MISS:
         return hit
     cache.make_room()
-    tables = _run_alarmed(lambda: load_tables(str(path)), _remain(deadline))
+    tables = _load_into_parent(path, use_fork, preload_timeout)
     cache.store(path, tables)
     return tables
+
+
+def _uncached_rule(path, query, fname):
+    """Load and answer inside one killable child. Nothing is stored."""
+    tables = load_tables(str(path))
+    return _rule_answer(query, tables, fname)
+
+
+def _answer_rule(query, tables, fname, limit, use_fork, started):
+    if use_fork and limit is not None:
+        return _run_forked(
+            lambda: _rule_answer(query, tables, fname),
+            _remaining(started, limit),
+        )
+    return _rule_answer(query, tables, fname)
+
+
+def _answer_llm(q, tables, fname, budget, limit, use_fork, started):
+    left = _remaining(started, limit)
+    if use_fork and left is not None and hasattr(signal, "setitimer") and hasattr(signal, "SIGALRM"):
+        return _run_alarmed(lambda: _llm_then_rule(q, tables, fname, budget), left)
+    return _llm_then_rule(q, tables, fname, budget)
 
 
 def _rule_answer(query, tables, fname, strict=None):
@@ -426,21 +565,53 @@ def _llm_then_rule(q, tables, fname, budget):
     return ans
 
 
-def answer_one(q, data_dir, cache, timeout=None):
+def _note_timeout(qid):
+    if qid is None or qid in _RUN.timed_out:
+        return
+    _RUN.timed_out.append(qid)
+
+
+def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeout=None, whole_query=False):
+    """Answer one query.
+
+    Parsing is not charged to the answer timeout. With fork, a stuck answer
+    is killed and the answer is blank. Without fork the call runs to
+    completion; the run loop is what skips later queries past the deadline.
+    whole_query is the path for a workbook whose preload was killed: load and
+    answer share one killable child under the answer timeout, and nothing is cached.
+    """
+    if use_fork is None:
+        use_fork = _want_fork(False)
+    limit = _positive_timeout(timeout)
+    if preload_timeout is None:
+        preload_timeout = _preload_setting(None)
+    else:
+        preload_timeout = float(preload_timeout)
     budget = llm_client.Budget()
     fname = q.get("file_name", "")
     path = _resolve_workbook(data_dir, fname)
     cache = TableCache.coerce(cache)
-    deadline = _deadline(timeout)
     ans = None
+    tables = None
+    started = time.monotonic()
     try:
-        tables = _load_for_query(cache, path, deadline)
-        ans = _run_forked(lambda: _rule_answer(q["query"], tables, fname), _remain(deadline))
+        if whole_query and use_fork and limit is not None:
+            ans = _run_forked(lambda: _uncached_rule(path, q["query"], fname), limit)
+        else:
+            tables = _cached_tables(cache, path, use_fork, preload_timeout)
+            started = time.monotonic()
+            ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
         if ans is None and llm_client.enabled() and seams.have_executor():
-            ans = _run_alarmed(
-                lambda: _llm_then_rule(q, tables, fname, budget), _remain(deadline)
-            )
+            if tables is None:
+                left = _remaining(started, limit)
+                if left is not None and left <= 0:
+                    raise _QueryTimedOut()
+                tables = _load_into_parent(
+                    path, use_fork, left if left is not None else preload_timeout
+                )
+            ans = _answer_llm(q, tables, fname, budget, limit, use_fork, started)
     except _QueryTimedOut:
+        _note_timeout(q.get("id"))
         print(f"[timeout] {q.get('id')}", file=sys.stderr)
         ans = None
     except Exception as e:  # never crash the whole run
@@ -482,16 +653,74 @@ def _on_sigterm(signum, frame):
     raise SystemExit(128 + int(signum))
 
 
+def _report_timeouts():
+    killed = ", ".join(str(i) for i in _RUN.timed_out) or "none"
+    skipped = ", ".join(str(i) for i in _RUN.deadline_skip) or "none"
+    print(f"[timed-out] {killed}", file=sys.stderr)
+    print(f"[deadline-skip] {skipped}", file=sys.stderr)
+    print(f"[child-hwm-kb] {_RUN.child_hwm_kb}", file=sys.stderr)
+
+
+def _path_key(path):
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
+def _preload(cache, data, byid, execution, use_fork, preload_timeout):
+    """Parse each workbook once, before any answer timer starts.
+
+    A file that exceeds the preload limit is not cached. Its queries then run
+    load and answer together under the answer timeout, in a killable child.
+    Without fork, this parse cannot be stopped; it runs to completion and is cached.
+    """
+    skipped = set()
+    if not cache.enabled:
+        return skipped
+    seen = set()
+    for qid in execution:
+        path = _resolve_workbook(data, byid[qid].get("file_name", ""))
+        key = _path_key(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.is_file():
+            continue
+        try:
+            cache.make_room()
+            tables = _load_into_parent(path, use_fork, preload_timeout)
+            cache.store(path, tables)
+        except _QueryTimedOut:
+            skipped.add(key)
+            print(f"[preload-timeout] {path.name}", file=sys.stderr)
+        except Exception as exc:
+            skipped.add(key)
+            print(f"[preload-failed] {path.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    return skipped
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--log", default=None, help="JSONL log (default: <out dir>/run_log.jsonl)")
     ap.add_argument("--query-timeout", type=float, default=None,
-                    help="Seconds per query (default 20, or DS2_QUERY_TIMEOUT). 0 disables.")
+                    help="Seconds for one answer when fork is available "
+                         "(default 20, or DS2_QUERY_TIMEOUT). 0 disables. "
+                         "Without fork this does not interrupt a running query; "
+                         "queries stop being started after timeout times the query count.")
+    ap.add_argument("--preload-timeout", type=float, default=None,
+                    help="Seconds to parse one workbook into the cache "
+                         "(default 120, or DS2_PRELOAD_TIMEOUT). "
+                         "With fork the loader is killed at this limit. "
+                         "Without fork a parse runs to completion.")
     ap.add_argument("--cache-rss-mb", type=float, default=None,
                     help="RSS / frame budget in MiB (default 640, or DS2_CACHE_RSS_MB).")
     ap.add_argument("--no-cache", action="store_true", help="Parse each workbook on every query.")
+    ap.add_argument("--in-process", action="store_true",
+                    help="Do not fork. Same path as Windows or DS2_START_METHOD=spawn. "
+                         "Also enabled by DS2_IN_PROCESS=1.")
     ap.add_argument("--flush-every", type=int, default=1,
                     help="Rewrite the CSV every N finished queries.")
     a = ap.parse_args(argv)
@@ -511,19 +740,43 @@ def main(argv=None):
     out.parent.mkdir(parents=True, exist_ok=True)
     log = Path(a.log) if a.log else out.parent / "run_log.jsonl"
     timeout = _timeout_setting(a.query_timeout)
+    preload_timeout = _preload_setting(a.preload_timeout)
+    use_fork = _want_fork(a.in_process)
     cache = TableCache(
         enabled=not a.no_cache,
         rss_budget=int(_rss_setting(a.cache_rss_mb) * 1024 * 1024),
     )
+    execution = sorted(order, key=lambda i: byid[i].get("file_name", ""))
     _RUN.reset(out, header, order, a.flush_every)
     previous_term = signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         _flush_submission()
+        skipped = _preload(cache, data, byid, execution, use_fork, preload_timeout)
+        # Checked only between queries. One query already running is not stopped.
+        run_deadline = None
+        if not use_fork and timeout > 0:
+            run_deadline = time.monotonic() + timeout * max(len(execution), 1)
         with open(log, "w", encoding="utf-8") as lf:
-            for qid in sorted(order, key=lambda i: byid[i].get("file_name", "")):
+            for index, qid in enumerate(execution):
+                if run_deadline is not None and time.monotonic() >= run_deadline:
+                    for rest in execution[index:]:
+                        _RUN.answers[rest] = ""
+                        _RUN.deadline_skip.append(rest)
+                        lf.write(json.dumps({"id": rest, "tokens": 0,
+                                             "cost_usd": 0.0}) + "\n")
+                        print(f"{rest}\tdeadline-skip\t''", file=sys.stderr)
+                    lf.flush()
+                    _flush_submission()
+                    break
+                path = _resolve_workbook(data, byid[qid].get("file_name", ""))
+                whole = _path_key(path) in skipped
                 t = time.time()
                 try:
-                    ans, b = answer_one(byid[qid], data, cache, timeout=timeout)
+                    ans, b = answer_one(
+                        byid[qid], data, cache, timeout=timeout,
+                        use_fork=use_fork, preload_timeout=preload_timeout,
+                        whole_query=whole,
+                    )
                 except KeyboardInterrupt:
                     _flush_submission()
                     raise
@@ -546,6 +799,10 @@ def main(argv=None):
     finally:
         try:
             _flush_submission()
+        except Exception:
+            pass
+        try:
+            _report_timeouts()
         except Exception:
             pass
         signal.signal(signal.SIGTERM, previous_term)
