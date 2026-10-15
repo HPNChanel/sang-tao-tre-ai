@@ -550,6 +550,13 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
+    # Output instructions can name a projection absent from the question body.
+    # Resolve it separately so a context/date column does not become the answer.
+    if plan["op"] in ("nth", "rank") and spec.instruction and args.get("over", "rows") == "rows":
+        projected, _ = match_columns(view, Query(spec.instruction))
+        projected = [c for c, _ in projected if c in view.df.columns]
+        if len(projected) == 1:
+            args["return"] = projected[0]
     if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
         secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
