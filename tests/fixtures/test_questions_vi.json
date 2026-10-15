@@ -1,80 +1,80 @@
 [
   {
-    "id": "fv01",
-    "file_name": "p4_t10.xlsx",
-    "query": "Tổng số người đi làm của nam giới từ 20 đến 24 tuổi là bao nhiêu? Chỉ trả lời bằng số nguyên.",
-    "expected": "7146"
-  },
-  {
-    "id": "fv02",
-    "file_name": "p4_t10.xlsx",
-    "query": "Tong so nguoi di lam cua nu tu 55 tuoi tro len la bao nhieu? Chi tra loi bang so nguyen.",
-    "expected": "16265"
-  },
-  {
-    "id": "fv03",
-    "file_name": "p4_t06.xlsx",
-    "query": "Trong ngành nông nghiệp, phụ nữ từ 18 đến 19 tuổi có bao nhiêu lao động gia đình không lương? Chỉ trả lời bằng số nguyên.",
-    "expected": "5"
-  },
-  {
-    "id": "fv04",
-    "file_name": "p4_t06.xlsx",
-    "query": "Có bao nhiêu đàn ông từ 65 tuổi trở lên làm việc trong nông nghiệp (cột Total)? Chỉ trả lời bằng số nguyên.",
-    "expected": "281"
-  },
-  {
-    "id": "fv05",
-    "file_name": "p4_t06.xlsx",
-    "query": "Đối với nam, số lao động gia đình không lương ngoài nông nghiệp (phi nông nghiệp) ở nhóm tuổi 35 đến 44 là bao nhiêu? Chỉ trả lời bằng số nguyên.",
-    "expected": "2"
-  },
-  {
-    "id": "fv06",
-    "file_name": "p4_t04.xlsx",
-    "query": "Tỷ lệ thất nghiệp của nam có bằng sau đại học (Advanced degree) là bao nhiêu? Chỉ trả lời bằng số, làm tròn đến 1 chữ số thập phân.",
-    "expected": "1.9"
-  },
-  {
-    "id": "fv07",
-    "file_name": "p4_t04.xlsx",
-    "query": "Ở nhóm nữ giới có bằng cao đẳng (Associate degree), số người thất nghiệp là bao nhiêu? Chỉ trả lời bằng số nguyên.",
-    "expected": "214"
-  },
-  {
-    "id": "fv08",
+    "id": "v01",
     "file_name": "p4_t01.xlsx",
-    "query": "Trong số những người sinh năm 1997, điểm cao nhất là bao nhiêu? Chỉ trả lời bằng số nguyên.",
-    "expected": "89"
+    "query": "Hãy lấy bốn điểm nhỏ nhất trên cột Score, xếp tăng dần, phân cách bằng dấu phẩy và một dấu cách.",
+    "expected": "58, 60, 61, 64"
   },
   {
-    "id": "fv09",
-    "file_name": "p4_t01.xlsx",
-    "query": "Người lớn tuổi nhất trong bảng được bao nhiêu điểm? Chỉ trả lời bằng số nguyên.",
-    "expected": "60"
-  },
-  {
-    "id": "fv10",
-    "file_name": "p4_t01.xlsx",
-    "query": "Người trẻ nhất nhập học vào ngày nào? Trả lời theo định dạng YYYY-MM-DD.",
-    "expected": "2024-07-13"
-  },
-  {
-    "id": "fv11",
-    "file_name": "p4_t10.xlsx",
-    "query": "Số giờ làm việc trung bình (Average hours, Total at work) của nam năm 2023 là bao nhiêu? Chỉ trả lời bằng số, làm tròn đến 1 chữ số thập phân.",
-    "expected": "40.3"
-  },
-  {
-    "id": "fv12",
+    "id": "v02",
     "file_name": "p4_t08.xlsx",
-    "query": "Trong ngành nông nghiệp, có bao nhiêu người làm việc từ 15 đến 29 giờ? Chỉ trả lời bằng số nguyên.",
-    "expected": "269"
+    "query": "Nông nghiệp, 1 đến 4 giờ, số người. Số nguyên.",
+    "expected": "42"
   },
   {
-    "id": "fv13",
+    "id": "v03",
     "file_name": "p4_t06.xlsx",
-    "query": "Ở phụ nữ, nhóm tuổi nào có đông người làm nông nghiệp nhất (cột Total)? Chỉ trả lời tên nhóm tuổi.",
-    "expected": "35 to 44 years"
+    "query": "Phụ nữ 45 đến 54 tuổi, unpaid family workers, nông nghiệp. Số nguyên.",
+    "expected": "3"
+  },
+  {
+    "id": "v04",
+    "file_name": "p4_t06.xlsx",
+    "query": "Đàn ông ở nhóm 18 đến 19 tuổi có bao nhiêu lao động gia đình không lương trong nông nghiệp? Chỉ trả lời bằng số nguyên.",
+    "expected": "1"
+  },
+  {
+    "id": "v05",
+    "file_name": "p4_t06.xlsx",
+    "query": "Đàn ông từ 65 tuổi trở lên, tự làm trong nông nghiệp (self-employed) là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "185"
+  },
+  {
+    "id": "v06",
+    "file_name": "p4_t01.xlsx",
+    "query": "Chênh lệch điểm giữa Nga và Nam là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "41"
+  },
+  {
+    "id": "v07",
+    "file_name": "p4_t01.xlsx",
+    "query": "Chênh lệch điểm giữa Nga và Giang là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "13"
+  },
+  {
+    "id": "v08",
+    "file_name": "p4_t01.xlsx",
+    "query": "Điểm của Lan và điểm của Quang là cặp số nào? Trả lời hai số, phân cách bằng dấu phẩy và một dấu cách.",
+    "expected": "76, 61"
+  },
+  {
+    "id": "v09",
+    "file_name": "p4_t01.xlsx",
+    "query": "Điểm của Nga và điểm của Giang là cặp số nào? Trả lời hai số, phân cách bằng dấu phẩy và một dấu cách.",
+    "expected": "99, 86"
+  },
+  {
+    "id": "v10",
+    "file_name": "p4_t01.xlsx",
+    "query": "Hai người nhập học muộn nhất, trả lời tên, muộn nhất trước, phân cách bằng dấu phẩy và một dấu cách.",
+    "expected": "Ha, Duc"
+  },
+  {
+    "id": "v11",
+    "file_name": "p4_t04.xlsx",
+    "query": "Dòng White, Unemployment rate, cột Advanced degree, làm tròn 1 chữ số thập phân.",
+    "expected": "1.7"
+  },
+  {
+    "id": "v12",
+    "file_name": "p4_t02.xlsx",
+    "query": "Xuất khẩu nông sản năm tài khóa 2021 là bao nhiêu tỷ đô? Chỉ trả lời bằng số, làm tròn đến 1 chữ số thập phân.",
+    "expected": "171.8"
+  },
+  {
+    "id": "v13",
+    "file_name": "p4_t06.xlsx",
+    "query": "Ở phụ nữ từ 45 đến 54 tuổi, lao động gia đình không lương trong nông nghiệp là bao nhiêu? Chỉ trả lời bằng số nguyên.",
+    "expected": "3"
   }
 ]
