@@ -54,6 +54,9 @@ def plan_type(plan: dict, view=None) -> str:
         if view is not None and ret and ret in view.numeric_cols():
             return "number"
         return "label"
+    if op in ("lookup", "values") and view is not None and plan.get("columns") and \
+            all(c in view.date_cols() for c in plan["columns"]):
+        return "date"
     if op in ("max", "min") and view is not None and plan.get("columns") and all(c in view.date_cols() for c in plan["columns"]):
         return "date"
     return "number"

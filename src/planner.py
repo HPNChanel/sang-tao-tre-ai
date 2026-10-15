@@ -365,7 +365,8 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "argmax" if sup_max and not (sup_min and sup_min.start() < sup_max.start()) else "argmin"
         args["abs"] = bool(re.search(r"absolute", low))
         _choose_over(plan, view, rows, cols, low)
-    elif re.search(r"how (many|much) (more|less|fewer|higher|lower)|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b", low):
+    elif re.search(r"how (many|much) (more|less|fewer|higher|lower)|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b|"
+                   r"\bby how (much|many)\b.*\b(exceed|outnumber|surpass|beat|trail|lag)", low):
         plan["op"] = "diff"
         args["abs"] = bool(re.search(r"absolute|\bdifference between\b", low)) and not re.search(r"\bsigned\b", query.lower())
         args["signed_order"] = "second_minus_first" if re.search(r"\bchange\b|\bfrom\b.*\bto\b|increase|decrease", low) else "first_minus_second"
@@ -403,6 +404,19 @@ def _plan_core(query: str, tables, strict=False):
             # 'which X have/are tied at Y equal to N' -> every row meeting the condition
             plan["op"], plan["rows"]["where"], args["ties"], args["over"] = "argmax", eq, "all", "rows"
             plan["columns"] = [eq[0]["column"]]
+    if plan["op"] in ("lookup", "values"):
+        tw = _text_value_where(body, view)
+        if tw:
+            plan["rows"]["where"] += tw
+            plan["rows"]["paths"] = [p for p in plan["rows"]["paths"]
+                                     if any(str(v["value"]).lower() != p.split(" > ")[-1].lower() for v in tw)] if len(plan["rows"]["paths"]) > 1 else plan["rows"]["paths"]
+    if plan["op"] in ("argmax", "argmin") and args.get("over") == "rows" and not plan["columns"]:
+        # 'who was admitted earliest' -> the column sharing a word stem ('admitted' ~ 'Admission')
+        pref = view.date_cols() if re.search(r"\b(earliest|latest|first|last)\b", low) else num_cols
+        words = [w[:4] for w in re.findall(r"[a-z]{5,}", low)]
+        hit = [c for c in pref for t in tokens(str(c).split(" | ")[-1]) if len(t) >= 4 and t[:4] in words]
+        if hit:
+            plan["columns"] = hit[:1]
     if excl_phrases and plan["op"] in ("sum", "mean", "max", "min", "argmax", "argmin", "count", "rank", "topk_agg", "nth"):
         for ph in excl_phrases:
             xr, _ = match_rows(view, Query(ph))
@@ -447,7 +461,8 @@ def _plan_core(query: str, tables, strict=False):
             plan["rows"]["paths"] = [f"{sn}!{p0}" for _, sn in sorted(sheets)]
             plan["table"]["sheet"] = None
     if plan["op"] in ("sum", "mean", "diff", "compare", "ratio", "share", "argmax", "argmin", "rank"):
-        plan["columns"] = [c for c in plan["columns"] if c in num_cols or c.endswith(" | *") or c == "*"]
+        dates = view.date_cols() if plan["op"] in ("argmax", "argmin") else []
+        plan["columns"] = [c for c in plan["columns"] if c in num_cols or c in dates or c.endswith(" | *") or c == "*"]
     if plan["op"] in ("lookup", "values") and (len(plan["rows"]["paths"]) * max(1, len(plan["columns"])) > 1 or spec.kind == "list"):
         plan["op"] = "values"
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
@@ -477,6 +492,19 @@ def _set_delta(plan, view, low):
         plan["columns"] = []
         if re.search(r"\b(decrease|decline|drop|fall)\b", low) and plan["op"] == "argmax":
             plan["op"] = "argmin"
+
+
+def _text_value_where(body, view):
+    """Capitalised question words equal to a value of a text column other than the row label -> equality filter."""
+    out = []
+    for c in view.columns:
+        if c in view.numeric_cols() or c in view.date_cols():
+            continue
+        vals = {str(v).strip() for v in view.df[c].dropna() if isinstance(v, str) and 2 <= len(v.strip()) <= 40}
+        hit = [v for v in vals if v[:1].isupper() and re.search(rf"(?<![\w]){re.escape(v)}(?![\w])(?!\s*\|)", body)]
+        if len(hit) == 1:
+            out.append({"column": c, "op": "==", "value": hit[0]})
+    return out
 
 
 _SHARE_TIE = re.compile(r"\bshare (the|a) (same|top|highest|lowest|first|maximum|minimum)\b")

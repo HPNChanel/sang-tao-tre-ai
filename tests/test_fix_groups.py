@@ -148,3 +148,30 @@ def test_excluding_row(sections):
 
 def test_equal_to_ties(recs):
     assert _ans(recs, "Which people have a score equal to 72? Answer with the last names in table order, separated by a comma and one space.") == "Lu, Op"
+
+
+# ---- passive / short / possessive forms
+@pytest.fixture
+def staff(tmp_path):
+    import datetime as dt
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["First", "Last", "Admission", "Score"])
+    for r in [("An", "Ka", dt.date(2010, 1, 2), 60), ("Bo", "Lu", dt.date(2005, 5, 6), 72), ("An", "Mo", dt.date(2012, 3, 3), 85)]:
+        ws.append(list(r))
+    f = tmp_path / "st.xlsx"; wb.save(f); return f
+
+
+def test_possessive_date(staff):
+    assert _ans(staff, "Lu's admission date? Answer in YYYY-MM-DD format.") == "2005-05-06"
+
+
+def test_passive_full_name(staff):
+    assert _ans(staff, "The score obtained by An Mo was what? Answer with only the integer.") == "85"
+
+
+def test_admitted_earliest(staff):
+    assert _ans(staff, "Who was admitted earliest? Answer with only the last name.") == "Lu"
+
+
+def test_by_how_much_exceed(sections):
+    assert _ans(sections, "By how much did the employed count of the 25 to 54 group exceed that of the 16 to 24 group, for both sexes? Answer with only the integer.") == "20"

@@ -170,6 +170,18 @@ def execute(plan, tables):
     if (plan.get("table") or {}).get("sheet"):
         groups = [[i for i in g if i in base] or g for g in groups]
 
+    if op in ("lookup", "values") and r.get("where"):
+        # rows picked by a text-value condition ('Ho's admission date', 'obtained by An Ho')
+        hit = _apply_where(view, base, r.get("where"))
+        if groups:
+            groups = [[i for i in g if i in hit] or g for g in groups]
+        elif hit:
+            groups = [hit[:1]]
+
+    def _cell(c, g):
+        s = _col_values(view, c, g)
+        return s.iloc[0] if len(s) == 1 else s.sum(min_count=1)
+
     def first_row():
         cand = [i for i in base if df.loc[i, view.numeric_cols()].notna().any()] if view.numeric_cols() else base
         return [cand[0]]
@@ -194,11 +206,11 @@ def execute(plan, tables):
         if len(gs) >= len(cs):
             for g in gs:
                 for c in cs:
-                    out.append(_col_values(view, c, g).sum(min_count=1))
+                    out.append(_cell(c, g))
         else:
             for c in cs:
                 for g in gs:
-                    out.append(_col_values(view, c, g).sum(min_count=1))
+                    out.append(_cell(c, g))
         return out
 
     if op in ("lookup", "values"):
@@ -280,6 +292,7 @@ def execute(plan, tables):
             idx = _apply_where(view, idx, r.get("where"))
             c = cols[0] if cols else view.numeric_cols()[0]
             vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}
+            vals = {i: (v.toordinal() if isinstance(v, (dt.date, dt.datetime)) else v) for i, v in vals.items()}
             vals = {i: v for i, v in vals.items() if isinstance(v, (int, float, np.floating)) and not math.isnan(v)}
             best = _pick(list(vals), lambda i: sign * tf(vals[i]), plan, "rows")
             val = [_ret(view, b, args.get("return")) for b in best]
