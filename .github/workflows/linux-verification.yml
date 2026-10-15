@@ -48,8 +48,13 @@ jobs:
         run: python -m pytest -q -ra
 
       - name: Build and check the contest container
+        id: docker_smoke
         # Collect Docker evidence even if pytest fails, but retain the failed job.
         if: ${{ !cancelled() && steps.pytest.outcome != 'skipped' }}
         run: python scripts/ci_docker_smoke.py
+
+      - name: Verify Public data 1 and measure container memory
+        if: ${{ !cancelled() && steps.docker_smoke.outcome == 'success' }}
+        run: python scripts/ci_public_data1.py
 
       # Deliberately no artifact upload, cache action, registry push, or API key.
