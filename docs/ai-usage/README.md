@@ -26,11 +26,11 @@ Model trên mọi PR: `qwen/qwen3.7-flash` qua OpenRouter. Không PR nào đã c
 | #1 | merged, `e1ab186` | Không thêm prompt mới. Prompt có sẵn nằm trong `src/prompts/`. | Chưa chạy với model thật |
 | #2 | KSP1, merged, `c02777d` | `src/prompts/plan_system.txt`, `src/prompts/plan_user.txt`, `src/plan_schema.json` | Synth v3 là Python thuần điền template, không gọi LLM. Đổi code thêm duy nhất: `os.environ.get` thành `os.getenv`. Chưa chạy với model thật |
 | #3 | KSP1, fix-groups, CLOSED, không merge | Không sửa `src/prompts/` | Đóng vì điểm v2 giảm. Chưa chạy với model thật |
-| PR #4 (KSP1, fg-vietnamese): Vietnamese parsing fixes (tu X den Y gio stays hours; nam + 4-digit year stays year; phi/ngoai nong nghiep beats nong nghiep); no last-name rule, no rule tied to an id/file/question; model qwen/qwen3.7-flash via OpenRouter, no real-model run. | KSP1, fg-vietnamese | | Chưa chạy với model thật |
-| PR #5 (KSP2): schema compaction (send-time only; disk plan_schema.json unchanged), robust parser, reasoning off, split cost log, fake LLM + tests; model qwen/qwen3.7-flash via OpenRouter, never run with a real model. | PR này | Prompt chính và fake LLM ghi trong file này | Chưa chạy với model thật |
+| #4 | KSP1, fg-vietnamese | Không sửa `src/prompts/` | Code do Cursor cloud agent viết theo chỉ đạo của KSP1. Model `qwen/qwen3.7-flash` qua OpenRouter chỉ dùng làm fallback cho `plan(strict=False)`. Chưa chạy với model thật |
+| #5 | KSP2, PR này | Prompt chính và fake LLM ghi trong file này | Nén schema chỉ lúc gửi (`plan_schema.json` trên đĩa không đổi), parser vững, tắt reasoning, tách log chi phí, fake LLM và test. Model `qwen/qwen3.7-flash` qua OpenRouter. Chưa chạy với model thật |
 | PR nhỏ của KSP1 | từng PR | Mỗi PR ghi prompt chính của chính nó. PM gom trước khi zip. | Chưa chạy với model thật |
 
-PR #4 (fg-vietnamese) duoc mien dieu kien 2 (so cau sai-ma-tu-tin tren v2 khong giam): ly do la khong bo nao tut diem va bo test doc lap fv tang tu 0/13 len 11/13. Theo luat merge moi: khong bo nao tut + co cai thien do duoc tren bo test doc lap thi duoc merge.
+PR #4 (fg-vietnamese) được miễn điều kiện 2 (số câu sai-mà-tự-tin trên v2 không giảm): lý do là không bộ nào tụt điểm và bộ test độc lập fv tăng từ 0/13 lên 11/13. Theo luật merge mới: không bộ nào tụt + có cải thiện đo được trên bộ test độc lập thì được merge.
 
 ## Bai hoc tu 6 nhom loi & synth v5 (KSP1)
 

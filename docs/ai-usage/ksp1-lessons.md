@@ -1,46 +1,46 @@
-# KSP1: bai hoc tu PR #3 va ghi chu dung AI
+# KSP1: bài học từ PR #3 và ghi chú dùng AI
 
-## 1. Bai hoc tu 6 nhom loi (PR #3 ksp1/fix-groups, da dong, khong merge)
+## 1. Bài học từ 6 nhóm lỗi (PR #3 ksp1/fix-groups, đã đóng, không merge)
 
-PR #3 lam tu main @ c02777d. Moi nhom loi mot commit, cong 1 commit tai lieu va 1 commit test:
+PR #3 làm từ main @ c02777d. Mỗi nhóm lỗi một commit, cộng 1 commit tài liệu và 1 commit test:
 
-| # | Nhom loi | Noi dung sua |
+| # | Nhóm lỗi | Nội dung sửa |
 |---|---|---|
-| 1 | Pham vi theo nhom (section scope) | Phep gop chi tinh trong nhom duoc nhac ten. Con so nam trong nhan dong khong con bi coi la nguong loc |
-| 2 | Tieng Viet (co dau va khong dau) | Tu vung thong ke, 'cua nam/nu', 'tu X den Y tuoi', 'la bao nhieu' la hoi gia tri |
-| 3 | Top N va ket qua hoa | Tra ve danh sach k phan tu, giu du cac ket qua hoa, lay cot tra ve tu cau huong dan |
-| 4 | Chieu so sanh | 'tu A den B' tinh theo B - A, giua hai sheet hoac hai cot |
-| 5 | Dieu kien loc | between, phu dinh, 'equal to', nam sinh truoc/sau, loai tru, 'Count ...' |
-| 6 | Cau bi dong va cau ngan | Loc theo gia tri chu, 'hon bao nhieu', nhan cot theo goc tu chung |
+| 1 | Phạm vi theo nhóm (section scope) | Phép gộp chỉ tính trong nhóm được nhắc tên. Con số nằm trong nhãn dòng không còn bị coi là ngưỡng lọc |
+| 2 | Tiếng Việt (có dấu và không dấu) | Từ vựng thống kê, 'của nam/nữ', 'từ X đến Y tuổi', 'là bao nhiêu' là hỏi giá trị |
+| 3 | Top N và kết quả hòa | Trả về danh sách k phần tử, giữ đủ các kết quả hòa, lấy cột trả về từ câu hướng dẫn |
+| 4 | Chiều so sánh | 'từ A đến B' tính theo B - A, giữa hai sheet hoặc hai cột |
+| 5 | Điều kiện lọc | between, phủ định, 'equal to', năm sinh trước/sau, loại trừ, 'Count ...' |
+| 6 | Câu bị động và câu ngắn | Lọc theo giá trị chữ, 'hơn bao nhiêu', nhãn cột theo gốc từ chung |
 
-### Vi sao PR #3 bi dong
-- Tren dev, synth v3 va synth v4, ket qua giu nguyen hoac tang nhe. Synth v5 (bo KSP1 tu viet) tang rat manh, tu 45 len 117/123.
-- QA cham v2 theo tung commit cong don va thay diem v2 bat dau giam tu commit section scope (nhom 1). Khong commit nao sau do keo v2 len lai. EL dong PR.
-- Commit tieng Viet co mot luat dinh dang qua sat voi mot kieu cau cu the (khong phai luat ngon ngu chung), nen bi bo han va se khong dua lai.
+### Vì sao PR #3 bị đóng
+- Trên dev, synth v3 và synth v4, kết quả giữ nguyên hoặc tăng nhẹ. Synth v5 (bộ KSP1 tự viết) tăng rất mạnh, từ 45 lên 117/123.
+- QA chấm v2 theo từng commit cộng dồn và thấy điểm v2 bắt đầu giảm từ commit section scope (nhóm 1). Không commit nào sau đó kéo v2 lên lại. EL đóng PR.
+- Commit tiếng Việt có một luật định dạng quá sát với một kiểu câu cụ thể (không phải luật ngôn ngữ chung), nên bị bỏ hẳn và sẽ không đưa lại.
 
-### Bai hoc
-1. Dung cham bang bo do chinh minh viet. Synth v5 va test do KSP1 viet theo cung cach hieu voi code, nen diem tang nhung khong tong quat hoa duoc. Tu nay cau hoi test do figma bro viet, dap an tinh bang code tren Public data 1.
+### Bài học
+1. Đừng chấm bằng bộ do chính mình viết. Synth v5 và test do KSP1 viết theo cùng cách hiểu với code, nên điểm tăng nhưng không tổng quát hóa được. Từ nay câu hỏi test do figma bro viết, đáp án tính bằng code trên Public data 1.
 2. Moi PR chi sua mot nhom. Gop 6 nhom vao mot PR khien khong biet nhom nao gay giam diem, va phai bo ca PR. Bay gio moi nhom la mot PR nho, PR nao lam giam v2 hoac holdout thi bo PR do.
-3. Luat cang rong cang de bat nham. Luat section scope va cac luat 'tu X den Y' co the khop vao cau khong lien quan. Can test ca cau khong duoc kich hoat luat.
-4. Khong viet luat cho mot cau hay mot dinh dang rieng. Luat nao chi co tac dung voi mot kieu cau duy nhat thi coi la hoc thuoc de, va bo.
-5. Khong them truong schema neu chua dung. Cac truong format.thousands, args.delta, year>/year< di theo PR #3, nen khong co tren main.
-6. Khong dung lai test da bi danh dau trung voi bo paraphrase cua QA.
+3. Luật càng rộng càng dễ bắt nhầm. Luật section scope và các luật 'từ X đến Y' có thể khớp vào câu không liên quan. Cần test cả câu không được kích hoạt luật.
+4. Không viết luật cho một câu hay một định dạng riêng. Luật nào chỉ có tác dụng với một kiểu câu duy nhất thì coi là học thuộc đề, và bỏ.
+5. Không thêm trường schema nếu chưa dùng. Các trường format.thousands, args.delta, year>/year< đi theo PR #3, nên không có trên main.
+6. Không dùng lại test đã bị đánh dấu trùng với bộ paraphrase của QA.
 
 ## 2. Synth v5
 
-- Bo du lieu tong hop do KSP1 tu viet, khong phai cua QA. Co 123 cau tren 3 bien the du lieu, schema giong vong 1: bang nguoi co header gop 2 dong, bang thong ke co nhom va dong Total, nhieu sheet theo ky.
-- Cac ho cau hoi: dong nghia, dao trat tu, bi dong, tieng Viet co dau va khong dau, don vi/dinh dang, phu dinh, top N, hoa, khoang, nhieu dieu kien, nhieu sheet, gop ngam.
-- Script Python thuan (openpyxl, random voi seed co dinh nen chay ra ket qua nhu nhau). Cau hoi sinh tu template, khong goi LLM hay API nao. Dap an duoc tinh thang tu du lieu vua sinh. Co co y tao ket qua hoa.
-- Han che (bai hoc 1): template va code do cung mot nguoi viet, nen synth v5 chi dung de kiem tra loi hoi quy, khong dung de do kha nang tong quat hoa.
+- Bộ dữ liệu tổng hợp do KSP1 tự viết, không phải của QA. Có 123 câu trên 3 biến thể dữ liệu, schema giống vòng 1: bảng người có header gộp 2 dòng, bảng thống kê có nhóm và dòng Total, nhiều sheet theo kỳ.
+- Các họ câu hỏi: đồng nghĩa, đảo trật tự, bị động, tiếng Việt có dấu và không dấu, đơn vị/định dạng, phủ định, top N, hòa, khoảng, nhiều điều kiện, nhiều sheet, gộp ngầm.
+- Script Python thuần (openpyxl, random với seed cố định nên chạy ra kết quả như nhau). Câu hỏi sinh từ template, không gọi LLM hay API nào. Đáp án được tính thẳng từ dữ liệu vừa sinh. Có cố ý tạo kết quả hòa.
+- Hạn chế (bài học 1): template và code do cùng một người viết, nên synth v5 chỉ dùng để kiểm tra lỗi hồi quy, không dùng để đo khả năng tổng quát hóa.
 
-## 3. Ghi chu dung AI cho cac PR nho cua KSP1
+## 3. Ghi chú dùng AI cho các PR nhỏ của KSP1
 
 - Model luc chay: qwen/qwen3.7-flash qua OpenRouter, chi lam fallback khi co OPENROUTER_API_KEY. Model chi sinh plan JSON, dap an do code tinh.
-- Prompt: src/prompts/plan_system.txt, src/prompts/plan_user.txt, src/plan_schema.json. Neu PR nao doi prompt thi ghi ro trong mo ta PR do.
-- Chua chay voi model that: khong co lan goi API nao. Test LLM dung mock hoac fake LLM.
-- Khong huan luyen. Moi luat la luat ngon ngu chung, khong gan voi file, id hay cau hoi cu the.
-- Test: cau hoi do figma bro viet tu Public data 1. Cau nao code chung khong qua duoc thi danh xfail va ghi ly do. Cau xfail khong tinh la dat.
+- Prompt: src/prompts/plan_system.txt, src/prompts/plan_user.txt, src/plan_schema.json. Nếu PR nào đổi prompt thì ghi rõ trong mô tả PR đó.
+- Chưa chạy với model thật: không có lần gọi API nào. Test LLM dùng mock hoặc fake LLM.
+- Không huấn luyện. Mọi luật là luật ngôn ngữ chung, không gắn với file, id hay câu hỏi cụ thể.
+- Test: câu hỏi do figma bro viết từ Public data 1. Câu nào code chung không qua được thì đánh xfail và ghi lý do. Câu xfail không tính là đạt.
 - v2 dung lam cong chon: QA cham v2 va holdout cho tung PR, chi bao tong diem. PR lam giam diem thi bi bo. Vi vay v2 khong con la phep do sach.
-- Phep do sach duy nhat la bo v3 do QA niem phong (hash ghi trong docs/ai-usage/). Bo nay chay mot lan tren SHA cuoi sau khi dung code.
+- Phép đo sạch duy nhất là bộ v3 do QA niêm phong (hash ghi trong docs/ai-usage/). Bộ này chạy một lần trên SHA cuối sau khi dừng code.
 - KSP1 khong mo qa/, v2 hay holdout.
-- Luc phat trien: code va test do agent KSP1 (Grok Bot) viet theo chi dao cua doi.
+- Lúc phát triển: code và test do agent KSP1 (Grok Bot) viết theo chỉ đạo của đội.
