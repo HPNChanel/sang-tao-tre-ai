@@ -33,6 +33,11 @@ class WorkbookError(ValueError):
     pass
 
 
+def percent_format(fmt):
+    """True when a number format shows the stored value times 100: an unquoted, unescaped %."""
+    return '%' in re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', '', fmt or '')
+
+
 def normalized(value):
     text = unicodedata.normalize('NFKD', str(value)).casefold().replace('đ', 'd')
     return ' '.join(''.join(c for c in text if not unicodedata.combining(c)).split())
@@ -399,6 +404,47 @@ class WorkbookIndex:
             r,c,value,kind,formula,fmt,indent,hidden = row
             yield {'sheet':sid,'cell':get_column_letter(c)+str(r),'value':value,'type':kind,
                    'formula':formula,'format':fmt,'indent':indent,'hidden':bool(hidden)}
+
+    def scales(self, sheet, r1, r2, columns):
+        """Per column index, the scale of its numbers in rows r1..r2 as (kind, 0), or None.
+
+        'share' when every number is a share of 1 shown as a percentage (percent format or
+        text such as 25%); 'quantity' when some number exceeds 2 in magnitude, so the column
+        holds amounts or percent-unit figures, not shares; 'small' when all lie within -2..2,
+        which leaves shares and small percent figures indistinguishable. A column without
+        numbers, or mixing percentages with plain numbers, has no known scale.
+        """
+        sid = self.sheet_id(sheet)
+        seen = {c: set() for c in columns}
+        if not seen:
+            return {}
+        marks = ','.join('?' * len(seen))
+        for c, value, kind, fmt in self.db.execute(f'SELECT c,value,kind,format FROM cells WHERE sheet=? AND r BETWEEN ? AND ? '
+                                                   f'AND c IN ({marks})', (sid, r1, r2, *seen)):
+            if kind == 'n' and not is_date_format(fmt):
+                if percent_format(fmt):
+                    seen[c].add('share')
+                    continue
+                try:
+                    n = Decimal(value) if value is not None else None
+                except InvalidOperation:
+                    n = None
+            elif kind in {'s', 'str'} and value:
+                n = number(value)
+                if n is not None and value.strip().endswith('%'):
+                    seen[c].add('share')
+                    continue
+            else:
+                continue
+            if n is not None and n.is_finite():
+                seen[c].add('quantity' if abs(n) > 2 else 'small')
+        out = {}
+        for c, kinds in seen.items():
+            if not kinds or ('share' in kinds and len(kinds) > 1):
+                out[c] = None
+            else:
+                out[c] = ('share' if 'share' in kinds else 'quantity' if 'quantity' in kinds else 'small', 0)
+        return out
 
     def summary(self):
         out = []

@@ -10,7 +10,7 @@ import pytest
 
 import run
 from src import llm_client as L
-from src.cellplan_v2.workbook import WorkbookIndex
+from src.cellplan_v2.workbook import WorkbookIndex, percent_format
 from src.cellplan_v2.context import build_context
 from src.cellplan_v2.execute import execute, expression, PlanError, parse_date
 from src.cellplan_v2 import planner
@@ -324,10 +324,10 @@ def test_join_keeps_plain_right_aliases_without_collisions(side_tables):
 def test_malformed_plan_errors_get_repair_feedback(book,monkeypatch):
     replies=iter([plan(dict(id='c',op='cell',sheet=0,cell='C4'))]*2)
     real,calls=planner.execute,[]
-    def flaky(p,b):
+    def flaky(p,b,*rest):
         calls.append(p)
         if len(calls)==1: raise AttributeError("'list' object has no attribute 'get'")
-        return real(p,b)
+        return real(p,b,*rest)
     monkeypatch.setattr(planner,'execute',flaky)
     monkeypatch.setattr(L,'_post',lambda body,timeout:response(next(replies)))
     cache=run.TableCache();b=L.Budget()
@@ -522,3 +522,109 @@ def test_new_paid_registration_cannot_choose_legacy_identity(tmp_path):
     with pytest.raises(C.CampaignError,match='stable case keys'):
         ledger.register('development','a'*40,'b'*64,{'policy':'selective','output_tokens':1200},['x'])
     assert ledger.state['invocations']=={}
+
+
+@pytest.fixture
+def shares(tmp_path):
+    """Percent-unit figures stored as text under a % unit row, amounts as text with thousands
+    separators, fractions stored with a percent format, and the same fractions without one."""
+    wb=openpyxl.Workbook();ws=wb.active
+    ws.append(['need','unmet','partial','men','women','share','bare'])
+    ws.append([None,'%','%','dollars','dollars',None,None])
+    for row in [('any','21.4','22.4','58,176','37,117',0.25,0.25),('info','20.8','8.0','52,516','30,519',0.5,0.5),
+                ('counselling','34.1','15.9','71,104','57,842',0.125,0.125)]:
+        ws.append(list(row))
+    for r in range(3,6): ws[f'F{r}'].number_format='0.0%'
+    path=tmp_path/'shares.xlsx';wb.save(path)
+    index=WorkbookIndex(path)
+    yield index
+    index.close()
+
+
+@pytest.mark.parametrize('fmt,scaled',[('0%',True),('0.0%',True),('#,##0.00%;[Red]-#,##0.00%',True),
+                                       ('0.0"%"',False),('0.0\\%',False),('[$%-409]0.0',False),('General',False),(None,False)])
+def test_only_an_unquoted_percent_scales_a_number_format(fmt,scaled):
+    assert percent_format(fmt) is scaled
+
+
+def test_column_scales_come_from_formats_text_and_magnitude(shares):
+    assert shares.scales(0,3,5,[2,4,6,7,8])=={2:('quantity',0),4:('quantity',0),6:('share',0),7:('small',0),8:None}
+
+
+def test_figures_already_in_percent_units_are_not_multiplied_again(shares):
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:C5',columns={'need':'A','unmet':'B','partial':'C'}),
+           dict(id='f',op='filter',input='r',where={'column':'need','cmp':'ne','value':'any'}),
+           dict(id='d',op='derive',input='f',columns={'both':{'op':'add','args':[{'col':'unmet'},{'col':'partial'}]}}),
+           dict(id='s',op='sort',input='d',by=[{'column':'both','descending':True,'type':'number'}]),
+           dict(id='t',op='take',input='s',count=1),fmt={'columns':['both'],'decimals':1,'percent':True})
+    text,trace=execute(p,shares,True)
+    assert text=='50.0%' and trace[-1]['percent_corrected']==['both']
+    assert execute(p,shares,False)[0]=='50.0%'
+
+
+def test_a_ratio_of_amounts_asked_as_a_percentage_is_multiplied(shares):
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:E5',columns={'need':'A','men':'D','women':'E'}),
+           dict(id='f',op='filter',input='r',where={'column':'need','cmp':'eq','value':'counselling'}),
+           dict(id='d',op='derive',input='f',columns={'ratio':{'op':'div','args':[{'col':'women'},{'col':'men'}]}}),
+           fmt={'columns':['ratio'],'decimals':1})
+    text,trace=execute(p,shares,True)
+    assert text=='81.3' and trace[-1]['percent_corrected']==['ratio']
+    assert execute(p,shares,False)[0]=='0.8'
+    p['steps'][2]['columns']['ratio']={'op':'mul','args':[{'literal':100},p['steps'][2]['columns']['ratio']]}
+    p['format']['percent']=True
+    assert execute(p,shares,True)[0]=='81.3%'
+
+
+def test_percent_formatted_fractions_follow_the_question(shares):
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:G5',columns={'need':'A','share':'F','bare':'G'}),
+           dict(id='a',op='aggregate',input='r',metrics={'top':{'fn':'max','column':'share'},'low':{'fn':'min','column':'share'}}),
+           dict(id='d',op='derive',input='a',columns={'gap':{'op':'sub','args':[{'col':'top'},{'col':'low'}]}}),
+           fmt={'columns':['gap'],'decimals':1})
+    assert execute(p,shares,True)[0]=='37.5'
+    assert execute(p,shares,False)[0]=='0.4'
+    # Unformatted numbers within -2..2 may be shares or small percent figures: the plan's flag decides.
+    p['steps'][1]['metrics']={'top':{'fn':'max','column':'bare'},'low':{'fn':'min','column':'bare'}}
+    assert execute(p,shares,True)[0]=='0.4'
+    p['format']['percent']=True
+    assert execute(p,shares,True)[0]=='37.5%'
+
+
+def test_count_shares_scale_but_means_keep_their_units(shares):
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:C5',columns={'need':'A','unmet':'B'}),
+           dict(id='a',op='aggregate',input='r',metrics={'n':{'fn':'count'},'total':{'fn':'sum','column':'unmet'},
+                'named':{'fn':'count','where':{'column':'need','cmp':'ne','value':'any'}}}),
+           dict(id='d',op='derive',input='a',columns={'part':{'op':'div','args':[{'col':'named'},{'col':'n'}]},
+                                                   'mean':{'op':'div','args':[{'col':'total'},{'col':'n'}]}}),
+           fmt={'columns':['part','mean'],'decimals':1,'percent':True})
+    assert execute(p,shares,True)[0]=='66.7%, 25.4%'
+
+
+@pytest.mark.parametrize('query,asks',[
+    ('Thu nhập của nữ bằng bao nhiêu phần trăm so với nam?',True),
+    ('What percentage of the units are wood?',True),
+    ("Quel est l'écart (en points de pourcentage) entre les groupes ?",True),
+    ('몇 퍼센트 감소했습니까?',True),
+    ('增长了百分之几？',True),
+    ('Tỷ lệ (%) của nhóm A là bao nhiêu?',True),
+    ('Answer with only the number followed by a % sign.',True),
+    ('Doanh thu tháng 2 gấp bao nhiêu lần tháng 1?',False),
+    ('What is the ratio of the percent change for Services to that for Commodities?',False),
+    ('What is the 90th percentile of income?',False),
+    ('Which year had an unemployment rate above 5%?',False),
+])
+def test_percentage_requests_are_told_from_ratio_questions(query,asks):
+    assert planner.asks_percent(query) is asks
+
+
+def test_planned_share_is_printed_as_the_requested_percentage(shares,monkeypatch):
+    reply=plan(dict(id='r',op='read',sheet=0,range='A3:E5',columns={'need':'A','men':'D','women':'E'}),
+               dict(id='f',op='filter',input='r',where={'column':'need','cmp':'eq','value':'counselling'}),
+               dict(id='d',op='derive',input='f',columns={'ratio':{'op':'div','args':[{'col':'women'},{'col':'men'}]}}),
+               fmt={'columns':['ratio'],'decimals':1})
+    monkeypatch.setattr(L,'_post',lambda body,timeout:response(reply))
+    cache=run.TableCache();b=L.Budget()
+    query=('Thu nhập trung vị của nữ bằng bao nhiêu phần trăm so với nam? Làm tròn đến một chữ số thập phân, '
+           'chỉ trả lời bằng số, không kèm ký hiệu %.')
+    try: assert planner.answer(query,shares.path,cache,b,'raw','q')=='81.3'
+    finally: planner.close_cache(cache)
+    assert b.attempts==1 and b.diagnostics['trace'][-1]['percent_corrected']==['ratio']

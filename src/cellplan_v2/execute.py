@@ -134,6 +134,69 @@ def expression(node, row, depth=0):
     raise PlanError('unsupported operation or zero denominator')
 
 
+def expression_scale(node, scales, depth=0):
+    """Static scale (kind, e) of a derived value: kind as in WorkbookIndex.scales, plus 'count' and
+    'const', and the value equals that kind's figure times 100**e. A ratio of like figures is a share;
+    multiplying by a literal 100 raises e. None when the scale cannot be told."""
+    if depth > 8 or not isinstance(node, dict):
+        return None
+    if set(node) == {'col'}:
+        return scales.get(node['col'])
+    if set(node) == {'literal'}:
+        return ('const', 0) if type(node['literal']) in (int, float) else None
+    op, args = node.get('op'), node.get('args')
+    if op == 'if':
+        a, b = (expression_scale(node.get(k), scales, depth+1) for k in ('then', 'else'))
+        return a if a == b else None
+    if not isinstance(args, list) or not args:
+        return None
+    parts = [expression_scale(arg, scales, depth+1) for arg in args]
+    if op in {'abs', 'neg', 'round', 'number'}:
+        return parts[0]
+    if op == 'coalesce':
+        return parts[0] if all(p == parts[0] for p in parts) else None
+    if op == 'change_ratio':
+        return ('share', 0)
+    if op in {'years', 'days', 'months', 'year'}:
+        return ('quantity', 0)
+    if op not in {'add', 'sub', 'mul', 'div'} or len(parts) != 2 or None in parts:
+        return None
+    (ka, ea), (kb, eb) = parts
+    if op in {'add', 'sub'}:
+        if ea != eb: return None
+        if ka == kb: return parts[0]
+        return ('quantity', ea) if {ka, kb} == {'quantity', 'small'} else None
+    if 'const' in (ka, kb):
+        if ka == kb: return ('const', 0)
+        if op == 'div' and ka == 'const': return None
+        factor = args[0] if ka == 'const' else args[1]
+        kind, e = parts[1] if ka == 'const' else parts[0]
+        step = 1 if factor.get('literal') == 100 else -1 if factor.get('literal') == 0.01 else 0
+        return (kind, e + (step if op == 'mul' else -step))
+    if op == 'mul':
+        kinds = {ka, kb}
+        kind = ('share' if kinds == {'share'} else 'quantity' if kinds & {'quantity', 'count'}
+                else 'small' if kinds == {'small'} else None)
+        return (kind, ea + eb) if kind else None
+    if kb == 'count':
+        return ('share', ea - eb) if ka == 'count' else (ka, ea - eb)
+    if ka == 'quantity' and kb == 'share':
+        return ('quantity', ea - eb)
+    if {ka, kb} <= {'share', 'quantity', 'small', 'count'}:
+        return ('share', ea - eb)
+    return None
+
+
+def times_100(scale, flag, percent_request):
+    """Whether a numeric result is multiplied by 100: the plan's percent flag, corrected by the value's
+    scale. A share of 1 asked for as a percentage always is; a figure already in percent units, an
+    amount or a count never is; a value of unknown or ambiguous scale keeps the flag."""
+    kind, e = scale or (None, 0)
+    if kind == 'share' and e == 0 and percent_request: return True
+    if kind in {'quantity', 'count'} or (kind in {'share', 'small'} and e >= 1): return False
+    return flag
+
+
 def predicate(spec,row,depth=0):
     if depth>8 or not isinstance(spec,dict):
         raise PlanError('invalid filter')
@@ -254,9 +317,11 @@ def _combine(ids, values):
     return row
 
 
-def execute(plan,book):
+def execute(plan,book,percent_request=False):
+    """Run a validated plan. percent_request says the question asks for a percentage, so a result
+    holding a share of 1 is printed times 100 whatever the plan's percent flag says."""
     validate(plan)
-    values, traces, sorted_by = {},[],{}
+    values, traces, sorted_by, scales = {},[],{},{}
     for step in plan['steps']:
         book.check()
         op,sid = step['op'],step['id']
@@ -268,7 +333,9 @@ def execute(plan,book):
             value = book.value(step['sheet'],step['cell'])
             if value is None:
                 raise PlanError('source value unavailable')
-            rows = [{'value':value,'_sheet':book.sheet_id(step['sheet']),'_row':book.coord(step['cell'])[0]}]
+            r,c = book.coord(step['cell'])
+            rows = [{'value':value,'_sheet':book.sheet_id(step['sheet']),'_row':r}]
+            scale = {'value':book.scales(step['sheet'],r,r,[c])[c]}
             trace = {'sheet':step['sheet'],'cell':step['cell']}
         elif op=='read':
             columns = step.get('columns')
@@ -290,6 +357,8 @@ def execute(plan,book):
             label = step.get('label',next(iter(columns)))
             if label not in columns: raise PlanError('unknown label column')
             sheet = book.sheet_id(step.get('sheet'))
+            found = book.scales(sheet,r1,r2,set(positions.values()))
+            scale = {k:found[c] for k,c in positions.items()}
             previous,stack,rows = {},[],[]
             for r in range(r1,r2+1):
                 if r%100==0: book.check()
@@ -315,6 +384,7 @@ def execute(plan,book):
             trace = {'sheet':sheet,'range':step['range'],'columns':columns}
         elif op=='filter':
             rows = [r for r in source if predicate(step.get('where'),r)]
+            scale = scales[step['input']]
             trace = {'input':step['input'],'where':step.get('where')}
         elif op=='derive':
             columns = step.get('columns')
@@ -322,6 +392,9 @@ def execute(plan,book):
                 raise PlanError('derive needs columns mapping')
             if 'inputs' in step:
                 source = [_combine(step['inputs'],values)]
+                scale = {k:v for i in step['inputs'] for k,v in scales[i].items()}
+            else:
+                scale = dict(scales[step['input']])
             rows = []
             for row in source:
                 updated = dict(row)
@@ -330,6 +403,8 @@ def execute(plan,book):
                         raise PlanError('invalid derived column name')
                     updated[name] = expression(expr,updated)
                 rows.append(updated)
+            for name,expr in columns.items():
+                scale[name] = expression_scale(expr,scale)
             trace = {('inputs' if 'inputs' in step else 'input'):step.get('inputs',step.get('input')),'columns':columns}
         elif op=='aggregate':
             by = step.get('group_by',[])
@@ -379,6 +454,11 @@ def execute(plan,book):
                             out[name] = nums[n//2] if n%2 else (nums[n//2-1]+nums[n//2])/2
                         else: raise PlanError('unsupported metric')
                 rows.append(out)
+            base = scales[step['input']]
+            scale = {k:base.get(k) for k in by}
+            for name,metric in metrics.items():
+                fn = metric.get('fn') if isinstance(metric,dict) else None
+                scale[name] = ('count',0) if fn in {'count','count_distinct'} else base.get(metric.get('column')) if fn else None
             trace = {'input':step['input'],'group_by':by,'metrics':metrics}
         elif op=='sort':
             by = step.get('by')
@@ -414,6 +494,7 @@ def execute(plan,book):
                 except TypeError: raise PlanError('mixed sort types; derive a typed column first') from None
                 rows = present+[r for r in rows if absent(r[col])]
             sorted_by[sid] = [item['column'] for item in by]
+            scale = scales[step['input']]
             trace = {'input':step['input'],'by':by}
         elif op=='take':
             count = integer(step.get('count',1),1,MAX_ROWS,'count')
@@ -424,11 +505,13 @@ def execute(plan,book):
                 if not keys or not rows: raise PlanError('ties require a directly preceding sorted nonempty input')
                 last = tuple(rows[-1][k] for k in keys)
                 rows += [row for row in source[offset+count:] if tuple(row[k] for k in keys)==last]
+            scale = scales[step['input']]
             trace = {'input':step['input'],'offset':offset,'count':count,'ties':step.get('ties',False)}
         elif op=='project':
             columns = _names(step.get('columns'))
             if any(k not in r for r in source for k in columns): raise PlanError('unknown projection column')
             rows = [{k:r[k] for k in columns} for r in source]
+            scale = {k:scales[step['input']].get(k) for k in columns}
             trace = {'input':step['input'],'columns':columns}
         elif op=='union':
             parts = [values[i] for i in step['inputs']]
@@ -436,6 +519,8 @@ def execute(plan,book):
             schemas = {tuple(sorted(k for k in r if not k.startswith('_'))) for part in parts for r in part}
             if len(schemas)>1: raise PlanError('union schemas differ')
             rows = _bounded([dict(r) for part in parts for r in part])
+            first,*others = (scales[i] for i in step['inputs'])
+            scale = {k:v for k,v in first.items() if all(o.get(k)==v for o in others)}
             trace = {'inputs':step['inputs']}
         elif op=='unpivot':
             columns = step.get('columns')
@@ -452,6 +537,10 @@ def execute(plan,book):
                 if key in base or value in base: raise PlanError('unpivot names collide')
                 for col,label in columns.items(): rows.append(dict(base,**{key:label,value:row[col]}))
             _bounded(rows)
+            base = scales[step['input']]
+            kinds = [base.get(c) for c in columns]
+            scale = {k:v for k,v in base.items() if k not in columns}
+            scale.update({key:None,value:kinds[0] if all(k==kinds[0] for k in kinds) else None})
             trace = {'input':step['input'],'columns':columns,'key':key,'value':value}
         elif op=='join':
             left,right = (values[i] for i in step['inputs'])
@@ -494,18 +583,35 @@ def execute(plan,book):
                     # Plain right aliases are also kept wherever the left side lacks that name.
                     plain = {k:added[prefix+k] for k in right_columns if k not in row and k not in added}
                     rows.append(dict(row,**added,**plain))
+            left_scale,right_scale = (scales[i] for i in step['inputs'])
+            scale = dict(left_scale)
+            for k in sorted(right_columns):
+                scale[prefix+k] = right_scale.get(k)
+            for k in sorted(right_columns):
+                scale.setdefault(k,right_scale.get(k))
             trace = {'inputs':step['inputs'],'on':on,'how':how,'prefix':prefix}
         else:
             raise PlanError('unsupported operation')
         values[sid] = _bounded(rows)
+        scales[sid] = scale
         traces.append(dict(id=sid,op=op,rows=len(rows),**trace))
     result = values[plan['result']]
     if not result:
         raise PlanError('no matching evidence')
-    return format_answer(result,plan.get('format',{})),traces
+    fmt = plan.get('format',{})
+    flag = fmt.get('percent') is True
+    multiply = {k:times_100(s,flag,percent_request) for k,s in scales[plan['result']].items()}
+    text = format_answer(result,fmt,multiply)
+    printed = fmt.get('columns') or [k for k in result[0] if not k.startswith('_')]
+    corrected = [k for k in printed if multiply.get(k,flag)!=flag and any(isinstance(r[k],Decimal) for r in result)]
+    if corrected:
+        next(t for t in traces if t['id']==plan['result'])['percent_corrected'] = corrected
+    return text,traces
 
 
-def format_answer(rows,fmt):
+def format_answer(rows,fmt,multiply=None):
+    """Render result rows. multiply maps a column to whether its numbers are shown times 100; it
+    defaults to the percent flag, which alone decides whether a % sign follows."""
     allowed = {'columns','decimals','percent','suffix','prefix','separator','row_separator','date_format','trim_zeros'}
     if set(fmt)-allowed:
         raise PlanError(f'unsupported format fields {sorted(set(fmt)-allowed)[:4]}; allowed: {", ".join(sorted(allowed))}. '
@@ -522,10 +628,11 @@ def format_answer(rows,fmt):
             raise PlanError('invalid output delimiter')
     if type(fmt.get('percent',False)) is not bool or type(fmt.get('trim_zeros',True)) is not bool:
         raise PlanError('format flags must be boolean')
-    def render(value):
+    multiply = multiply or {}
+    def render(value,column):
         if value is None: raise PlanError('answer value unavailable')
         if isinstance(value,Decimal):
-            value *= 100 if fmt.get('percent') else 1
+            value *= 100 if multiply.get(column,fmt.get('percent',False)) else 1
             if decimals is not None: value = value.quantize(Decimal(1).scaleb(-decimals),rounding=ROUND_HALF_UP)
             if value==0: value = abs(value)
             text = format(value,'f')
@@ -537,4 +644,4 @@ def format_answer(rows,fmt):
             return value.strftime(pattern)
         if isinstance(value,bool): return 'true' if value else 'false'
         return str(value).strip()
-    return fmt.get('prefix','')+fmt.get('row_separator',', ').join(fmt.get('separator',', ').join(render(row[k]) for k in columns) for row in rows)+fmt.get('suffix','')
+    return fmt.get('prefix','')+fmt.get('row_separator',', ').join(fmt.get('separator',', ').join(render(row[k],k) for k in columns) for row in rows)+fmt.get('suffix','')

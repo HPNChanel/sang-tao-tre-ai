@@ -129,6 +129,18 @@ def keeps_percent_sign(query):
     return parse_instruction(query).suffix == '%' or bool(_SIGN_YES.search(query))
 
 
+_ASKS_PERCENT = re.compile(r'phần\s*trăm|\bper\s?cent(?!ile)|pour\s?cent|porcentaje|por\s+ciento|prozent|퍼센트|백분율|百分'
+                           r'|パーセント|(?:bao nhiêu|mấy|多少|几|몇)\s*[%％]|\(\s*[%％]\s*\)', re.I)
+_ASKS_RATIO = re.compile(r'bao nhiêu lần|mấy lần|gấp\s+(?:bao nhiêu|mấy)|t[ỷỉ] số|how many times|\bratio\b'
+                         r'|\btimes\s+(?:as|larger|greater|higher|more|bigger|smaller|lower|less)\b'
+                         r'|combien de fois|몇\s*배|几倍|多少倍|何倍', re.I)
+
+
+def asks_percent(query):
+    """The question wants a percentage rather than a ratio, so a computed share is shown times 100."""
+    return (bool(_ASKS_PERCENT.search(query)) or keeps_percent_sign(query)) and not _ASKS_RATIO.search(query)
+
+
 _WEIGHTED = re.compile(r'weighted\s+(?:average|mean)|trung bình (?:có )?trọng số|bình quân gia quyền'
                        r'|moyenne pondérée|가중\s*평균|加权平均', re.I)
 _PERCENT_ONLY = re.compile(r'-?\d+(?:\.\d+)?%')
@@ -212,7 +224,7 @@ def answer(query, path, cache, budget, profile='dual', qid=''):
                     continue
                 if action=='plan' and profile!='direct':
                     check_weighted(query,reply)
-                    result,trace = execute(reply,book)
+                    result,trace = execute(reply,book,asks_percent(query))
                     if places is not None:
                         rows = next((t['rows'] for t in trace if t['id']==reply['result']),None)
                         if rows != 1:
