@@ -70,6 +70,9 @@ def _base_rows(view, plan):
     if r.get("scope"):
         sc = r["scope"]
         idx = [i for i in idx if str(df.at[i, "_row_path"]).startswith(sc + " > ")] or idx
+    if r.get("exclude_paths"):
+        excluded = {i for g in _resolve_rows(view, r["exclude_paths"]) for i in g}
+        idx = [i for i in idx if i not in excluded]
     return idx
 
 
@@ -280,7 +283,7 @@ def execute(plan, tables):
             val = abs(d) if args.get("abs") else d
         else:
             val = a / b * (100 if args.get("percent") else 1)
-    elif op in ("sum", "mean", "max", "min", "count"):
+    elif op in ("sum", "mean", "max", "min", "count", "spread"):
         if groups:
             idx = [i for g in groups for i in g]
         else:
@@ -300,7 +303,8 @@ def execute(plan, tables):
                 val = max(s) if op == "max" else min(s)
             else:
                 series = pd.to_numeric(series, errors="coerce")
-                val = {"sum": series.sum(), "mean": series.mean(), "max": series.max(), "min": series.min()}[op]
+                val = {"sum": series.sum(), "mean": series.mean(), "max": series.max(), "min": series.min(),
+                       "spread": series.max() - series.min()}[op]
     elif op in ("argmax", "argmin"):
         over = args.get("over", "rows")
         sign = 1 if op == "argmax" else -1

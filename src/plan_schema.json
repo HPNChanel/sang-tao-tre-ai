@@ -54,6 +54,7 @@
      "description": "row labels or ' > ' paths, in question order; prefix 'Sheet!' to pick a row from one sheet of a stacked table"
     },
     "label_kind": {"enum": ["year"]},
+    "exclude_paths": {"type": "array", "items": {"type": "string"}},
     "scope": {
      "type": [
       "string",
@@ -130,6 +131,7 @@
     "select",
     "winner_diff",
     "percent_change",
+    "spread",
     "values",
     "sum",
     "diff",
