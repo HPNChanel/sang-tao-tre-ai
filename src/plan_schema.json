@@ -131,6 +131,7 @@
     "select",
     "winner_diff",
     "percent_change",
+    "date_diff",
     "spread",
     "values",
     "sum",
@@ -168,7 +169,8 @@
     "abs": {
      "type": "boolean"
     },
-    "metric": {"enum": ["difference", "previous_difference", "sum"]},
+    "date_unit": {"enum": ["days", "completed_years"]},
+    "metric": {"enum": ["difference", "previous_difference", "sum", "completed_years"]},
     "reverse_metric": {"type": "boolean"},
     "metric_groups": {"type": "array", "items": {"type": "object", "additionalProperties": false,
       "required": ["name", "columns"], "properties": {"name": {"type": "string"}, "columns": {"type": "array", "items": {"type": "string"}}}}},

@@ -311,7 +311,8 @@ def plan_with_confidence(query: str, tables, strict=None):
 def _plan_with_confidence(query, tables, strict):
     from .vi import is_vietnamese, translate
     from .native_comparisons import plan as native_plan
-    native = native_plan(query, tables)
+    from .calendar_ops import plan as calendar_plan
+    native = calendar_plan(query, tables) or native_plan(query, tables)
     if native is not None:
         from .plan_validate import validate
         errors = validate(native)

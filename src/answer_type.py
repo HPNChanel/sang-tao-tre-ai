@@ -21,6 +21,8 @@ def expected_type(query: str, fmt: dict) -> str:
         return "year"
     if re.search(r"\bhow many (more|less|fewer|percentage points?|percent points?)\b|\bhow much\b|\bby how much\b", low):
         return "number"
+    if re.search(r"\bhow many (?:signed )?(?:calendar )?days\b", low):
+        return "number"
     if re.search(r"\bhow many\b", low):
         return "count"
     if k in ("int", "decimal", "number"):
@@ -62,6 +64,8 @@ def plan_type(plan: dict, view=None) -> str:
         if view is not None and ret and ret in view.numeric_cols():
             return "number"
         return "label"
+    if a.get("metric") == "completed_years":
+        return "number"
     if op in ("max", "min") and view is not None and plan.get("columns") and all(c in view.date_cols() for c in plan["columns"]):
         return "date"
     return "number"

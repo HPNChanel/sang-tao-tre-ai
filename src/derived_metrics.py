@@ -98,6 +98,17 @@ def refine(plan, view, body, spec):
 
 def series(view, idx, columns, args):
     metric = args["metric"]
+    if metric == "completed_years":
+        from .calendar_ops import interval
+        if len(columns) != 2:
+            raise ValueError("completed age needs birth and event columns")
+        values = {}
+        for i in idx:
+            try:
+                values[i] = interval(view.df.at[i, columns[0]], view.df.at[i, columns[1]], "completed_years")
+            except ValueError:
+                values[i] = float("nan")
+        return pd.Series(values, dtype=float)
     if (metric == "difference" and len(columns) != 2) or (metric == "previous_difference" and len(columns) != 1) or not columns:
         raise ValueError("derived metric operand count does not match its operation")
     frame = view.df.loc[idx, columns].apply(pd.to_numeric, errors="coerce")

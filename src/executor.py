@@ -268,6 +268,14 @@ def execute(plan, tables):
         val = [df.at[i, "_label"] for i in idx]
         if len(val) == 1:
             val = val[0]
+    elif op == "date_diff":
+        from .calendar_ops import interval
+        if not groups or not cols or any(len(g) != 1 for g in groups):
+            raise PlanError("calendar difference needs exact date cells")
+        dates = [df.at[g[0], c] for g in groups for c in cols]
+        if len(dates) != 2:
+            raise PlanError("calendar difference needs exactly two date cells")
+        val = interval(dates[0], dates[1], args.get("date_unit", "days"))
     elif op in ("lookup", "values"):
         vals = cell_list()
         if plan["format"]["kind"] == "date" or (vals and isinstance(vals[0], (dt.date, dt.datetime))):
