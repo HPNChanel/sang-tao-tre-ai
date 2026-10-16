@@ -109,6 +109,25 @@ def test_aggregate_proposal_cannot_evade_named_operand_checks(tables, monkeypatc
     assert b.decision["source"] == "rule" and len(calls) == 2
 
 
+def test_footnoted_paths_use_resolved_identity(tables):
+    tables[0].df.loc[0, "Place"] = "Bay (1)"
+    tables[0].df.loc[0, "_row_path"] = "Bay (1)"
+    p = plan("Bay (1)")
+    assert not R.reference_errors(p, tables)
+    assert not R.semantic_errors(p, "Bay in 2031. Answer with an integer.", tables)
+
+
+def test_excluded_leaf_is_not_the_required_operand(tables):
+    p = plan("Hill"); p.update(op="max")
+    p["rows"]["exclude_paths"] = ["Bay"]
+    assert not R.semantic_errors(p, "Excluding Bay, find the maximum 2031 value.", tables)
+
+
+def test_population_query_does_not_require_every_translated_name_to_match(tables):
+    p = plan(); p.update(op="spread"); p["rows"]["paths"] = ["Bay", "Hill"]
+    assert not R.semantic_errors(p, "Parmi les groupes (Bay, Colline), find the largest gap in 2031.", tables)
+
+
 def test_explicit_affixes_are_preserved_without_erasing_decimal_precision():
     p = plan(); p["format"] = {"kind": "decimal", "decimals": 1}
     R.apply_format(p, "Compute a statistic. Answer with only the number.")

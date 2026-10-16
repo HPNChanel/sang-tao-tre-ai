@@ -105,15 +105,19 @@ def semantic_errors(plan, query, tables=None):
     if tables:
         view = _view_for(plan, tables)
         rows = plan.get("rows", {})
-        named = {str(label) for label in view.df["_label"] if _fold(label)
-                 and f" {_fold(label)} " in f" {low} "}
-        if named:
-            selected = {p.split("!")[-1].split(" > ")[-1] for p in rows.get("paths", [])}
-            if rows.get("scope"):
-                selected.add(rows["scope"].split(" > ")[-1])
+        # Excluded rows and named parent sections are not requested leaf
+        # operands. Resolve paths through the same footnote-aware executor
+        # mapping before comparing labels; raw path text is not a row identity.
+        operand_text = re.sub(r"\b(?:excluding|except|other than|not including|khong tinh|khong bao gom)\b[^,;?)]*", " ", low)
+        named = {_fold(label) for label in view.df["_label"] if _fold(label)
+                 and f" {_fold(label)} " in f" {operand_text} "}
+        population = bool(re.search(r"\b(?:among|within|across|all|every|each|trong|parmi|entre les|greatest|largest|smallest|highest|lowest|maximum|minimum|nhat)\b", operand_text))
+        if named and not population:
+            indices = [i for group in _resolve_rows(view, rows.get("paths", [])) for i in group]
+            selected = {_fold(view.df.at[i, "_label"]) for i in indices}
             for clause in rows.get("where", []):
                 if clause.get("column") == view.label_name and clause.get("op") == "==":
-                    selected.add(str(clause.get("value")))
+                    selected.add(_fold(clause.get("value")))
             if selected and not selected <= named:
                 errors.append("selected row contradicts named operands")
         references = list(columns) + [args.get("by"), args.get("return")]
@@ -133,7 +137,7 @@ def semantic_errors(plan, query, tables=None):
                     found = False
                 if not found and plan["op"] != "compare":
                     errors.append("explicit condition binding differs: " + str(column))
-        if named:
+        if named and not population:
             explicit_columns = [c for c in view.columns if f" {_fold(c)} " in f" {low} "]
             if len(explicit_columns) == 1 and explicit_columns[0] not in references:
                 errors.append("result measure contradicts explicit column")
