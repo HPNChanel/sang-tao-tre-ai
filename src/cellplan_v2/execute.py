@@ -69,7 +69,7 @@ def expression(node, row, depth=0):
         return expression(node[branch], row, depth+1)
     if set(node)=={'col'}:
         if node['col'] not in row:
-            raise PlanError('unknown expression column')
+            raise PlanError(f'unknown expression column {node["col"]!r}; this step has {_visible(row)}')
         return row[node['col']]
     if set(node)=={'literal'}:
         value = node['literal']
@@ -96,6 +96,7 @@ def expression(node, row, depth=0):
         if op=='months': return Decimal((b.year-a.year)*12+b.month-a.month-(b.day<a.day))
         return Decimal(b.year-a.year-((b.month,b.day)<(a.month,a.day)))
     if op=='year' and len(vals)==1: return Decimal(parse_date(vals[0],locale).year)
+    if op=='month' and len(vals)==1: return parse_date(vals[0],locale).strftime('%Y-%m')
     numbers = [numeric(v,locale) for v in vals]
     if op=='abs' and len(numbers)==1: return abs(numbers[0])
     if op=='neg' and len(numbers)==1: return -numbers[0]
@@ -126,8 +127,10 @@ def predicate(spec,row,depth=0):
         # Validate every branch even when its truth value would short circuit.
         values = [predicate(item,row,depth+1) for item in items]
         return all(values) if key=='all' else any(values)
-    if set(spec)-{'column','cmp','value','locale','normalize'} or spec.get('column') not in row:
-        raise PlanError('unknown filter column/field')
+    if set(spec)-{'column','cmp','value','locale','normalize'}:
+        raise PlanError('unknown filter field')
+    if spec.get('column') not in row:
+        raise PlanError(f'unknown filter column {spec.get("column")!r}; this step has {_visible(row)}')
     a, op, b = row[spec['column']],spec.get('cmp'),spec.get('value')
     if op=='is_null': return a is None or a==''
     if op=='not_null': return a is not None and a!=''
@@ -157,6 +160,10 @@ def predicate(spec,row,depth=0):
     except TypeError:
         raise PlanError('filter types differ; derive a typed column first') from None
     raise PlanError('unsupported filter comparator')
+
+
+def _visible(row):
+    return ', '.join(sorted(k for k in row if not k.startswith('_')))[:200] or 'no columns'
 
 
 def _bounded(rows):
@@ -190,7 +197,8 @@ def validate(plan):
             raise PlanError(f'unexpected fields for {op}')
         inputs = [] if op in {'read','cell'} else (step.get('inputs') if op in {'union','join'} else [step.get('input')])
         if not isinstance(inputs,list) or any(not isinstance(i,str) or i not in depths for i in inputs):
-            raise PlanError('step inputs must refer to preceding steps')
+            raise PlanError(f'step {sid!r} inputs must name earlier step ids; {op} takes '+
+                            ('inputs:[id,id]' if op in {'union','join'} else 'one input id; combine two steps with join'))
         if op=='join' and len(inputs)!=2: raise PlanError('join needs two inputs')
         if op=='union' and not 1<=len(inputs)<=3: raise PlanError('union needs 1..3 inputs')
         depth = 1+max((depths[i] for i in inputs),default=0)
@@ -232,8 +240,9 @@ def execute(plan,book):
                 raise PlanError('invalid read range/columns') from None
             if None in (r1,c1,r2,c2) or r1<1 or c1<1 or r2<r1 or c2<c1 or r2>1048576 or c2>16384:
                 raise PlanError('invalid read bounds')
-            if r2-r1+1>MAX_ROWS or any(not c1<=c<=c2 for c in positions.values()):
-                raise PlanError('read bounds exceed range or record limit')
+            # The range bounds rows; explicit column letters may lie outside its columns.
+            if r2-r1+1>MAX_ROWS:
+                raise PlanError('read exceeds the record limit')
             fill = step.get('fill',[])
             if not isinstance(fill,list) or any(k not in columns for k in fill):
                 raise PlanError('fill needs mapped columns')
@@ -296,16 +305,27 @@ def execute(plan,book):
             for key,records in groups.items():
                 out = dict(zip(by,key))
                 for name,metric in metrics.items():
-                    if not isinstance(metric,dict) or set(metric)-{'fn','column','locale'}:
-                        raise PlanError('invalid metric')
-                    fn,col = metric.get('fn'),metric.get('column')
-                    if col is not None and any(col not in r for r in records):
-                        raise PlanError('unknown metric column')
-                    raw = [r[col] for r in records if r[col] is not None and r[col]!=''] if col is not None else []
-                    if fn=='count': out[name] = Decimal(len(raw) if col is not None else len(records))
+                    if not isinstance(metric,dict) or set(metric)-{'fn','column','locale','where','weight'}:
+                        raise PlanError('invalid metric fields')
+                    fn,col,weight,locale = metric.get('fn'),metric.get('column'),metric.get('weight'),metric.get('locale','en')
+                    for c in (col,weight):
+                        if c is not None and any(c not in r for r in records):
+                            raise PlanError(f'unknown metric column {c!r}; input has {_visible(records[0])}')
+                    if (fn=='weighted_mean') != (weight is not None) or (fn=='weighted_mean' and col is None):
+                        raise PlanError('weighted_mean needs column (values) and weight; weight is only for weighted_mean')
+                    # A metric-level where is a conditional aggregate (SUMIFS-style) over this group.
+                    chosen = [r for r in records if 'where' not in metric or predicate(metric['where'],r)]
+                    raw = [r[col] for r in chosen if r[col] is not None and r[col]!=''] if col is not None else []
+                    if fn=='count': out[name] = Decimal(len(raw) if col is not None else len(chosen))
                     elif fn=='count_distinct': out[name] = Decimal(len(set(raw)))
+                    elif fn=='weighted_mean':
+                        pairs = [(numeric(r[col],locale),numeric(r[weight],locale)) for r in chosen
+                                 if r[col] not in (None,'') and r[weight] not in (None,'')]
+                        total = sum((w for _,w in pairs),Decimal(0))
+                        if not pairs or total==0: raise PlanError('weighted_mean has no observations or zero total weight')
+                        out[name] = sum((v*w for v,w in pairs),Decimal(0))/total
                     else:
-                        nums = [numeric(v,metric.get('locale','en')) for v in raw]
+                        nums = [numeric(v,locale) for v in raw]
                         if not nums: raise PlanError('aggregate has no numeric observations')
                         if fn=='sum': out[name] = sum(nums,Decimal(0))
                         elif fn in {'mean','average'}: out[name] = sum(nums,Decimal(0))/len(nums)
@@ -382,27 +402,45 @@ def execute(plan,book):
             trace = {'input':step['input'],'columns':columns,'key':key,'value':value}
         elif op=='join':
             left,right = (values[i] for i in step['inputs'])
-            on = step.get('on')
-            if not isinstance(on,dict) or not 1<=len(on)<=8:
-                raise PlanError('join on maps left columns to right columns')
             how,prefix = step.get('how','inner'),step.get('prefix','r_')
-            if how not in {'inner','left'} or not isinstance(prefix,str) or len(prefix)>16:
+            if how not in {'inner','left','cross'} or not isinstance(prefix,str) or len(prefix)>16:
                 raise PlanError('invalid join mode/prefix')
-            lookup = {}
+            on = step.get('on',{} if how=='cross' else None)
+            if how=='cross':
+                if on!={}: raise PlanError('cross join takes no on keys')
+                if len(left)*len(right)>MAX_ROWS: raise PlanError('cross join record limit')
+            elif not isinstance(on,dict) or not 1<=len(on)<=8:
+                raise PlanError('join on maps left aliases to right aliases, e.g. {"code":"item_code"}')
             right_columns = {k for row in right for k in row if not k.startswith('_')}
-            for row in right:
-                if any(k not in row or row[k] is None for k in on.values()): raise PlanError('right join key missing')
-                key = tuple(row[k] for k in on.values())
-                if key in lookup: raise PlanError('right join key is not unique')
+            left_columns = {k for row in left for k in row if not k.startswith('_')}
+            unknown = [k for k in on if left and k not in left_columns]+[k for k in on.values() if right and k not in right_columns]
+            if unknown:
+                raise PlanError(f'unknown join key {unknown[0]!r}; left has {", ".join(sorted(left_columns))[:150]}; '
+                                f'right has {", ".join(sorted(right_columns))[:150]}')
+            def join_key(row,keys):
+                found = tuple(row.get(k) for k in keys)
+                if any(v is None or v=='' for v in found): return None
+                return tuple(v.strip() if isinstance(v,str) else v for v in found)
+            lookup = {}
+            for row in (right if how!='cross' else []):
+                key = join_key(row,list(on.values()))
+                if key is None: continue  # blank keys never match: titles, gaps, notes
+                if key in lookup: raise PlanError('right join key is not unique; use composite keys')
                 lookup[key] = row
             rows = []
             for row in left:
-                if any(k not in row for k in on): raise PlanError('left join key missing')
-                match = lookup.get(tuple(row[k] for k in on))
-                if match is None and how=='inner': continue
-                added = {prefix+k:(match.get(k) if match else None) for k in right_columns}
-                if set(row)&set(added): raise PlanError('join column collision')
-                rows.append(dict(row,**added))
+                if how=='cross':
+                    matches = right
+                else:
+                    match = lookup.get(join_key(row,list(on)))
+                    if match is None and how=='inner': continue
+                    matches = [match]
+                for match in matches:
+                    added = {prefix+k:(match.get(k) if match else None) for k in right_columns}
+                    if set(row)&set(added): raise PlanError('join column collision; choose another prefix')
+                    # Plain right aliases are also kept wherever the left side lacks that name.
+                    plain = {k:added[prefix+k] for k in right_columns if k not in row and k not in added}
+                    rows.append(dict(row,**added,**plain))
             trace = {'inputs':step['inputs'],'on':on,'how':how,'prefix':prefix}
         else:
             raise PlanError('unsupported operation')

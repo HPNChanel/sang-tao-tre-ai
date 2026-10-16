@@ -22,6 +22,13 @@ def display(book, item):
         value = {'n': str(value)}
     elif isinstance(value, (dt.date, dt.datetime)):
         value = {'date': value.isoformat()[:10]}
+    elif isinstance(value, dt.time):
+        # Excel serials below one day load as clock times.
+        value = {'time': value.isoformat()}
+    elif isinstance(value, dt.timedelta):
+        value = {'duration_seconds': str(Decimal(str(value.total_seconds())))}
+    elif value is not None and not isinstance(value, (str, bool)):
+        value = str(value)
     fields = {}
     if item['formula']:
         fields['f'] = item['formula']
@@ -72,6 +79,51 @@ def structure_hints(book):
     return hints
 
 
+def _split(points, axis):
+    """Partition occupied coordinates where a whole row/column gap separates them."""
+    order = sorted({p[axis] for p in points})
+    cuts = [b for a, b in zip(order, order[1:]) if b > a + 1]
+    if not cuts:
+        return [points]
+    parts = [[] for _ in range(len(cuts) + 1)]
+    for p in points:
+        parts[sum(p[axis] >= cut for cut in cuts)].append(p)
+    return parts
+
+
+def _xy_cut(points, depth=0):
+    for axis in (0, 1):
+        parts = _split(points, axis)
+        if len(parts) > 1 and depth < 6:
+            return [block for part in parts for block in _xy_cut(part, depth + 1)]
+    return [points]
+
+
+def table_blocks(book, limit=16, max_cells=200000):
+    """Geometry only: rectangles separated by fully empty rows or columns.
+
+    A catalog beside a ledger, or a note under a table, becomes its own block.
+    """
+    cached = getattr(book, '_table_blocks', None)
+    if cached is not None:
+        return cached
+    blocks = []
+    for sheet in book.sheets:
+        book.check()
+        if sheet['cells'] > max_cells:
+            continue
+        points = book.db.execute('SELECT r,c FROM cells WHERE sheet=?', (sheet['id'],)).fetchall()
+        if not points:
+            continue
+        for part in sorted(_xy_cut(points), key=lambda x: (min(p[0] for p in x), min(p[1] for p in x))):
+            r1, r2 = min(p[0] for p in part), max(p[0] for p in part)
+            c1, c2 = min(p[1] for p in part), max(p[1] for p in part)
+            blocks.append({'sheet': sheet['id'], 'range': f'{get_column_letter(c1)}{r1}:{get_column_letter(c2)}{r2}',
+                           'cells': len(part)})
+    book._table_blocks = blocks[:limit] if len(blocks) > 1 else []
+    return book._table_blocks
+
+
 def build_context(book, query, *, dual=False, max_bytes=15000, regions=None):
     """Full data when small; otherwise retain headers/tails/hits and name omissions.
 
@@ -80,11 +132,15 @@ def build_context(book, query, *, dual=False, max_bytes=15000, regions=None):
     """
     summary = book.summary()
     result = {'sheets': summary, 'complete': False, 'views': []}
+    blocks = table_blocks(book)
+    if blocks:
+        result['table_blocks_untrusted'] = blocks
     if dual:
         result['structure_hints_untrusted'] = structure_hints(book)
     base_bytes = len(compact(result).encode('utf-8'))
     if base_bytes >= max_bytes // 2:
         result.pop('structure_hints_untrusted', None)
+        result.pop('table_blocks_untrusted', None)
         for item in summary:
             item['merges'] = item.get('merges', [])[:16]
         base_bytes = len(compact(result).encode('utf-8'))

@@ -120,6 +120,157 @@ def test_complete_context_keeps_cell_and_formula_metadata(book):
     assert context['structure_hints_untrusted']
 
 
+@pytest.fixture
+def side_tables(tmp_path):
+    """Receipts in A:D, a titled price catalog in K:M of the same sheet (rows do not correspond)."""
+    wb=openpyxl.Workbook();ws=wb.active
+    ws['A1']='receipts';ws['K2']='catalog'
+    rows=[('Date','Site','Code','Qty'),('2025-01-05','North','P1',2),('2025-02-07','North','P2',3),
+          ('2025-02-09','South','P1',4),('2025-03-01','North','P1',1)]
+    for i,row in enumerate(rows,start=2):
+        for col,value in zip('ABCD',row): ws[f'{col}{i}']=value
+    for i,row in enumerate([('Kind','Price','Code'),('Wood',5,'P1'),('Stone',7,'P2')],start=3):
+        for col,value in zip('KLM',row): ws[f'{col}{i}']=value
+    path=tmp_path/'side.xlsx';wb.save(path)
+    index=WorkbookIndex(path)
+    yield index
+    index.close()
+
+
+def test_side_by_side_tables_are_separate_geometric_blocks(side_tables,book):
+    from src.cellplan_v2.context import table_blocks
+    assert [b['range'] for b in table_blocks(side_tables)]==['A1:D6','K2:M5']
+    assert build_context(side_tables,'Total?')['table_blocks_untrusted'][1]=={'sheet':0,'range':'K2:M5','cells':10}
+    assert 'table_blocks_untrusted' not in build_context(book,'Value?') or len(table_blocks(book))>1
+
+
+def test_side_by_side_lookup_ignores_blank_title_keys(side_tables):
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:D6',columns={'date':'A','site':'B','code':'C','qty':'D'}),
+           dict(id='c',op='read',sheet=0,range='K2:M5',columns={'kind':'K','price':'L','code':'M'}),
+           dict(id='j',op='join',inputs=['r','c'],on={'code':'code'}),
+           dict(id='f',op='filter',input='j',where={'column':'site','cmp':'eq','value':'North'}),
+           dict(id='d',op='derive',input='f',columns={'value':{'op':'mul','args':[{'col':'qty'},{'col':'r_price'}]}}),
+           dict(id='a',op='aggregate',input='d',metrics={'total':{'fn':'sum','column':'value'}}))
+    assert execute(p,side_tables)[0]=='36'
+    # Column letters outside the range's own columns still read the requested rows.
+    p['steps'][1]['range']='K2:K5'
+    assert execute(p,side_tables)[0]=='36'
+
+
+def test_conditional_metrics_and_cross_join_combine_periods(side_tables):
+    month=lambda m:{'column':'month','cmp':'eq','value':m}
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:D6',columns={'date':'A','site':'B','code':'C','qty':'D'}),
+           dict(id='m',op='derive',input='r',columns={'month':{'op':'month','args':[{'col':'date'}]}}),
+           dict(id='a',op='aggregate',input='m',metrics={'jan':{'fn':'sum','column':'qty','where':month('2025-01')},
+                                                         'feb':{'fn':'sum','column':'qty','where':month('2025-02')}}),
+           dict(id='d',op='derive',input='a',columns={'change':{'op':'sub','args':[{'col':'feb'},{'col':'jan'}]}}),
+           fmt={'columns':['change']})
+    assert execute(p,side_tables)[0]=='5'
+    q=plan(dict(id='r',op='read',sheet=0,range='A3:D6',columns={'site':'B','qty':'D'}),
+           dict(id='n',op='filter',input='r',where={'column':'site','cmp':'eq','value':'North'}),
+           dict(id='s',op='filter',input='r',where={'column':'site','cmp':'eq','value':'South'}),
+           dict(id='na',op='aggregate',input='n',metrics={'north':{'fn':'sum','column':'qty'}}),
+           dict(id='sa',op='aggregate',input='s',metrics={'south':{'fn':'sum','column':'qty'}}),
+           dict(id='x',op='join',inputs=['na','sa'],how='cross'),
+           dict(id='d',op='derive',input='x',columns={'gap':{'op':'sub','args':[{'col':'north'},{'col':'r_south'}]}}),
+           fmt={'columns':['gap']})
+    assert execute(q,side_tables)[0]=='2'
+
+
+def test_weighted_mean_uses_value_times_weight(side_tables):
+    p=plan(dict(id='r',op='read',sheet=0,range='K4:M5',columns={'price':'L','code':'M'}),
+           dict(id='w',op='read',sheet=0,range='C3:D6',columns={'code':'C','qty':'D'}),
+           dict(id='j',op='join',inputs=['w','r'],on={'code':'code'}),
+           dict(id='a',op='aggregate',input='j',metrics={'m':{'fn':'weighted_mean','column':'r_price','weight':'qty'}}),
+           fmt={'decimals':2})
+    assert execute(p,side_tables)[0]=='5.60'
+    for metric in ({'fn':'mean','column':'r_price','weight':'qty'},{'fn':'sum','weight':'qty'},
+                   {'fn':'weighted_mean','weight':'qty'},{'fn':'weighted_mean','column':'r_price'}):
+        p['steps'][3]['metrics']['m']=metric
+        with pytest.raises(PlanError,match='weighted_mean'): execute(p,side_tables)
+
+
+def test_join_keeps_plain_right_aliases_without_collisions(side_tables):
+    # L (price) is deliberately aliased as site: the left site keeps its name, the right one is r_site.
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:D6',columns={'site':'B','code':'C','qty':'D'}),
+           dict(id='c',op='read',sheet=0,range='K2:M5',columns={'kind':'K','site':'L','code':'M'}),
+           dict(id='j',op='join',inputs=['r','c'],on={'code':'code'}),
+           dict(id='f',op='filter',input='j',where={'all':[{'column':'kind','cmp':'eq','value':'Wood'},
+                                                           {'column':'site','cmp':'eq','value':'North'}]}),
+           dict(id='d',op='derive',input='f',columns={'value':{'op':'mul','args':[{'col':'qty'},{'col':'r_site'}]}}),
+           dict(id='a',op='aggregate',input='d',metrics={'total':{'fn':'sum','column':'value'}}))
+    assert execute(p,side_tables)[0]=='15'
+
+
+def test_malformed_plan_errors_get_repair_feedback(book,monkeypatch):
+    replies=iter([plan(dict(id='c',op='cell',sheet=0,cell='C4'))]*2)
+    real,calls=planner.execute,[]
+    def flaky(p,b):
+        calls.append(p)
+        if len(calls)==1: raise AttributeError("'list' object has no attribute 'get'")
+        return real(p,b)
+    monkeypatch.setattr(planner,'execute',flaky)
+    monkeypatch.setattr(L,'_post',lambda body,timeout:response(next(replies)))
+    cache=run.TableCache();b=L.Budget()
+    try: assert planner.answer('What is the total?',book.path,cache,b,'raw','q')=='0.3'
+    finally: planner.close_cache(cache)
+    assert b.attempts==2 and b.diagnostics['status']=='executed'
+
+
+def test_unknown_columns_name_the_available_aliases(side_tables):
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:D6',columns={'site':'B','qty':'D'}),
+           dict(id='d',op='derive',input='r',columns={'x':{'op':'mul','args':[{'col':'amount'},{'literal':2}]}}))
+    with pytest.raises(PlanError,match="'amount'.*qty, site"): execute(p,side_tables)
+
+
+@pytest.mark.parametrize('query,places',[
+    ('Dựa trên sổ tính, tổng là bao nhiêu? Chỉ ghi số nguyên.',0),
+    ('Dựa trên sổ tính, trung bình là bao nhiêu? Ghi đúng 2 chữ số thập phân.',2),
+    ('Using only the workbook, what is the total? Exclude absences; return an integer.',0),
+    ('What is the mean? Return two decimal places.',2),
+    ('Which sites? Answer with the names separated by a comma and one space.',None),
+    ('Liệt kê các số nguyên, cách nhau bởi dấu phẩy.',None),
+    ('Who is youngest? Answer with only the last name.',None),
+])
+def test_requested_single_number_is_read_from_the_question(query,places):
+    assert planner.requested_number(query)==places
+
+
+def test_single_number_questions_reject_lists_and_apply_precision(side_tables,monkeypatch):
+    rows=plan(dict(id='r',op='read',sheet=0,range='A3:D6',columns={'qty':'D'}),fmt={'columns':['qty']})
+    total=plan(dict(id='r',op='read',sheet=0,range='A3:D6',columns={'qty':'D'}),
+               dict(id='a',op='aggregate',input='r',metrics={'m':{'fn':'mean','column':'qty'}}))
+    replies=iter([rows,total]);feedback=[]
+    def post(body,timeout):
+        sent=json.loads(body)['messages'];feedback.append(sent[-1]['content'] if len(sent)>2 else '')
+        return response(next(replies))
+    monkeypatch.setattr(L,'_post',post)
+    cache=run.TableCache();b=L.Budget()
+    try: assert planner.answer('What is the mean quantity? Return two decimal places.',side_tables.path,cache,b,'raw','q')=='2.50'
+    finally: planner.close_cache(cache)
+    assert b.attempts==2 and 'has 4 rows' in feedback[1]
+
+
+def test_clock_time_cells_render_as_json_context(tmp_path):
+    wb=openpyxl.Workbook();ws=wb.active
+    ws.append(['Shift','Start']);ws.append(['Early',dt.time(8,30)])
+    path=tmp_path/'times.xlsx';wb.save(path)
+    index=WorkbookIndex(path)
+    try:
+        context=build_context(index,'When does Early start?')
+        assert context['complete'] and context['views'][0]['rows'][1]['B']['v']=={'time':'08:30:00'}
+    finally: index.close()
+
+
+def test_internal_v2_error_is_recorded_not_raised(book,monkeypatch):
+    def broken(*a,**k): raise TypeError('unexpected cell type')
+    monkeypatch.setattr(planner,'build_context',broken)
+    cache=run.TableCache();b=L.Budget()
+    try: assert planner.answer('Total?',book.path,cache,b,'raw','q') is None
+    finally: planner.close_cache(cache)
+    assert b.diagnostics['status']=='index_or_context_error' and b.diagnostics['error'].startswith('TypeError')
+
+
 def test_unpivot_limit_checked_before_allocating(book,monkeypatch):
     import src.cellplan_v2.execute as engine
     monkeypatch.setattr(engine,'MAX_ROWS',3)

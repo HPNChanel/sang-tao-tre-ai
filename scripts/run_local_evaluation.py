@@ -1,5 +1,6 @@
 """Run frozen, answer-free 20-question batches; do not print predictions."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import csv
 import hashlib
 import json
@@ -44,6 +45,8 @@ def main():
     parser.add_argument("--no-key", action="store_true")
     parser.add_argument('--solver-profile',choices=('legacy','direct','raw','dual'),default='legacy')
     parser.add_argument('--model',default='qwen/qwen3.7-flash')
+    parser.add_argument("--parallel", type=int, default=1, choices=range(1, 7),
+                        help="20-question batches run at once inside this single ledger owner")
     args = parser.parse_args()
     control, source, dataset, output = map(lambda p: Path(p).resolve(),
                                           (args.control, args.source, args.dataset, args.output))
@@ -74,7 +77,8 @@ def main():
     if args.model!=C.MODEL: configuration['model'] = args.model
     with C.exclusive_ledger(control / "ledger.json"):
         ledger = C.Ledger(control / "ledger.json")
-        for start in range(0, len(queries), 20):
+
+        def run_batch(start):
             batch = queries[start:start + 20]
             batch_dir = output / f"batch-{start // 20:03}"
             inputs, outputs = batch_dir / "input", batch_dir / "output"
@@ -126,24 +130,48 @@ def main():
                 rows = list(csv.reader(handle))
             if not rows or rows[0] != ["id", "answer"] or any(len(r) != 2 for r in rows[1:]) or [r[0] for r in rows[1:]] != expected_ids:
                 raise SystemExit("solver output violates the CSV contract")
-            all_rows.extend(rows[1:])
             receipt = {"index": start // 20, "invocation": invocation, "input_sha256": input_sha,
                        "source_sha": args.source_sha, "configuration": configuration,
                        "questions": len(batch), "elapsed_seconds": elapsed,
                        "exit_code": code, "timed_out": timed_out,
                        "cost": ledger.totals(run=invocation), "csv_sha256": hashlib.sha256((outputs / "submission.csv").read_bytes()).hexdigest()}
             C.atomic_json(batch_dir / "receipt.json", receipt)
-            receipts.append(receipt)
             print(json.dumps({"batch": start // 20, "questions": len(batch), "exit_code": code,
                               "seconds": round(elapsed, 3), "cost": receipt["cost"]}), flush=True)
-            if code != 0 or ledger.state["halt_reason"]:
-                raise SystemExit("evaluation stopped; preserve partial receipts")
+            return rows[1:], receipt
+
+        # Batches share this process's ledger lock; no batch starts after a failure or halt.
+        stopped, failures = threading.Event(), []
+
+        def guarded(start):
+            if stopped.is_set():
+                return None
+            try:
+                outcome = run_batch(start)
+            except BaseException as error:  # includes SystemExit from the contract checks
+                failures.append(error)
+                stopped.set()
+                return None
+            if outcome[1]["exit_code"] != 0 or ledger.state["halt_reason"]:
+                stopped.set()
+            return outcome
+
+        with ThreadPoolExecutor(max_workers=args.parallel) as pool:
+            outcomes = list(pool.map(guarded, range(0, len(queries), 20)))
+        if failures:
+            raise failures[0]
+        if stopped.is_set():
+            raise SystemExit("evaluation stopped; preserve partial receipts")
+        for rows, receipt in outcomes:
+            all_rows.extend(rows)
+            receipts.append(receipt)
         with (output / "submission.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(["id", "answer"])
             writer.writerows(all_rows)
         result = {"source_sha": args.source_sha, "configuration": configuration,
                   "questions": len(queries), "batches": receipts, "platform": sys.platform,
+                  "parallel_batches": args.parallel,
                   "adapter": "transport and question identity only; no goldens supplied",
                   "provider_credential_supplied_to_solver": False}
         C.atomic_json(output / "receipt.json", result)
