@@ -130,6 +130,14 @@ def _empty(v):
     return v is None or (isinstance(v, str) and not v.strip())
 
 
+def _missing(v):
+    """Missing/suppressed statistical cells, including footnote-only markers."""
+    if _empty(v):
+        return True
+    return isinstance(v, str) and (v.strip().lower() in NA_TOKENS
+                                  or re.fullmatch(r"\(-\d+-\)", v.strip()) is not None)
+
+
 def _is_value(v):
     return to_number(v) is not None or isinstance(v, (_dt.date, _dt.datetime))
 
@@ -186,6 +194,10 @@ def _row_kind(g, r, vmerge, ncols, lc):
             return "note"
         return "section"
     has_val = any(_is_value(v) for v in vals)
+    # A labelled row of suppression markers is still a body row. Treating it
+    # as a header splits the table and discards the schema for subsequent rows.
+    if not _empty(label) and vals and all(_missing(v) for v in vals):
+        return "data"
     label_empty = _empty(label) or ((r, lc) in vmerge and r > 0 and g[r - 1][lc] == label
                                     and (not has_val or all(_is_year(v) or isinstance(v, str) for v in vals)))
     if label_empty:
@@ -335,7 +347,7 @@ def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
             v = g[b][c]
             num = to_number(v)
             rec[n] = num if num is not None else (
-                None if _empty(v) or (isinstance(v, str) and v.strip().lower() in NA_TOKENS) else v)
+                None if _missing(v) else v)
         recs.append(rec)
     df = pd.DataFrame(recs)
     for n in names:  # make numeric columns numeric
