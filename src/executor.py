@@ -39,7 +39,9 @@ def _resolve_rows(view, paths):
         m = df.index[(df["_row_path"] == p) & ((df["_sheet"] == sheet) if sheet else True)].tolist()
         if not m:
             leaf = strip_footnotes(p.split(" > ")[-1])
-            m = df.index[df["_label"] == leaf].tolist()[:1]
+            m = df.index[df["_label"] == leaf].tolist()
+            if len(m) > 1:
+                raise PlanError(f"row label is ambiguous: {p}")
         if not m:
             raise PlanError(f"row not found: {p}")
         groups.append(m)
@@ -69,7 +71,9 @@ def _base_rows(view, plan):
         idx = [i for i in idx if df.at[i, "_sheet"] == t["sheet"]]
     if r.get("scope"):
         sc = r["scope"]
-        idx = [i for i in idx if str(df.at[i, "_row_path"]).startswith(sc + " > ")] or idx
+        idx = [i for i in idx if str(df.at[i, "_row_path"]).startswith(sc + " > ")]
+        if not idx:
+            raise PlanError("named scope has no descendant rows")
     if r.get("exclude_paths"):
         excluded = {i for g in _resolve_rows(view, r["exclude_paths"]) for i in g}
         idx = [i for i in idx if i not in excluded]
@@ -105,6 +109,8 @@ def _apply_where(view, idx, where):
             v = df.at[i, col]
             if w.get("value_column"):
                 val = df.at[i, w["value_column"]]
+                if pd.isna(val):
+                    continue
             if op == "year==":
                 ok = isinstance(v, (dt.date, dt.datetime)) and v.year == int(val)
             elif op == "digits==":
@@ -227,11 +233,15 @@ def execute(plan, tables):
 
     if args.get("metric"):
         from .derived_metrics import series
+        if op not in {"max", "min", "argmax", "argmin"}:
+            raise PlanError("derived metrics require an extrema reducer")
         if args.get("over") == "column_groups":
             if len(groups) != 1 or len(groups[0]) != 1:
                 raise PlanError("derived column groups need one exact row")
             vals = {g["name"]: series(view, groups[0], g["columns"], args).iloc[0]
                     for g in args["metric_groups"]}
+            if len(vals) != len(args["metric_groups"]):
+                raise PlanError("duplicate derived group labels")
             labels = {k: k for k in vals}
         else:
             idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))

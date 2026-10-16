@@ -45,7 +45,9 @@ def refine(plan, view, body, spec):
         a, b = plan["columns"]
         conds = [{"column": a, "op": "<" if re.search(r"\b(lower|less) than\b", low) else ">",
                   "value": 0, "value_column": b}]
-    if unresolved or not conds:
+    if unresolved:
+        return "unresolved"
+    if not conds:
         return False
     if digit:
         hits, _ = match_columns(view, Query(digit[2] + " code"))

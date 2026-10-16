@@ -88,8 +88,10 @@ def refine(plan, view, body, spec):
 
 
 def series(view, idx, columns, args):
-    frame = view.df.loc[idx, columns].apply(pd.to_numeric, errors="coerce")
     metric = args["metric"]
+    if (metric == "difference" and len(columns) != 2) or (metric == "previous_difference" and len(columns) != 1) or not columns:
+        raise ValueError("derived metric operand count does not match its operation")
+    frame = view.df.loc[idx, columns].apply(pd.to_numeric, errors="coerce")
     if metric == "previous_difference":
         # Adjacency is chronological, never worksheet order or a skipped year.
         order = sorted(idx, key=lambda i: int(view.df.at[i, "_label"]))
