@@ -8,7 +8,7 @@ from src import llm_client as L  # noqa: E402
 from src.plan_validate import validate, load_schema, SCHEMA_FILE  # noqa: E402
 import fake_llm as F  # noqa: E402
 
-SCHEMA_SHA256 = "6ba68a87e7901874560ebfc74f4abd7c203f6289312b8a5b2140a0df48724a61"
+SCHEMA_SHA256_LF = "29849424a2f1d6082880000021378c256da5d08eef2be42ceb16cb355dcc1b0a"
 VALID = [F.PLAN,
          {"version": 1, "op": "sum", "columns": ["Revenue | *"], "format": {"kind": "int"}},
          {"version": 1, "op": "argmax", "rows": {"paths": ["S1!A > B"]}, "args": {"by": "age"},
@@ -20,7 +20,7 @@ INVALID = [{"version": 1, "op": "explode", "format": {"kind": "int"}},
 
 def test_repo_schema_unchanged_on_disk():
     raw = SCHEMA_FILE.read_bytes()
-    assert hashlib.sha256(raw).hexdigest() == SCHEMA_SHA256
+    assert hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest() == SCHEMA_SHA256_LF
     s = json.loads(raw)
     assert {"$schema", "$id", "title"} <= set(s) and b'"description"' in raw
     L.compact_schema(raw.decode())

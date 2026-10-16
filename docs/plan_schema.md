@@ -29,6 +29,26 @@ Ops (value = cells rows×columns after filters):
 | nth | n-th row ordered by `by` (`age` = from dates), return column/label | n, order, by, return |
 | topk_agg | take top-k rows by `by`, then agg over return column | k, order, by, agg, return |
 | count | number of rows after filters (leaf_only for "most detailed") | – |
+| select | labels of rows satisfying all predicates | – |
+| spread | maximum minus minimum of selected numeric cells | – |
+| percent_change | `(v2-v1)/v1*100`, v1 is the baseline | decrease reverses the numerator |
+| winner_diff | winning operand name and absolute gap; ties abstain | two names aligned with the two operands |
+
+Composed extrema first compute one value per row with `args.metric`: `sum`,
+`difference` (first column minus second), or `previous_difference` (current
+minus the previous consecutive year, sorted by the row label). Missing operands
+do not become zero. `reverse_metric` changes the sign. `over="column_groups"`
+instead compares named two-column pairs from `metric_groups` at one exact row.
+
+`argmax`/`argmin` also support `over="sections"` for a named leaf repeated across
+section groups. `include_value=true` returns the winning label and its numeric
+value; `return` can select a different column at that row. A heterogeneous list
+uses `format.item_kinds`, one kind per element; its length must match the result.
+
+`rows.exclude_paths` excludes exact named rows. `rows.label_kind="year"` selects
+four-digit annual labels. A `where` predicate can set `value_column` to compare
+two columns at each row, or use `op="digits=="` for an identifier's digit count.
+`compare` may use `args.value` as an explicit scalar right operand.
 
 Rules: row/column names may be fuzzy; executor resolves them against the parsed table.
 Conventions (hidden sheets, hidden rows, dates, age-at-reference-date, Total sub-column) live in `src/conventions.py`.

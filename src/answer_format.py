@@ -14,6 +14,7 @@ class FormatSpec:
     decimals: int | None = None
     count: int | None = None       # list length
     item_kind: str | None = None   # for list: int | decimal | name
+    item_kinds: list[str] = field(default_factory=list)
     sep: str = ", "
     order: list[str] = field(default_factory=list)
     instruction: str = ""
@@ -48,6 +49,8 @@ def parse_instruction(query: str) -> FormatSpec:
         spec.count = (int(cnt.group(1)) if cnt and cnt.group(1).isdigit() else _WORDNUM.get(cnt.group(1)) if cnt else None) or (len(spec.order) or None)
         spec.decimals = d
         spec.item_kind = "decimal" if d is not None else "int" if re.search(r"integer", low) else "name"
+        if len(spec.order) == 2 and re.search(r"\b(year|name|group|class|category|sheet)\b", spec.order[0], re.I):
+            spec.item_kinds = ["name", "decimal" if d is not None else "int" if "integer" in low else "number"]
         return spec
     if d is not None:
         spec.kind, spec.decimals = "decimal", d
@@ -82,5 +85,8 @@ def _fmt_scalar(v, kind, d=None):
 def format_answer(value, spec: FormatSpec) -> str:
     if spec.kind == "list":
         vals = list(value) if isinstance(value, (list, tuple)) else [value]
-        return spec.sep.join(_fmt_scalar(v, spec.item_kind, spec.decimals) for v in vals)
+        if spec.item_kinds and len(vals) != len(spec.item_kinds):
+            raise ValueError("projection result does not match requested fields")
+        return spec.sep.join(_fmt_scalar(v, spec.item_kinds[i] if spec.item_kinds else spec.item_kind, spec.decimals)
+                             for i, v in enumerate(vals))
     return _fmt_scalar(value, spec.kind, spec.decimals)

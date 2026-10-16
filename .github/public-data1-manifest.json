@@ -1,0 +1,77 @@
+{
+  "source_folder": "https://drive.google.com/drive/folders/1IiEl_weVjIdd1xlnhtiuY-NzmiThXa4o",
+  "files": [
+    {
+      "path": "queries.json",
+      "file_id": "1TeBiLHWDVJk6rkks_LGs371VHPmzOPlC",
+      "bytes": 4884,
+      "sha256": "bd505cc2070522e9c21b4f4e3c3179d293ebf32d3e442f88497e661617dd1f15"
+    },
+    {
+      "path": "sample_submission.csv",
+      "file_id": "1Hlmh4ZxUhTcKgxNnmKx5rFXu4TjmMTW-",
+      "bytes": 384,
+      "sha256": "af0b91bff86886f96f5135fc421c77cc42542ce70b2f9a7baab52038e27b5833"
+    },
+    {
+      "path": "xlsx_files/p4_t01.xlsx",
+      "file_id": "1eIQfC0AYUWe2Vz-t0ns3-O7iU3XSzCsA",
+      "bytes": 4767,
+      "sha256": "4f78973cefaaa0eb6799a6e8a58d74352d9df011bc318efb5f9b8e2a3b376780"
+    },
+    {
+      "path": "xlsx_files/p4_t02.xlsx",
+      "file_id": "1itpFbcJ_F3HjbPR82E-rGGa0Imo0w-ie",
+      "bytes": 18850,
+      "sha256": "d1d420d45bd5e777aa5559c12a0f337a8b6520c8da0df7e37e579ac73913cfbf"
+    },
+    {
+      "path": "xlsx_files/p4_t03.xlsx",
+      "file_id": "1stDfQbw5WB4blSb0A0tjNMHxLGDEfmuK",
+      "bytes": 12953,
+      "sha256": "22cc06b63e44ec540d12c28bd6d9e5173ccfd02df6966251f8088195461c9fb6"
+    },
+    {
+      "path": "xlsx_files/p4_t04.xlsx",
+      "file_id": "10Z6MnaFJDqynM-2mHbWbPTWA9EWKBRiV",
+      "bytes": 8397,
+      "sha256": "2e19844b56d0879972be69d6bfa5feae75a23d55c7f671557b8d434c74562a55"
+    },
+    {
+      "path": "xlsx_files/p4_t05.xlsx",
+      "file_id": "1StOV-mVVIw5MlGZMO70cg5KKYNg9IFKp",
+      "bytes": 11074,
+      "sha256": "00ce12e88103954c7849afb7dfdcb5bf2aabc1643cd8ece6401e7de97244d2b6"
+    },
+    {
+      "path": "xlsx_files/p4_t06.xlsx",
+      "file_id": "1rvbG3aQ_qsFwuRJ2y0-4N_K5kRxZX_uV",
+      "bytes": 11697,
+      "sha256": "94126a35972588d9cb552ebbe48baca22bff1ce6d3494404df2c5c55bc5b40e5"
+    },
+    {
+      "path": "xlsx_files/p4_t07.xlsx",
+      "file_id": "1YRNE4H8GjZ0ykgi5VljZdNgJxAqxyBk0",
+      "bytes": 13209,
+      "sha256": "f87a7b008c8794d53dae40e491485e0242bc4f5a68167037f4904c6aeb81974f"
+    },
+    {
+      "path": "xlsx_files/p4_t08.xlsx",
+      "file_id": "1enySA_k8xV9FFG_VgftJiOnQxUByee3z",
+      "bytes": 9948,
+      "sha256": "1d0fa9eb9103dedb9f499c1ccfdc08af1091ec598882af45324bf83f7d273ab4"
+    },
+    {
+      "path": "xlsx_files/p4_t09.xlsx",
+      "file_id": "1Y4lyrc6czBr6GT7_KULz4PsqlyqsYsVl",
+      "bytes": 10749,
+      "sha256": "0edc92d16d3b4b3f6490aad75bb0a06d06df3067d1f34589703ac6b8ed3f4660"
+    },
+    {
+      "path": "xlsx_files/p4_t10.xlsx",
+      "file_id": "1uvj2rpBZw9HrH--8Esf6k3TT1kuxcFDu",
+      "bytes": 8368,
+      "sha256": "71ff7c868044266c8975c2b61873a4242ce009495bd104e7d0c99ffc71dbd69f"
+    }
+  ]
+}

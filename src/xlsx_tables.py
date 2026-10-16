@@ -63,6 +63,7 @@ def to_number(v):
     if isinstance(v, (_dt.date, _dt.datetime)):
         return None
     s = str(v).strip().replace("\u00a0", "")
+    s = re.sub(r"^[~≈]\s*(?=[+-]?\d)", "", s)
     if s.lower() in NA_TOKENS:
         return None
     s = re.sub(r"(?<=\d)\(\d{1,2}\)$|\s+\d/$|[¹²³⁴⁵⁶⁷⁸⁹⁰]+$|\s*\([a-zA-Z]\)$|\*+$", "", s).strip()  # footnote markers
@@ -130,6 +131,14 @@ def _empty(v):
     return v is None or (isinstance(v, str) and not v.strip())
 
 
+def _missing(v):
+    """Missing/suppressed statistical cells, including footnote-only markers."""
+    if _empty(v):
+        return True
+    return isinstance(v, str) and (v.strip().lower() in NA_TOKENS
+                                  or re.fullmatch(r"\(-\d+-\)", v.strip()) is not None)
+
+
 def _is_value(v):
     return to_number(v) is not None or isinstance(v, (_dt.date, _dt.datetime))
 
@@ -186,6 +195,10 @@ def _row_kind(g, r, vmerge, ncols, lc):
             return "note"
         return "section"
     has_val = any(_is_value(v) for v in vals)
+    # A labelled row of suppression markers is still a body row. Treating it
+    # as a header splits the table and discards the schema for subsequent rows.
+    if not _empty(label) and vals and all(_missing(v) for v in vals):
+        return "data"
     label_empty = _empty(label) or ((r, lc) in vmerge and r > 0 and g[r - 1][lc] == label
                                     and (not has_val or all(_is_year(v) or isinstance(v, str) for v in vals)))
     if label_empty:
@@ -231,6 +244,7 @@ def _split_tables(sheet, g, indent, vmerge, hspan):
     tables = []
     r = 0
     title_lines, pending_notes = [], []
+    shared_header, shared_title = [], []
     while r < nrows:
         # gather title/notes until header or data
         while r < nrows and kinds[r] in ("blank", "note", "section") and not _starts_header(kinds, r):
@@ -268,7 +282,21 @@ def _split_tables(sheet, g, indent, vmerge, hspan):
                 notes.append(clean_text(" ".join(str(v) for v in dict.fromkeys(g[r]) if not _empty(v))))
             r += 1
         if any(kinds[b] == "data" for b in body):
-            tables.append(_build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes))
+            effective_header = hdr
+            effective_title = title_lines
+            codes = [clean_text(g[h][c]) for h in hdr for c in range(lc + 1, ncols) if not _empty(g[h][c])]
+            code_header = len(hdr) == 1 and len(codes) >= 2 and all(
+                re.fullmatch(r"[A-Za-z]+\d+[A-Za-z0-9]*", value) for value in codes)
+            if code_header and shared_header:
+                # Repeated series matrices often print descriptive column labels
+                # once, then only series identifiers under each measurement block.
+                # Inherit by physical column position, keeping the block title/code.
+                effective_header = shared_header + hdr
+                effective_title = shared_title + title_lines
+            elif len(hdr) >= 2:
+                shared_header = list(hdr)
+                shared_title = list(title_lines)
+            tables.append(_build(sheet, g, indent, hspan, effective_header, body, lc, ncols, effective_title, notes))
             title_lines = []
         else:
             title_lines += [clean_text(g[b][lc]) for b in body if not _empty(g[b][lc])]
@@ -281,7 +309,9 @@ def _starts_header(kinds, r):
 
 def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
     data_rows = [b for b in body if any(not _empty(g[b][c]) for c in range(ncols))]
-    data_cols = [c for c in range(ncols) if c != lc and any(not _empty(g[b][c]) for b in data_rows)]
+    record_rows = [b for b in data_rows if not _empty(g[b][lc])
+                   and any(not _empty(g[b][c]) for c in range(lc + 1, ncols))]
+    data_cols = [c for c in range(ncols) if c != lc and any(not _empty(g[b][c]) for b in record_rows)]
     meta, used_hdr = [], []
     for h in hdr:
         vals = [g[h][c] for c in data_cols]
@@ -318,11 +348,11 @@ def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
         raw = g[b][lc]
         label_raw = clean_text(raw)
         label = strip_footnotes(label_raw)
-        has_values = any(not _empty(g[b][c]) for c in data_cols)
+        has_values = any(not _empty(g[b][c]) for c in data_cols if c > lc)
         lvl = indent[b][lc] - base_ind
         if not has_values:
             # section heading: becomes top-level parent
-            section = label
+            section = label or next((clean_text(g[b][c]) for c in range(lc) if not _empty(g[b][c])), "")
             stack = []
             continue
         while stack and stack[-1][0] >= lvl:
@@ -335,7 +365,7 @@ def _build(sheet, g, indent, hspan, hdr, body, lc, ncols, title_lines, notes):
             v = g[b][c]
             num = to_number(v)
             rec[n] = num if num is not None else (
-                None if _empty(v) or (isinstance(v, str) and v.strip().lower() in NA_TOKENS) else v)
+                None if _missing(v) else v)
         recs.append(rec)
     df = pd.DataFrame(recs)
     for n in names:  # make numeric columns numeric

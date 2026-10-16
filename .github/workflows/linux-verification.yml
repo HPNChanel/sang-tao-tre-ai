@@ -1,0 +1,73 @@
+name: Linux verification (free public runner)
+
+on:
+  pull_request:
+    branches: [main, 'codex/**']
+  push:
+    branches: [codex/public1-integration, codex/public2-integration]
+  workflow_dispatch:
+    inputs:
+      public2_url:
+        description: Temporary HTTPS download for the exact Public data 2 ZIP pinned by the manifest
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-verification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    # Standard runners are free for public repos; do not run if visibility changes.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      OPENROUTER_API_KEY: ""
+      PYTHONUTF8: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Check out the exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python without an Actions cache
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies and record versions
+        run: |
+          git rev-parse HEAD
+          python --version
+          python -m pip install -r requirements.txt
+          python -m pip freeze
+          docker version
+
+      - name: Run the unchanged pytest suite
+        id: pytest
+        run: python -m pytest -q -ra
+
+      - name: Build and check the contest container
+        id: docker_smoke
+        # Collect Docker evidence even if pytest fails, but retain the failed job.
+        if: ${{ !cancelled() && steps.pytest.outcome != 'skipped' }}
+        run: python scripts/ci_docker_smoke.py
+
+      - name: Verify Public data 1 and measure container memory
+        if: ${{ !cancelled() && steps.docker_smoke.outcome == 'success' }}
+        run: python scripts/ci_public_data1.py
+
+      - name: Verify supplied Public data 2 and measure container memory
+        if: ${{ !cancelled() && steps.docker_smoke.outcome == 'success' && inputs.public2_url != '' }}
+        env:
+          PUBLIC2_URL: ${{ inputs.public2_url }}
+        run: python scripts/ci_public_data2.py
+
+      # Deliberately no artifact upload, cache action, registry push, or API key.

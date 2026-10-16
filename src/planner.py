@@ -87,6 +87,27 @@ def _col_part_match(q: Query, part: str, exclude=frozenset()):
     return hit / len(use), pos
 
 
+def _quoted_column_operands(view, text):
+    """Resolve an explicitly quoted column list before greedy token coverage.
+
+    Tokens shared by two labels belong to both operands. A generic operation
+    word such as 'total' outside the list is not an extra operand.
+    """
+    phrases = re.findall(r"(?<!\w)(['\"`])(.+?)\1", text)
+    if len(phrases) < 2:
+        return None
+    out = []
+    for _, phrase in phrases:
+        target = tokens(phrase, keep_stop=True)
+        matches = [c for c in view.numeric_cols()
+                   if target in (tokens(str(c), keep_stop=True),
+                                 tokens(str(c).split(" | ")[-1], keep_stop=True))]
+        if len(matches) != 1:
+            return None
+        out.append(matches[0])
+    return out if len(set(out)) == len(out) else None
+
+
 def match_columns(view: View, q: Query, exclude=frozenset()):
     """Greedy cover of query tokens by column keys (prefix of 'A | B | C' parts)."""
     cands = {}
@@ -200,6 +221,15 @@ def match_rows(view: View, q: Query, exclude=frozenset()):
         f, pos = q.match(leaf, exclude)
         nt = len(tokens(leaf))
         lt = tokens(leaf)
+        # Exact named row phrases remain evidence even when a column shares
+        # their words. Keep qualifiers: 'not in X' is not the same label as X.
+        qualifiers = re.findall(r"\b(?:not|except|without)\b", leaf.lower())
+        if any(not re.search(rf"\b{word}\b", q.text, re.I) for word in qualifiers):
+            continue
+        qt = [t for t, _ in q.toks]
+        exact = bool(lt) and any(qt[k:k + len(lt)] == lt for k in range(len(qt) - len(lt) + 1))
+        if exact and nt >= 2:
+            f, pos = q.match(leaf)
         head = leaf.split("(")[0]
         hf, hpos = q.match(head, exclude) if "(" in leaf else (0, set())
         if hf < 1.0 and any(t[0].isdigit() and not q.positions(t, exclude) for t in lt):
@@ -210,15 +240,19 @@ def match_rows(view: View, q: Query, exclude=frozenset()):
             continue
         anc = [q.match(a, exclude) for a in path[:-1]]
         sheet_f, sheet_pos = q.match(df["_sheet"].iat[i], exclude) if view.stacked else (0, set())
-        score = 2 * f + 0.05 * nt * f + sum(a for a, _ in anc) + sheet_f
+        score = 2 * f + 0.05 * nt * f + sum(a for a, _ in anc) + sheet_f + (10 * nt if exact else 0)
         apos = set().union(*[p for _, p in anc]) if anc else set()
-        cands.append((score, i, pos | apos | sheet_pos, " > ".join(path)))
-    kept, covered = [], set()
-    for score, i, pos, path in sorted(cands, key=lambda c: (-c[0], c[1])):
-        if not (pos - covered):
+        cands.append((score, i, pos | apos | sheet_pos, " > ".join(path), pos, apos | sheet_pos))
+    kept, covered, leaf_covered = [], set(), set()
+    for score, i, pos, path, leaf_pos, ancestor_pos in sorted(cands, key=lambda c: (-c[0], c[1])):
+        parent = path.rsplit(" > ", 1)[0] if " > " in path else ""
+        sibling_operand = bool(leaf_pos - leaf_covered) and any(
+            (p.rsplit(" > ", 1)[0] if " > " in p else "") == parent for p, _, _ in kept)
+        if not (pos - covered or sibling_operand):
             continue
         kept.append((path, pos, i))
         covered |= pos
+        leaf_covered |= leaf_pos
     kept = [k for k in kept if not any(o[0] != k[0] and o[0].startswith(k[0] + " > ") for o in kept)]
     # order by first position of the tokens each row uniquely covers
     def first_unique(k):
@@ -274,12 +308,23 @@ def plan_with_confidence(query: str, tables, strict=None):
 
 def _plan_with_confidence(query, tables, strict):
     from .vi import is_vietnamese, translate
+    from .native_comparisons import plan as native_plan
+    native = native_plan(query, tables)
+    if native is not None:
+        from .plan_validate import validate
+        errors = validate(native)
+        return native, 0.0 if errors else 1.0, errors or ["native:exact-operands"]
     original = query
     reasons = []
     vi_factor = 1.0
     hits = hits_base = 0
     if is_vietnamese(query):
-        query, hits = translate(query, new_ops=True)
+        entities = []
+        for table in tables:
+            labels = list(table.df[table.label_col].astype(str)) if table.label_col in table.df else []
+            labels += [part for c in table.df.columns if not str(c).startswith("_") for part in str(c).split(" | ")]
+            entities += [x for x in labels if len(x.strip()) > 1 and not x.strip().isdigit()]
+        query, hits = translate(query, new_ops=True, entities=entities)
         _, hits_base = translate(original, new_ops=False)
         vi_factor = 0.9 if hits >= 2 else 0.6
         reasons.append(f"vi:{hits}")
@@ -406,6 +451,22 @@ def _plan_core(query: str, tables, strict=False):
     label_cols = [c for c, _ in cols if c == view.label_name]
     cols = [c for c, _ in cols if c != view.label_name]
     row_paths = [p for p, _ in rows]
+    quoted_operands = _quoted_column_operands(view, body)
+    if quoted_operands:
+        cols = quoted_operands
+    # 'in all ... and in <subset>' constrains one population. It does not add
+    # the encompassing column to its subset. Explicit arithmetic/list requests
+    # retain both operands, and multiple specific columns remain unresolved.
+    intersected_column = False
+    if len(cols) > 1 and re.search(r"\band in\b", low) and not re.search(
+            r"\b(sum|total|combined|altogether|difference|compare|ratio|both|respectively|average|mean|share|proportion|percentage|percent)\b"
+            + "|" + _DIFF_SRC + rf"|\b({SUP_MAX}|{SUP_MIN})\b", low) \
+            and spec.kind != "list":
+        broad = [c for c in cols if re.match(r"all\b", str(c).split(" | ")[-1], re.I)]
+        specific = [c for c in cols if c not in broad]
+        if broad and len(specific) == 1 and all(_par(c) and _par(c) == _par(specific[0]) for c in broad):
+            cols = specific
+            intersected_column = True
 
     plan = {"version": 1,
             "table": {"index": view.idx[0], "sheet": None, "title_hint": None, "stack_sheets": view.stacked},
@@ -413,7 +474,8 @@ def _plan_core(query: str, tables, strict=False):
                      "exclude_subtotals": C.EXCLUDE_SUBTOTALS_IN_AGGREGATES, "where": []},
             "columns": cols, "op": "lookup", "args": {},
             "format": {"kind": spec.kind, "decimals": spec.decimals, "count": spec.count,
-                       "item_kind": spec.item_kind, "sep": spec.sep, "order": spec.order}}
+                       "item_kind": spec.item_kind, "item_kinds": spec.item_kinds,
+                       "sep": spec.sep, "order": spec.order}}
     if re.search(r"yyyy-mm-dd|\bdate\b.*format", query.lower()):
         plan["format"]["kind"] = "date"
     if view.stacked:
@@ -439,6 +501,8 @@ def _plan_core(query: str, tables, strict=False):
     # op_low folds Vietnamese operation phrases (with or without dấu) onto the English cues.
     op_low = _canon_op(low)
     sup_max, sup_min = re.search(rf"\b({SUP_MAX})\b", op_low), re.search(rf"\b({SUP_MIN})\b", op_low)
+    if not sup_max and re.search(r"\bwhich (?:sheet|group)\b.*\bhigher\b", op_low):
+        sup_max = re.search(r"\bhigher\b", op_low)
     which = re.search(r"\b(which|who|identify|name the|in what|list all|name all)\b", op_low)
     nth = _nth_match(op_low)
     topk = re.search(r"\b(?:among|of) the (\w+) (" + SUP_MAX + "|" + SUP_MIN + r")\b", op_low)
@@ -486,7 +550,9 @@ def _plan_core(query: str, tables, strict=False):
                 rr, _ = match_rows(view, Query(n))
                 paths.append(rr[0][0] if rr else n)
             plan["rows"]["paths"] = paths
-    elif re.search(r"\bshare\b|\bproportion\b|percentage of|what percent", low):
+    elif re.search(r"\bshare\b|\bproportion\b|percentage of|what percent", low) \
+            and not ((sup_max or sup_min) and which and spec.kind == "name") \
+            and not re.search(r"\b(?:absolute )?difference\b|\bgap\b", low):
         plan["op"] = "share"
         args["percent"] = True
     elif re.search(r"\(([^()/]+)/([^()]+)\)|\bratio\b|\brate\b.*/", body):
@@ -520,6 +586,12 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "diff"
         args["abs"] = bool(re.search(r"absolute|\bdifference between\b", low)) and not re.search(r"\bsigned\b", query.lower())
         args["signed_order"] = "second_minus_first" if re.search(r"\bchange\b|\bfrom\b.*\bto\b|increase|decrease", low) else "first_minus_second"
+        # A period mentioned inside a stored measure is not the order of a
+        # comparative subtraction: 'A higher than B' is A - B.
+        comparative = re.search(r"\b(higher|larger|greater|more|lower|smaller|less|fewer)\b.*\bthan\b", low)
+        if comparative and re.search(r"\bhow (?:many|much)\b", low):
+            args["signed_order"] = ("second_minus_first" if comparative.group(1) in
+                                    {"lower", "smaller", "less", "fewer"} else "first_minus_second")
     elif re.search(r"\baverage\b|\bmean\b", low) and not any(re.search(r"\baverage\b|\bmean\b", c, re.I) for c in cols):
         plan["op"] = "mean"
     elif (sup_max or sup_min) and (which or (spec.kind == "name" and not re.search(r"\bwhat (was|is) the (highest|lowest)", low))):
@@ -550,6 +622,29 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "values"
     else:
         plan["op"] = "lookup"
+    # Output instructions can name a projection absent from the question body.
+    # Resolve it separately so a context/date column does not become the answer.
+    if plan["op"] in ("nth", "rank") and spec.instruction and args.get("over", "rows") == "rows":
+        projected, _ = match_columns(view, Query(spec.instruction))
+        projected = [c for c, _ in projected if c in view.df.columns]
+        if len(projected) == 1:
+            args["return"] = projected[0]
+    if plan["op"] in ("argmax", "argmin") and spec.item_kinds:
+        args["include_value"] = True
+        args["ties"] = "first"
+        projected, _ = match_columns(view, Query(spec.order[1]))
+        projected = [c for c, _ in projected if c in view.numeric_cols()]
+        if len(projected) == 1:
+            args["return"] = projected[0]
+    if intersected_column and plan["op"] == "sum":
+        # The 'in all' phrase was column context, not an aggregation instruction.
+        plan["op"] = "lookup"
+    # Category extrema compare stored category measures, including intermediate
+    # groups. Subtotal exclusion is for additive/leaf-only questions; the global
+    # total remains excluded by the extrema executor.
+    if plan["op"] in ("argmax", "argmin") and args.get("over", "rows") == "rows" \
+            and re.search(r"\bcategor(?:y|ies)\b", low) and not plan["rows"]["leaf_only"]:
+        plan["rows"]["exclude_subtotals"] = False
     if strict and plan["op"] in ("max", "min", "mean", "sum", "argmax", "argmin", "count", "rank") and not plan["rows"]["paths"] \
             and not plan["rows"].get("scope"):
         secs = [x for x in dict.fromkeys(view.df["_section"]) if x]
@@ -569,7 +664,8 @@ def _plan_core(query: str, tables, strict=False):
         plan["rows"]["where"] = _aim_born_year(plan["rows"]["where"], view, low)
         # a number that only names the chosen row, scope, or sort column is not also a threshold
         band = " ".join([str(plan["rows"].get("scope") or ""), str(args.get("by") or "")]
-                        + list(plan["rows"]["paths"]) + list(plan["columns"]))
+                        + list(plan["rows"]["paths"]) + list(plan["columns"])
+                        + [p for p, _ in rows])
         plan["rows"]["where"] = _drop_label_filters(plan["rows"]["where"], [], [band])
     ambiguous_rank_scope = False
     if plan["op"] == "rank":
@@ -611,7 +707,19 @@ def _plan_core(query: str, tables, strict=False):
             fmt["item_kind"] = "number"
     if plan["op"] in ("sum", "diff", "lookup", "values", "compare") and not plan["columns"] and re.search(r"across all|all \w+ combined|in all", low):
         plan["columns"] = ["*"]
-    abstain = _unhandled_op(op_low, plan)
+    # An explicit horizontal mean uses individual cells, not a wildcard (which
+    # the executor sums per row) or its implicit first-column fallback.
+    if plan["op"] == "mean" and not plan["columns"] and len(plan["rows"]["paths"]) == 1 \
+            and re.search(r"\bacross all\b", low):
+        plan["columns"] = list(num_cols)
+    from .derived_metrics import refine
+    composed = refine(plan, view, body, spec)
+    from .row_filters import refine as refine_filters
+    filtered = refine_filters(plan, view, body, spec)
+    composed = composed or filtered
+    from .column_operands import refine as refine_operands
+    composed = refine_operands(plan, view, body, spec) or composed
+    abstain = filtered == "unresolved" or (_unhandled_op(op_low, plan) if not composed else False)
     # A refused top-N (scalar number, or a count that is also a stored value) keeps
     # the older max/lookup. That leftover phrase is not an unparsed operation.
     if abstain and topn and plan["op"] in ("lookup", "values", "sum", "count") \
@@ -695,6 +803,27 @@ def _tie_mode(low, fmt):
 def _choose_over(plan, view, rows, cols, low):
     args = plan["args"]
     args["ties"] = _tie_mode(low, plan["format"])
+    # The named leaf can repeat under several groups. In that case the
+    # comparison axis is its parent section, not descendants of that leaf.
+    if re.search(r"\bwhich (?:group|industry|sector)\b", low):
+        q = Query(low)
+        leaves = [str(x) for x in dict.fromkeys(view.df["_label"])
+                  if tokens(x) and q.match(strip_footnotes(str(x)))[0] == 1.0]
+        leaves.sort(key=lambda x: len(tokens(x)), reverse=True)
+        for leaf in leaves:
+            selected = view.df[view.df["_label"] == leaf]
+            secs = [s for s in dict.fromkeys(selected["_section"]) if s]
+            if len(secs) < 2:
+                continue
+            mentioned = [s for s in secs if q.match(strip_footnotes(str(s)))[0] == 1.0]
+            if len(mentioned) == 1:
+                continue
+            if mentioned:
+                selected = selected[selected["_section"].isin(mentioned)]
+            args["over"] = "sections"
+            plan["rows"]["paths"] = list(dict.fromkeys(selected["_row_path"]))
+            plan["rows"]["scope"] = None
+            return
     if view.stacked and len(rows) == 1 and re.search(r"\b(which|what|in which) (year|sheet|period)\b", low):
         args["over"] = "sheets"
     elif len(rows) == 1 and not [c for c in cols if c != view.label_name]:
@@ -703,8 +832,11 @@ def _choose_over(plan, view, rows, cols, low):
         args["over"] = "rows"
         plan["columns"] = [c for c in cols if c != view.label_name]
         if args["over"] == "rows" and len(rows) == 1 and plan["columns"]:
-            # the matched row is context (scope), e.g. a province, not the answer
-            plan["rows"]["scope"] = rows[0][0]
+            # Only a structural parent can define a descendant comparison
+            # domain. A leaf label is not an empty group to broaden later.
+            parent = rows[0][0]
+            if any(str(p).startswith(parent + " > ") for p in view.df["_row_path"]):
+                plan["rows"]["scope"] = parent
             plan["rows"]["paths"] = []
         elif args["over"] == "rows":
             plan["rows"]["paths"] = []
@@ -979,6 +1111,7 @@ _DIFF_LEGACY = (
 )
 _DIFF_SRC = (
     r"how (?:many|much) (?:more|less|fewer|higher|lower|greater|bigger|smaller)\b"
+    r"|how many (?:percentage|percent) points? (?:higher|lower|larger|smaller|greater|less)\b"
     r"|how (?:many|much) (?:is|was|were|are|did|does|do)\b.{0,40}?\b(?:more|higher|greater|bigger|less|lower|smaller|fewer)\b"
     r"|by how much"
     r"|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b"
@@ -1728,7 +1861,7 @@ def _confidence_legacy(query, plan, info):
             c *= 0.3; reasons.append("lookup:no-match")
         elif not cols and nnum > 1:
             c *= 0.6; reasons.append("lookup:no-col")
-    if op in ("compare", "diff", "ratio"):
+    if op in ("compare", "diff", "ratio") and "value" not in plan["args"]:
         if max(nrows, 1) * max(len(cols), 1) < 2 and not any(str(x).endswith("*") for x in cols):
             c *= 0.3; reasons.append(f"{op}:<2 values")
     if op in ("argmax", "argmin") and (plan["args"].get("over") == "rows") and not cols and nnum > 1:

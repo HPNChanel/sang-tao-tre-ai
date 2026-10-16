@@ -1,0 +1,97 @@
+{
+  "source": "User-provided Public data 2 ZIP, 2026-10-16",
+  "zip_bytes": 212082,
+  "zip_sha256": "72c10c38f4990d47d4155a424ecb0bac1bc2f5a3b8ad93795a16ae1085e7e3a0",
+  "files": [
+    {
+      "path": "sample_submission.csv",
+      "bytes": 487,
+      "sha256": "682942beb5fef71f66fc008cded9237b44c3e6ef0da0e9a0fc2dbf292b4fa6b1"
+    },
+    {
+      "path": "xlsx_files/p2_t04.xlsx",
+      "bytes": 7956,
+      "sha256": "296cd78fb0193f1c94a950a9e01295e5012b5aded09965d0824d8d1956c941d0"
+    },
+    {
+      "path": "xlsx_files/p2_t12.xlsx",
+      "bytes": 5816,
+      "sha256": "b6048d98caea2f09c05487367851e45073a1ad29df61dec52b157cec9ffde0de"
+    },
+    {
+      "path": "xlsx_files/p2_t13.xlsx",
+      "bytes": 5910,
+      "sha256": "186344dabfd4305bfb65c46620e7b4bb9c5ecc5773b0fc260ba973a8cb5fa971"
+    },
+    {
+      "path": "xlsx_files/p2_t02.xlsx",
+      "bytes": 11762,
+      "sha256": "799d3b983aaeb1be1771e90e1dd88f86e624527deb428ffdad06dd36002f16ed"
+    },
+    {
+      "path": "xlsx_files/p2_t10.xlsx",
+      "bytes": 8726,
+      "sha256": "de1b2a05a37266d67fbc3e3b84a51f1f55f4eb70dcac91fec23660253ed40ceb"
+    },
+    {
+      "path": "xlsx_files/p2_t11.xlsx",
+      "bytes": 5693,
+      "sha256": "7f652d20efc0adc2e5c2ccabf43f089679ad49c6237dae7d61274fda3353281e"
+    },
+    {
+      "path": "xlsx_files/p2_t05.xlsx",
+      "bytes": 8542,
+      "sha256": "06a5088c9367911152ad3f15b2e0e8f24e622e9791d3779e7770e86f29c479d0"
+    },
+    {
+      "path": "answers.json",
+      "bytes": 1509,
+      "sha256": "9abf35f6c2dd2435a38296e3712314cbf38ec9736676a779ed9901098620e6ad"
+    },
+    {
+      "path": "xlsx_files/p2_t14.xlsx",
+      "bytes": 5823,
+      "sha256": "f733121f1906ef5c461cda1a3985999593c2df79c17541230745355e106130ae"
+    },
+    {
+      "path": "xlsx_files/p2_t07.xlsx",
+      "bytes": 76543,
+      "sha256": "3556f8f4fadb6b21264ad26cefbcab60b65037ac428fdb8462c93ad9fa0b2c96"
+    },
+    {
+      "path": "queries.json",
+      "bytes": 9079,
+      "sha256": "ae744134cf2d11440b2a8a7ac65aa68ab8312789c655fe2434ca7177a0499418"
+    },
+    {
+      "path": "xlsx_files/p2_t06.xlsx",
+      "bytes": 13824,
+      "sha256": "96ea7b90c532d137ec48ad7778a9aefbf658e4a6276e496b291b5650a3e7b8d6"
+    },
+    {
+      "path": "xlsx_files/p2_t15.xlsx",
+      "bytes": 5926,
+      "sha256": "3a4c74368ad8c47200e82176c65efe8714119a4ce24891e061b3a77b4069d6af"
+    },
+    {
+      "path": "xlsx_files/p2_t01.xlsx",
+      "bytes": 19950,
+      "sha256": "7d04282c3867ed8bd5beffd122c856b8595cf0dd4246e435ae11fdb44c39f020"
+    },
+    {
+      "path": "xlsx_files/p2_t08.xlsx",
+      "bytes": 24613,
+      "sha256": "a90037385bdcb5c73bba96a945e9c8674341895400c70d62413987837f7c7c1b"
+    },
+    {
+      "path": "xlsx_files/p2_t09.xlsx",
+      "bytes": 7981,
+      "sha256": "a27e5d83c34de910f1f7640a67eaa6759b57bafeba98ff3fada74bb1f1246fe8"
+    },
+    {
+      "path": "xlsx_files/p2_t03.xlsx",
+      "bytes": 10259,
+      "sha256": "a36247ed622fdedd677ca1b68269ef95ca32350b1998748666682ba6e5a1bfbe"
+    }
+  ]
+}

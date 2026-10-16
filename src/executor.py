@@ -39,7 +39,9 @@ def _resolve_rows(view, paths):
         m = df.index[(df["_row_path"] == p) & ((df["_sheet"] == sheet) if sheet else True)].tolist()
         if not m:
             leaf = strip_footnotes(p.split(" > ")[-1])
-            m = df.index[df["_label"] == leaf].tolist()[:1]
+            m = df.index[df["_label"] == leaf].tolist()
+            if len(m) > 1:
+                raise PlanError(f"row label is ambiguous: {p}")
         if not m:
             raise PlanError(f"row not found: {p}")
         groups.append(m)
@@ -69,7 +71,12 @@ def _base_rows(view, plan):
         idx = [i for i in idx if df.at[i, "_sheet"] == t["sheet"]]
     if r.get("scope"):
         sc = r["scope"]
-        idx = [i for i in idx if str(df.at[i, "_row_path"]).startswith(sc + " > ")] or idx
+        idx = [i for i in idx if str(df.at[i, "_row_path"]).startswith(sc + " > ")]
+        if not idx:
+            raise PlanError("named scope has no descendant rows")
+    if r.get("exclude_paths"):
+        excluded = {i for g in _resolve_rows(view, r["exclude_paths"]) for i in g}
+        idx = [i for i in idx if i not in excluded]
     return idx
 
 
@@ -77,6 +84,8 @@ def _aggregate_rows(view, plan, idx):
     """rows used when aggregating over 'all rows'."""
     df = view.df
     r = plan.get("rows") or {}
+    if r.get("label_kind") == "year":
+        idx = [i for i in idx if re.fullmatch(r"\d{4}", str(df.at[i, "_label"]))]
     if r.get("range"):
         lo, hi = r["range"]
         idx = [i for i in idx if (rg := _label_range(df.at[i, "_label"])) and lo <= rg[0] and rg[1] <= hi]
@@ -98,8 +107,15 @@ def _apply_where(view, idx, where):
         keep = []
         for i in idx:
             v = df.at[i, col]
+            if w.get("value_column"):
+                val = df.at[i, w["value_column"]]
+                if pd.isna(val):
+                    continue
             if op == "year==":
                 ok = isinstance(v, (dt.date, dt.datetime)) and v.year == int(val)
+            elif op == "digits==":
+                s = str(int(v)) if isinstance(v, (float, int, np.number)) and pd.notna(v) and float(v).is_integer() else str(v)
+                ok = s.isdigit() and len(s) == int(val)
             else:
                 if v is None or (isinstance(v, float) and math.isnan(v)):
                     continue
@@ -215,16 +231,59 @@ def execute(plan, tables):
                     out.append(_col_values(view, c, g).sum(min_count=1))
         return out
 
-    if op in ("lookup", "values"):
+    if args.get("metric"):
+        from .derived_metrics import series
+        if op not in {"max", "min", "argmax", "argmin"}:
+            raise PlanError("derived metrics require an extrema reducer")
+        if args.get("over") == "column_groups":
+            if len(groups) != 1 or len(groups[0]) != 1:
+                raise PlanError("derived column groups need one exact row")
+            vals = {g["name"]: series(view, groups[0], g["columns"], args).iloc[0]
+                    for g in args["metric_groups"]}
+            if len(vals) != len(args["metric_groups"]):
+                raise PlanError("duplicate derived group labels")
+            labels = {k: k for k in vals}
+        else:
+            idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
+            vals = series(view, idx, cols, args).to_dict()
+            labels = {i: df.at[i, "_label"] for i in idx}
+        vals = {k: abs(v) if args.get("abs") else v for k, v in vals.items() if pd.notna(v)}
+        if not vals:
+            raise PlanError("derived metric has no complete candidates")
+        sign = -1 if op in ("min", "argmin") else 1
+        best = max(vals, key=lambda i: sign * vals[i])
+        if op in ("max", "min"):
+            val = vals[best]
+        else:
+            val = [labels[best], vals[best]] if args.get("include_value") else labels[best]
+    elif op == "winner_diff":
+        vals = cell_list()
+        if len(vals) != 2 or len(args.get("names", [])) != 2 or any(pd.isna(v) for v in vals) or vals[0] == vals[1]:
+            raise PlanError("winner comparison needs two unequal observed values")
+        val = [args["names"][int(vals[1] > vals[0])], abs(vals[0] - vals[1])]
+    elif op == "select":
+        idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
+        if not idx:
+            raise PlanError("no rows satisfy all conditions")
+        val = [df.at[i, "_label"] for i in idx]
+        if len(val) == 1:
+            val = val[0]
+    elif op in ("lookup", "values"):
         vals = cell_list()
         if plan["format"]["kind"] == "date" or (vals and isinstance(vals[0], (dt.date, dt.datetime))):
             pass
         val = vals if (op == "values" or len(vals) > 1) else vals[0]
-    elif op in ("compare", "diff", "ratio"):
+    elif op in ("compare", "diff", "ratio", "percent_change"):
         vals = cell_list()
+        if op == "compare" and "value" in args:
+            vals.append(args["value"])
         if len(vals) < 2:
             raise PlanError(f"{op} needs two values, got {vals}")
         a, b = float(vals[0]), float(vals[1])
+        if op == "percent_change":
+            if len(vals) != 2 or a == 0:
+                raise PlanError("percent change needs two values and a nonzero baseline")
+            return (a - b if args.get("decrease") else b - a) / a * 100
         if op == "ratio" and b == 0:
             raise PlanError("ratio: division by zero")
         if op == "compare":
@@ -234,26 +293,28 @@ def execute(plan, tables):
             val = abs(d) if args.get("abs") else d
         else:
             val = a / b * (100 if args.get("percent") else 1)
-    elif op in ("sum", "mean", "max", "min", "count"):
+    elif op in ("sum", "mean", "max", "min", "count", "spread"):
         if groups:
             idx = [i for g in groups for i in g]
         else:
             idx = _aggregate_rows(view, plan, base)
-            if r.get("scope") is None and not r.get("range") and not (plan.get("table") or {}).get("sheet"):
+            if r.get("scope") is None and not r.get("range") and not r.get("where") and not (plan.get("table") or {}).get("sheet"):
                 idx = _first_root_scope(view, idx)
         idx = _apply_where(view, idx, r.get("where"))
         if op == "count":
             val = len(idx)
         else:
             cs = cols or (["*"] if op == "sum" and len(view.numeric_cols()) > 1 else view.numeric_cols()[:1])
-            cs = _drop_total_cols(view, cs, idx)
+            if op == "sum":
+                cs = _drop_total_cols(view, cs, idx)
             series = pd.concat([_col_values(view, c, idx) for c in cs], ignore_index=True)
             if series.map(lambda v: isinstance(v, (dt.date, dt.datetime))).any():
                 s = [v for v in series if isinstance(v, (dt.date, dt.datetime))]
                 val = max(s) if op == "max" else min(s)
             else:
                 series = pd.to_numeric(series, errors="coerce")
-                val = {"sum": series.sum(), "mean": series.mean(), "max": series.max(), "min": series.min()}[op]
+                val = {"sum": series.sum(), "mean": series.mean(), "max": series.max(), "min": series.min(),
+                       "spread": series.max() - series.min()}[op]
     elif op in ("argmax", "argmin"):
         over = args.get("over", "rows")
         sign = 1 if op == "argmax" else -1
@@ -265,6 +326,17 @@ def execute(plan, tables):
             vals = {c: v for c, v in vals.items() if v is not None and not (isinstance(v, float) and math.isnan(v))}
             best = _pick(list(vals), lambda c: sign * tf(vals[c]), plan, "columns")
             val = [str(b).split(" | ")[-1] for b in best]
+            if args.get("include_value"):
+                val = [val[0], vals[best[0]]]
+        elif over == "sections":
+            idx = list(dict.fromkeys(i for g in groups for i in g))
+            c = cols[0] if cols else view.numeric_cols()[0]
+            vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}
+            vals = {i: v for i, v in vals.items() if pd.notna(v)}
+            best = _pick(list(vals), lambda i: sign * tf(vals[i]), plan, "rows")
+            val = [strip_footnotes(str(df.at[b, "_section"])) for b in best]
+            if args.get("include_value"):
+                val = [val[0], vals[best[0]]]
         elif over == "sheets":
             g = groups[0]
             leaf = df.at[g[0], "_label"]
@@ -274,14 +346,22 @@ def execute(plan, tables):
                 v = _col_values(view, c, [i]).iloc[0]
                 per[df.at[i, "_sheet"]] = v
             val = _pick(list(per), lambda s: sign * tf(per[s]), plan, "sheets")
+            if args.get("include_value"):
+                val = [val[0], per[val[0]]]
         else:
             idx = _aggregate_rows(view, plan, base)
+            # A whole-population total is not a candidate category even when
+            # intermediate groups are explicitly eligible for comparison.
+            idx = [i for i in idx if not TOTAL_LABEL.search(str(df.at[i, "_label"]))]
             idx = _first_root_scope(view, idx) if r.get("scope") is None else idx
             c = cols[0] if cols else view.numeric_cols()[0]
             vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}
             vals = {i: v for i, v in vals.items() if isinstance(v, (int, float, np.floating)) and not math.isnan(v)}
             best = _pick(list(vals), lambda i: sign * tf(vals[i]), plan, "rows")
             val = [df.at[b, "_label"] for b in best]
+            if args.get("include_value"):
+                value = _col_values(view, args["return"], [best[0]]).iloc[0] if args.get("return") else vals[best[0]]
+                val = [val[0], value]
         if isinstance(val, list) and len(val) == 1:
             val = val[0]
     elif op == "rank":
@@ -461,6 +541,7 @@ def _first_root_scope(view, idx):
 
 def to_spec(fmt: dict) -> FormatSpec:
     return FormatSpec(kind=fmt.get("kind", "text"), decimals=fmt.get("decimals"), count=fmt.get("count"),
+                      item_kinds=fmt.get("item_kinds") or [],
                       item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [])
 
 

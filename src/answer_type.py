@@ -17,9 +17,9 @@ def expected_type(query: str, fmt: dict) -> str:
         return "list"
     if k == "date" or re.search(r"yyyy-mm-dd|\bwhat date\b|\bwhich date\b|\bon what day\b", low):
         return "date"
-    if re.search(r"\b(which|what|in which) year\b|4-digit year", low):
+    if re.search(r"\b(which|what|in which) year\b|4-digit year|\bonly the year\b", low):
         return "year"
-    if re.search(r"\bhow many (more|less|fewer)\b|\bhow much\b|\bby how much\b", low):
+    if re.search(r"\bhow many (more|less|fewer|percentage points?|percent points?)\b|\bhow much\b|\bby how much\b", low):
         return "number"
     if re.search(r"\bhow many\b", low):
         return "count"
@@ -43,11 +43,17 @@ def plan_type(plan: dict, view=None) -> str:
         return "yesno"
     if op == "count":
         return "count"
+    if op == "select":
+        return "label"
     if op in ("argmax", "argmin"):
+        if a.get("include_value"):
+            return "list"
         return "year" if a.get("over") == "sheets" else "label"
     if op == "rank":
         return "list"
     if op == "values":
+        return "list"
+    if op == "winner_diff":
         return "list"
     if op == "nth":
         ret = a.get("return")
@@ -85,6 +91,13 @@ def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan
         if not _answer_counts(ans, fmt, query, plan):
             return False
     a = str(ans).strip()
+    if fmt.get("item_kinds"):
+        parts = a.rsplit(fmt.get("sep", ", "), len(fmt["item_kinds"]) - 1)
+        if len(parts) != len(fmt["item_kinds"]):
+            return False
+        for part, kind in zip(parts, fmt["item_kinds"]):
+            if kind in ("number", "decimal", "int") and not re.fullmatch(r"-?\d+(?:\.\d+)?", part):
+                return False
     num = re.fullmatch(r"-?\d+(\.\d+)?", a) is not None
     if expected == "yesno":
         return a in ("Yes", "No")

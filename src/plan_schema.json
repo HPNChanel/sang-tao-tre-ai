@@ -53,6 +53,8 @@
      },
      "description": "row labels or ' > ' paths, in question order; prefix 'Sheet!' to pick a row from one sheet of a stacked table"
     },
+    "label_kind": {"enum": ["year"]},
+    "exclude_paths": {"type": "array", "items": {"type": "string"}},
     "scope": {
      "type": [
       "string",
@@ -100,7 +102,8 @@
          "<",
          "==",
          "!=",
-         "year=="
+         "year==",
+         "digits=="
         ]
        },
        "value": {
@@ -108,7 +111,8 @@
          "number",
          "string"
         ]
-       }
+       },
+       "value_column": {"type": "string"}
       }
      }
     }
@@ -124,6 +128,10 @@
   "op": {
    "enum": [
     "lookup",
+    "select",
+    "winner_diff",
+    "percent_change",
+    "spread",
     "values",
     "sum",
     "diff",
@@ -145,16 +153,25 @@
    "type": "object",
    "additionalProperties": false,
    "properties": {
+    "include_value": {"type": "boolean"},
+    "decrease": {"type": "boolean"},
+    "value": {"type": "number"},
     "over": {
      "enum": [
       "rows",
       "columns",
+      "sections",
+      "column_groups",
       "sheets"
      ]
     },
     "abs": {
      "type": "boolean"
     },
+    "metric": {"enum": ["difference", "previous_difference", "sum"]},
+    "reverse_metric": {"type": "boolean"},
+    "metric_groups": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+      "required": ["name", "columns"], "properties": {"name": {"type": "string"}, "columns": {"type": "array", "items": {"type": "string"}}}}},
     "signed_order": {
      "enum": [
       "first_minus_second",
@@ -264,6 +281,7 @@
       "null"
      ]
     },
+    "item_kinds": {"type": "array", "items": {"enum": ["name", "number", "int", "decimal"]}},
     "sep": {
      "type": "string"
     },
