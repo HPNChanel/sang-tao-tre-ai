@@ -22,7 +22,8 @@ def resource_checks(work, inputs, sockets):
         command[position:position]=['--mount',f'type=bind,src={ROOT / "tests"},dst=/checks,readonly',
                                     '--env=PYTHONPATH=/app','--env=PYTEST_DISABLE_PLUGIN_AUTOLOAD=1']
         command += ['/harness/ci_memory_probe.py','python','-m','pytest','-q','-p','no:cacheprovider',
-                    '/checks/test_campaign_fault_matrix.py','/checks/test_runtime_deadline.py']
+                    '/checks/test_campaign_fault_matrix.py','/checks/test_cellplan_v2_fault_matrix.py',
+                    '/checks/test_runtime_deadline.py']
         result=subprocess.run(command,capture_output=True,text=True,timeout=180)
         state=json.loads(subprocess.check_output(['docker','inspect','stai-fault-probe']))[0]
         subprocess.run(['docker','rm','stai-fault-probe'],capture_output=True,check=True)

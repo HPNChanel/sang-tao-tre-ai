@@ -1,7 +1,7 @@
 """Check the contest Docker contract using only a generated workbook.
 
 Run after installing requirements.txt on a host with Docker. The image stays
-local to that host. Both container runs have no network and a 1 GiB memory cap.
+local to that host. Both container runs have no network and a 1,000,000,000-byte memory cap.
 """
 import csv
 import datetime as dt
@@ -87,7 +87,7 @@ def main():
             out.mkdir()
             result = checked(
                 "docker", "run", "--rm", "--platform=linux/amd64",
-                "--network=none", "--memory=1g", "--memory-swap=1g",
+                "--network=none", "--memory=1000000000", "--memory-swap=1000000000",
                 "--cpus=2", "--pids-limit=128",
                 "--mount", f"type=bind,src={inputs},dst=/input,readonly",
                 "--mount", f"type=bind,src={out},dst=/output",
@@ -109,7 +109,7 @@ def main():
             outputs.append(output.read_bytes())
             print(f"PASS {label}: six arguments, exact CSV and ID order, stderr logs, input unchanged")
         assert outputs[0] == outputs[1], "fake-key and no-key results differ"
-        print("PASS Docker: linux/amd64, ENTRYPOINT, network disabled, 1 GiB cap, no GPU requested")
+        print("PASS Docker: linux/amd64, ENTRYPOINT, network disabled, 1,000,000,000-byte cap, no GPU requested")
 
 
 if __name__ == "__main__":
