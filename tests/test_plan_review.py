@@ -139,6 +139,22 @@ def test_composed_extremum_cannot_be_a_grand_sum(tables):
     assert not R.semantic_errors(p, "What is the highest sum of 2031 and 2032 per place?", tables)
 
 
+def test_returning_total_after_ranking_is_not_a_composed_extremum():
+    p = plan(); p.update(op="argmax", columns=["Agriculture", "Total"],
+                        args={"by":"Agriculture", "return":"Total", "include_value":True})
+    assert not R.semantic_errors(p, "Find the year in which Agriculture was highest and state the Total employed.")
+    assert not R.semantic_errors(p, "Find the highest Agriculture and return Total.")
+
+
+def test_comparison_count_must_filter_rows_before_counting(tables):
+    p = plan(); p.update(op="count", columns=["2031", "2032"], args={"cmp":">", "n":1})
+    p["rows"] = {"paths": []}
+    query = "How many places had 2031 strictly higher than 2032?"
+    assert R.semantic_errors(p, query, tables)
+    p["rows"]["where"] = [{"column":"2031", "op":">", "value_column":"2032"}]
+    assert not R.semantic_errors(p, query, tables)
+
+
 def test_named_exclusion_cannot_disappear(tables):
     p = plan(); p.update(op="sum"); p["rows"]["paths"] = []
     assert R.semantic_errors(p, "Among places, excluding Bay, sum 2031.", tables)

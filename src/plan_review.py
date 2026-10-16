@@ -88,7 +88,10 @@ def semantic_errors(plan, query, tables=None):
     args, columns = plan.get("args", {}), plan.get("columns", [])
     errors = []
     extreme = re.search(r"\b(?:highest|largest|greatest|maximum|lowest|smallest|minimum|cao nhat|lon nhat|thap nhat|nho nhat)\b", low)
-    combined = re.search(r"\b(?:sum|combined|total|tong)\b", low)
+    # A column named Total may be a returned value after ranking by another
+    # column. Only wording that actually asks to combine measures implies a
+    # derived metric; the bare word 'total' does not establish that operation.
+    combined = re.search(r"\b(?:sum|combined|tong)\b|\btotal\s+(?:of|for both)\b", low)
     if extreme and combined and len(columns) >= 2:
         if plan["op"] not in ("max", "min", "argmax", "argmin", "nth", "rank", "topk_agg"):
             errors.append("composed extremum requires a reduction after the per-row calculation")
@@ -113,6 +116,13 @@ def semantic_errors(plan, query, tables=None):
     # Explicit scalar thresholds must not disappear in an unconditional plan.
     if re.search(r"(?:>=|<=|>|<)\s*-?\d", query) and not plan.get("rows", {}).get("where") and plan["op"] != "compare":
         errors.append("explicit threshold is missing")
+    if plan["op"] == "count" and len(columns) >= 2 and re.search(
+            r"\b(?:higher|greater|larger|more|lower|less|smaller)\s+than\b|\b(?:lon|cao|nho|thap)\s+hon\b", low):
+        # count ignores args.cmp; comparisons must filter rows before counting.
+        if not any(w.get("column") in columns and w.get("value_column") in columns
+                   and w.get("column") != w.get("value_column")
+                   for w in plan.get("rows", {}).get("where", [])):
+            errors.append("comparison count requires a rows.where value_column predicate")
     if tables:
         view = _view_for(plan, tables)
         rows = plan.get("rows", {})
