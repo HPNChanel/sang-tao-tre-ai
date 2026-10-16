@@ -253,6 +253,7 @@
     "kind"
    ],
    "properties": {
+    "empty": {"type": ["string", "null"]},
     "kind": {
      "enum": [
       "int",

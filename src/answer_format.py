@@ -20,12 +20,13 @@ class FormatSpec:
     instruction: str = ""
     prefix: str = ""
     suffix: str = ""
+    empty: str | None = None
 
 
 def _instr(q: str) -> str:
     sents = re.split(r"(?<=[.?!])\s+(?=[A-Z])", q.strip())
     for i, sentence in enumerate(sents):
-        if re.match(r"(answer|provide|respond|give|return|use)\b", sentence, re.I) and re.search(
+        if re.match(r"(?:otherwise\s+)?(answer|provide|respond|give|return|use)\b", sentence, re.I) and re.search(
                 r"\b(exactly|only|integer|decimal|number|name|label|separat\w*|join\w*)\b|[`'\"]|\banswer (with|as)\b|\byes or no\b",
                 sentence, re.I):
             # Keep rounding/sign qualifications after the formatting sentence.
@@ -38,6 +39,9 @@ def parse_instruction(query: str) -> FormatSpec:
     ins = _instr(query)
     low = ins.lower()
     spec = FormatSpec(instruction=ins)
+    empty = re.search(r"\bif\s+(?:none(?:\s+qualify)?|no\s+row\s+qualifies)\s*,?\s*(?:use|return|output)\s+['\"]?([\w/-]+)", query, re.I)
+    if empty:
+        spec.empty = empty[1]
     separator = (re.search(r"(?:separated\s+by|joined(?:\s+(?:by|with))?|join\s+with)\s+[`'\"]([^`'\"]*)[`'\"]", ins, re.I)
                  or re.search(r"\buse(?:\s+exactly)?\s+[`'\"]([^`'\"]*)[`'\"]\s+(?:between|to separate)", ins, re.I))
     if separator:

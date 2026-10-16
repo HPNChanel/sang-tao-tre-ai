@@ -24,6 +24,10 @@ def needs_review(query, tables):
 def apply_format(plan, query):
     """Literal output requirements are deterministic and never an LLM choice."""
     spec = parse_instruction(query)
+    if spec.empty is None:
+        plan.setdefault("format", {}).pop("empty", None)
+    else:
+        plan.setdefault("format", {})["empty"] = spec.empty
     if not spec.instruction:
         return
     fmt = plan.setdefault("format", {})
@@ -123,6 +127,12 @@ def semantic_errors(plan, query, tables=None):
         references = list(columns) + [args.get("by"), args.get("return")]
         for clause in rows.get("where", []):
             references.extend([clause.get("column"), clause.get("value_column")])
+        from .explicit_filters import predicates
+        from .planner import strip_instruction
+        required, _ = predicates(strip_instruction(query, parse_instruction(query)), view)
+        for condition in required:
+            if condition not in rows.get("where", []) and plan["op"] != "compare":
+                errors.append("explicit bound predicate missing: " + condition["column"])
         for column in view.columns:
             # Explicit comparison syntax has an unambiguous column, operator
             # and numeric value. Check the binding as well as its presence.

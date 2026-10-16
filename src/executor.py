@@ -264,6 +264,8 @@ def execute(plan, tables):
     elif op == "select":
         idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
         if not idx:
+            if plan.get("format", {}).get("empty") is not None:
+                return plan["format"]["empty"]
             raise PlanError("no rows satisfy all conditions")
         val = [df.at[i, "_label"] for i in idx]
         if len(val) == 1:
@@ -309,6 +311,8 @@ def execute(plan, tables):
             if r.get("scope") is None and not r.get("range") and not r.get("where") and not (plan.get("table") or {}).get("sheet"):
                 idx = _first_root_scope(view, idx)
         idx = _apply_where(view, idx, r.get("where"))
+        if not idx and plan.get("format", {}).get("empty") is not None:
+            return plan["format"]["empty"]
         if op == "count":
             val = len(idx)
         else:
@@ -551,7 +555,7 @@ def to_spec(fmt: dict) -> FormatSpec:
     return FormatSpec(kind=fmt.get("kind", "text"), decimals=fmt.get("decimals"), count=fmt.get("count"),
                       item_kinds=fmt.get("item_kinds") or [],
                       item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [],
-                      prefix=fmt.get("prefix", ""), suffix=fmt.get("suffix", ""))
+                      prefix=fmt.get("prefix", ""), suffix=fmt.get("suffix", ""), empty=fmt.get("empty"))
 
 
 def answer(plan, tables) -> str:

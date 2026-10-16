@@ -91,6 +91,9 @@ def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan
     # Formatting affixes do not change the computed value's type. Require
     # their exact presence before checking the numeric/list payload.
     ans = str(ans)
+    from .answer_format import parse_instruction
+    if query and fmt.get("empty") is not None and ans == fmt["empty"] == parse_instruction(query).empty:
+        return True
     prefix, suffix = fmt.get("prefix", ""), fmt.get("suffix", "")
     if not ans.startswith(prefix) or not ans.endswith(suffix):
         return False
