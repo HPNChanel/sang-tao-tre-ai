@@ -86,7 +86,11 @@ def test_error_paths_no_plan_bounded(monkeypatch, bad):
     plan, b, t = _run(monkeypatch, [bad] * 5)
     assert plan is None
     assert len(t.bodies) == b.attempts == L.MAX_ATTEMPTS == len(b.log)
-    assert b.spent > 0 and b.tokens > 0 and b.spent <= b.cap
+    assert b.spent > 0 and b.spent <= b.cap
+    if b.token_usage_unknown:
+        assert b.unresolved_usd > 0 and b.cost_usd is None
+    else:
+        assert b.tokens > 0
 
 
 def test_reasoning_tokens_logged_separately(monkeypatch):

@@ -996,7 +996,11 @@ def main(argv=None):
                                      "completion_tokens": b.completion_tokens,
                                      "reasoning_tokens": b.reasoning_tokens,
                                      "attempts": b.log,
-                                     "cost_usd": round(b.spent, 6)}) + "\n")
+                                     "cost_usd": b.cost_usd,
+                                     "actual_cost_usd": b.actual_usd,
+                                     "unresolved_cost_usd": b.unresolved_usd,
+                                     "budget_exposure_usd": b.spent,
+                                     "token_usage_unknown": b.token_usage_unknown}) + "\n")
                 lf.flush()
                 print(f"{qid}\t{time.perf_counter()-t:.4f}s\t{ans!r}", file=sys.stderr)
                 _RUN.pending += 1

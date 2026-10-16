@@ -28,14 +28,16 @@ def _setup(monkeypatch, responses):
 
 
 def test_failed_then_retry_logged(monkeypatch, tmp_path):
-    ok = {"usage": {"prompt_tokens": 100, "completion_tokens": 20},
+    ok = {"usage": {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.000045},
           "choices": [{"message": {"content": '{"version": 1, "op": "sum", "format": {"kind": "int"}}'}}]}
     calls = _setup(monkeypatch, [TimeoutError("boom"),
                                  {"choices": [{"message": {"content": "not json"}}]}, ok])
     ans, b = run.answer_one({"id": "q1", "file_name": "f.xlsx", "query": "Q?"}, tmp_path, {})
     assert ans == "42" and len(calls) == 3 and b.attempts == 3
     real = 100 * llm_client.PRICE_IN + 20 * llm_client.PRICE_OUT
-    assert b.tokens > 120 and b.spent > real  # failed attempts charged worst case
+    assert b.tokens == 120 and b.unresolved_usd == 0.06
+    assert abs(b.actual_usd - real) < 1e-12 and b.cost_usd is None
+    assert b.token_usage_unknown  # no fabricated token usage for failed calls
 
 
 def test_all_fail_blank_answer_still_logs_cost(monkeypatch, tmp_path):
@@ -45,7 +47,9 @@ def test_all_fail_blank_answer_still_logs_cost(monkeypatch, tmp_path):
     out = tmp_path / "o" / "submission.csv"
     run.main(["--data", str(d), "--out", str(out)])
     log = [json.loads(l) for l in open(out.parent / "run_log.jsonl")]
-    assert log[0]["id"] == "q1" and log[0]["tokens"] > 0 and log[0]["cost_usd"] > 0
+    assert log[0]["id"] == "q1" and log[0]["tokens"] == 0 and log[0]["cost_usd"] is None
+    assert log[0]["unresolved_cost_usd"] == .09 and log[0]["budget_exposure_usd"] == .09
+    assert log[0]["token_usage_unknown"] is True
     assert out.read_text().splitlines()[1] == "q1,"
 
 

@@ -6,7 +6,10 @@ PLAN = {"version": 1, "op": "argmax", "args": {"ties": "all"}, "format": {"kind"
 
 
 def resp(content, prompt=400, completion=60, reasoning=None, finish="stop", reasoning_text=None):
-    u = {"prompt_tokens": prompt, "completion_tokens": completion}
+    # Explicit synthetic billing metadata; tests must not infer billed cost
+    # from token counts when the response has no usage.cost.
+    u = {"prompt_tokens": prompt, "completion_tokens": completion,
+         "cost": prompt * 0.00000025 + completion * 0.000001}
     if reasoning is not None:
         u["completion_tokens_details"] = {"reasoning_tokens": reasoning}
     msg = {"role": "assistant", "content": content}
