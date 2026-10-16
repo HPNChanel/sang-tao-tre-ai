@@ -156,3 +156,27 @@ def test_completed_receipts_recover_without_replaying_or_changing_identity(tmp_p
     (tmp_path/'received/run-002.aesgcm').write_bytes(b'gap')
     with pytest.raises(ValueError):
         session.recover()
+
+
+def test_public_packet_excludes_goldens_and_preserves_ledger_identity(tmp_path,monkeypatch):
+    import prepare_campaign_transport as P
+    import qwen_campaign as C
+    data=tmp_path/'data';(data/'xlsx_files').mkdir(parents=True)
+    (data/'queries.json').write_text(json.dumps([{'id':'opaque','query':'Synthetic','file_name':'book.xlsx'}]))
+    (data/'xlsx_files/book.xlsx').write_bytes(b'synthetic workbook')
+    (data/'answers.json').write_text('{"opaque":"NEVER COPY THIS"}')
+    archive=tmp_path/'source.zip'
+    archive.write_bytes(zip_bytes([('SOURCE_MANIFEST.json',json.dumps({'source_commit':'a'*40,'files':{}}).encode())]))
+    private={}
+    monkeypatch.setattr(P,'save_private',lambda path,raw:private.update(json.loads(raw)))
+    configuration={'policy':'fallback','output_tokens':600,'api_enabled':True}
+    spec={'stage':'baseline','split':'public','frozen_benchmark_manifest_sha256':'b'*64,
+          'sources':{'candidate':str(archive)},'datasets':[{'label':'synthetic','path':str(data)}],
+          'configurations':{'candidate':configuration}}
+    out=tmp_path/'transport';P.prepare(spec,out,'c'*40)
+    manifest=json.loads((out/'manifest.json').read_bytes());batch=manifest['batches'][0]
+    clear=W.decrypt((out/batch['cipher_file']).read_bytes(),base64.b64decode(private['input_key']),batch['aad'])
+    assert b'NEVER COPY THIS' not in clear and set(batch['files'])=={'queries.json','xlsx_files/book.xlsx'}
+    ledger=C.Ledger.create(tmp_path/'ledger.json','synthetic')
+    expected=ledger.register('baseline','a'*40,batch['input_sha256'],configuration,batch['ids'])
+    assert expected==manifest['runs'][0]['invocation']
