@@ -11,12 +11,28 @@ ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = {"Dockerfile", "requirements.txt", "run.py"}
 
 
+HYBRID_ROUTE = """
+
+The `hybrid` profile routes each question. It first runs the baseline rules: a
+strict rule answer that needs no review is returned at once, and a question
+whose operands the legacy rule planner resolves with full confidence goes to the
+baseline Qwen review. Every other question goes to CellPlanV2: Qwen reads a
+bounded description of the workbook and writes a JSON plan of reads, filters,
+joins, aggregates and derived values; Python checks the plan against the
+workbook, executes it and formats the answer. If CellPlanV2 returns no answer,
+the baseline review runs within the remaining time and call budget. A question
+makes at most three model calls in total."""
+
+
 def submission_readme(payload):
     docker = payload["Dockerfile"].decode("utf-8")
+    profile = re.search(r"DS2_SOLVER_PROFILE=(legacy|direct|raw|dual|hybrid)\b", docker)
     policy = re.search(r"QWEN_REVIEW_POLICY=(fallback|selective)\b", docker)
     tokens = re.search(r"QWEN_MAX_OUTPUT_TOKENS=(600|1200)\b", docker)
+    profile = profile[1] if profile else "legacy"
     policy = policy[1] if policy else "fallback"
     tokens = tokens[1] if tokens else "600"
+    route = HYBRID_ROUTE if profile == "hybrid" else ""
     return rf"""# PDU Team Excel question answering
 
 The program answers natural-language questions from new Excel workbooks.
@@ -66,6 +82,7 @@ python3.11 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 mkdir -p output
+export DS2_SOLVER_PROFILE={profile}
 export QWEN_REVIEW_POLICY={policy}
 export QWEN_MAX_OUTPUT_TOKENS={tokens}
 export OPENROUTER_API_KEY='YOUR_OPENROUTER_KEY'
@@ -80,11 +97,12 @@ python run.py \
 
 ## Configuration
 
-The packaged profile is `{policy}` with at most `{tokens}` output tokens per
-model call. The Dockerfile records its defaults; direct Python runs need the
-exports shown above. `fallback` calls Qwen when deterministic planning cannot
-answer; `selective` also reviews supported risk signals. Qwen proposes a JSON
-plan, and Python validates references and executes the supported operations.
+The packaged solver profile is `{profile}` with review policy `{policy}` and at
+most `{tokens}` output tokens per model call. The Dockerfile records these
+defaults; direct Python runs need the exports shown above. `fallback` calls Qwen
+when deterministic planning cannot answer; `selective` also reviews supported
+risk signals. Qwen proposes a JSON plan, and Python validates references and
+executes the supported operations.{route}
 
 Supply credentials only at runtime. To run without API calls, replace the
 `--openrouter-key` value with an empty string (`--openrouter-key ''`). No-key

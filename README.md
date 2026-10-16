@@ -47,8 +47,9 @@ python3.11 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 mkdir -p output
+export DS2_SOLVER_PROFILE=hybrid
 export QWEN_REVIEW_POLICY=selective
-export QWEN_MAX_OUTPUT_TOKENS=600
+export QWEN_MAX_OUTPUT_TOKENS=1200
 export OPENROUTER_API_KEY='YOUR_OPENROUTER_KEY'
 python run.py \
   --xlsx-dir ./input/xlsx_files \
@@ -61,11 +62,22 @@ python run.py \
 
 ## Configuration
 
-The packaged profile is `selective` with at most `600` output tokens per
-model call. The Dockerfile records its defaults; direct Python runs need the
-exports shown above. `fallback` calls Qwen when deterministic planning cannot
-answer; `selective` also reviews supported risk signals. Qwen proposes a JSON
-plan, and Python validates references and executes the supported operations.
+The packaged solver profile is `hybrid` with review policy `selective` and at
+most `1200` output tokens per model call. The Dockerfile records these
+defaults; direct Python runs need the exports shown above. `fallback` calls Qwen
+when deterministic planning cannot answer; `selective` also reviews supported
+risk signals. Qwen proposes a JSON plan, and Python validates references and
+executes the supported operations.
+
+The `hybrid` profile routes each question. It first runs the baseline rules: a
+strict rule answer that needs no review is returned at once, and a question
+whose operands the legacy rule planner resolves with full confidence goes to the
+baseline Qwen review. Every other question goes to CellPlanV2: Qwen reads a
+bounded description of the workbook and writes a JSON plan of reads, filters,
+joins, aggregates and derived values; Python checks the plan against the
+workbook, executes it and formats the answer. If CellPlanV2 returns no answer,
+the baseline review runs within the remaining time and call budget. A question
+makes at most three model calls in total.
 
 Supply credentials only at runtime. To run without API calls, replace the
 `--openrouter-key` value with an empty string (`--openrouter-key ''`). No-key
