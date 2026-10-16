@@ -56,6 +56,11 @@ def test_reversed_increase_and_missing_threshold_are_rejected():
     assert R.semantic_errors(p, "Increase from 2031 to 2032")
     p["args"]["signed_order"] = "second_minus_first"
     assert not R.semantic_errors(p, "Increase from 2031 to 2032")
+    p["columns"] = ["2032", "2031"]
+    assert R.semantic_errors(p, "Increase from 2031 to 2032")
+    p["args"]["signed_order"] = "first_minus_second"
+    assert not R.semantic_errors(p, "Increase from 2031 to 2032")
+    assert R.semantic_errors(p, "Decrease from 2031 to 2032")
     assert R.semantic_errors(plan(), "Sum values where 2031 > 14")
 
 
@@ -94,6 +99,14 @@ def test_valid_schema_cannot_substitute_another_named_row_or_measure(tables):
     assert R.semantic_errors(p, "Bay in 2031.", tables)
     p["op"] = "sum"; p["rows"] = {"where": [{"column":"2031", "op":"<", "value":14}]}
     assert R.semantic_errors(p, "Sum 2032 where 2031 > 14.", tables)
+
+
+def test_aggregate_proposal_cannot_evade_named_operand_checks(tables, monkeypatch):
+    wrong = plan("Hill"); wrong.update(op="sum", columns=["2032"])
+    calls = transport(monkeypatch, [wrong, wrong])
+    b = L.Budget()
+    assert R.choose("Bay in 2031. Answer with an integer.", tables, "survey.xlsx", b, load_schema(), "q") == "10"
+    assert b.decision["source"] == "rule" and len(calls) == 2
 
 
 def test_explicit_affixes_are_preserved_without_erasing_decimal_precision():

@@ -83,13 +83,20 @@ def semantic_errors(plan, query, tables=None):
     low = _fold(query)
     args, columns = plan.get("args", {}), plan.get("columns", [])
     errors = []
-    if re.search(r"\b(?:increase|gain|growth|tang)\b.*\b(?:from|tu) (\d{4}) (?:to|den) (\d{4})\b", low):
-        years = re.search(r"\b(?:from|tu) (\d{4}) (?:to|den) (\d{4})\b", low).groups()
-        if len(columns) == 2 and all(y in str(c) for y, c in zip(years, columns)):
-            if args.get("metric") == "difference" and not args.get("reverse_metric", False):
-                errors.append("increase subtracts later from earlier")
-            if plan["op"] == "diff" and args.get("signed_order", "first_minus_second") != "second_minus_first":
-                errors.append("increase has reversed operands")
+    direction = re.search(r"\b(increase|gain|growth|tang|decrease|reduction|giam)\b.*\b(?:from|tu) (\d{4}) (?:to|den) (\d{4})\b", low)
+    if direction and len(columns) == 2:
+        years = direction[2], direction[3]
+        positions = [[i for i, c in enumerate(columns) if re.search(r"(?<!\d)" + y + r"(?!\d)", c)] for y in years]
+        if all(len(p) == 1 for p in positions) and positions[0] != positions[1]:
+            positive = positions[0][0] if direction[1] in ("decrease", "reduction", "giam") else positions[1][0]
+            if args.get("metric") == "difference":
+                actual_positive = 1 if args.get("reverse_metric", False) else 0
+                if actual_positive != positive:
+                    errors.append("year-change metric has reversed operands")
+            if plan["op"] == "diff":
+                actual_positive = 1 if args.get("signed_order") == "second_minus_first" else 0
+                if actual_positive != positive or args.get("abs"):
+                    errors.append("year-change difference has wrong sign")
     if re.search(r"\b(?:percentage point|percentage points)\b", low) and plan["op"] in ("ratio", "percent_change", "share"):
         errors.append("percentage-point difference is not relative percent change")
     # Explicit scalar thresholds must not disappear in an unconditional plan.
@@ -100,8 +107,13 @@ def semantic_errors(plan, query, tables=None):
         rows = plan.get("rows", {})
         named = {str(label) for label in view.df["_label"] if _fold(label)
                  and f" {_fold(label)} " in f" {low} "}
-        if named and plan["op"] in ("lookup", "values", "diff", "ratio", "compare"):
+        if named:
             selected = {p.split("!")[-1].split(" > ")[-1] for p in rows.get("paths", [])}
+            if rows.get("scope"):
+                selected.add(rows["scope"].split(" > ")[-1])
+            for clause in rows.get("where", []):
+                if clause.get("column") == view.label_name and clause.get("op") == "==":
+                    selected.add(str(clause.get("value")))
             if selected and not selected <= named:
                 errors.append("selected row contradicts named operands")
         references = list(columns) + [args.get("by"), args.get("return")]
@@ -121,10 +133,10 @@ def semantic_errors(plan, query, tables=None):
                     found = False
                 if not found and plan["op"] != "compare":
                     errors.append("explicit condition binding differs: " + str(column))
-        if plan["op"] == "lookup" and named:
+        if named:
             explicit_columns = [c for c in view.columns if f" {_fold(c)} " in f" {low} "]
-            if len(explicit_columns) == 1 and columns and explicit_columns[0] not in references:
-                errors.append("lookup column contradicts explicit measure")
+            if len(explicit_columns) == 1 and explicit_columns[0] not in references:
+                errors.append("result measure contradicts explicit column")
     return errors
 
 
