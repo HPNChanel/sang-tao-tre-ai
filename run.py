@@ -18,7 +18,9 @@ from src import seams, llm_client, plan_validate  # noqa: E402
 PLAN_SCHEMA_FILE = Path(__file__).resolve().parent / "src" / "plan_schema.json"
 _SHEET_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm", ".xls")
 _MISS = object()
-DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_TIMEOUT_S = 90.0
+PROCESSING_LIMIT_S = 2390.0
+FINALIZE_RESERVE_S = 10.0
 DEFAULT_PRELOAD_S = 120.0
 DEFAULT_RSS_MB = 640
 _KILL_GRACE_S = 0.5
@@ -311,7 +313,7 @@ def _on_alarm(signum, frame):
 
 
 def _run_alarmed(fn, timeout):
-    """Interrupt fn on this thread. Used only for the parent-side LLM step.
+    """Interrupt parent-side review/LLM work on POSIX.
 
     This is not the no-fork fallback. That path cannot interrupt a query that
     has already started.
@@ -529,7 +531,7 @@ def _load_killable(path, timeout):
 
 
 def _load_into_parent(path, use_fork, preload_timeout):
-    """Parse outside the per-query answer limit.
+    """Parse within the remaining shared query deadline.
 
     With fork, the loader child is killed at preload_timeout. Without fork the
     parse runs to completion; it cannot be interrupted.
@@ -645,11 +647,11 @@ def _note_timeout(qid):
 def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeout=None, whole_query=False):
     """Answer one query.
 
-    With fork, a cache hit runs only the answer in a child, and the parent
-    kills that child at the query limit. A cache miss, --no-cache, or a file
-    that failed preload parses inside that same child, so parsing counts
-    toward the same limit. Without fork a query that has started runs to
-    completion; the run loop skips later queries past the deadline.
+    With fork, parsing and rule planning run in killable child phases under
+    one clock. Parent-side review and LLM calls use the remaining time. Parsed
+    tables are cached lazily, including when later rule planning times out.
+    Without POSIX process/alarm support, parsing and Python computation cannot
+    be forcibly interrupted; HTTP calls still receive the shared deadline.
     """
     if use_fork is None:
         use_fork = _want_fork(False)
@@ -665,29 +667,29 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
     ans = None
     tables = None
     started = time.monotonic()
+    budget.deadline = None if limit is None else started + limit
     try:
         hit = _MISS if whole_query or not cache.enabled else cache.lookup(path)
-        if use_fork and limit is not None and hit is _MISS:
-            ans = _fork_miss(
-                path, q["query"], fname, limit, cache,
-                allow_store=cache.enabled and not whole_query,
-            )
+        if hit is _MISS:
+            cache.make_room()
+            left = _remaining(started, limit)
+            if left is not None and left <= 0:
+                raise _QueryTimedOut()
+            parse_limit = min(preload_timeout, left) if left is not None and preload_timeout > 0 else left
+            tables = _load_into_parent(path, use_fork, parse_limit or 0)
             if cache.enabled and not whole_query:
-                hit = cache.lookup(path)
-                if hit is not _MISS:
-                    tables = hit
-        elif hit is not _MISS:
-            tables = hit
-            started = time.monotonic()
-            ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
+                cache.store(path, tables)
         else:
-            tables = _cached_tables(cache, path, use_fork, preload_timeout)
-            started = time.monotonic()
-            ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
+            tables = hit
+        # Parsing, planning, validation and every retry use this same clock.
+        # No clock reset after a cache miss.
+        if limit is not None and _remaining(started, limit) <= 0:
+            raise _QueryTimedOut()
+        ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
         review = False
         if ans is not None and tables is not None and llm_client.enabled():
             from src.plan_review import needs_review
-            review = needs_review(q["query"], tables)
+            review = _run_alarmed(lambda: needs_review(q["query"], tables), _remaining(started, limit))
         if (ans is None or review) and llm_client.enabled() and seams.have_executor():
             if tables is None:
                 left = _remaining(started, limit)
@@ -881,6 +883,7 @@ def _open_run_log(path):
 
 
 def main(argv=None):
+    run_started = time.monotonic()
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=None)
     ap.add_argument("--out", default=None)
@@ -892,13 +895,13 @@ def main(argv=None):
     ap.add_argument("--openrouter-base-url", default=None)
     ap.add_argument("--log", default=None, help="JSONL log (legacy default: <out dir>/run_log.jsonl)")
     ap.add_argument("--query-timeout", type=float, default=None,
-                    help="Seconds for one forked child (default 20, or DS2_QUERY_TIMEOUT). "
+                    help="Seconds for the whole query (default 90, or DS2_QUERY_TIMEOUT). "
                          "The parent sends SIGTERM at this limit, then SIGKILL. "
                          "A cache hit times only the answer. A cache miss times parse and answer together. "
                          "0 disables. Without fork this does not interrupt a running query; "
                          "queries stop being started after timeout times the query count.")
     ap.add_argument("--preload-timeout", type=float, default=None,
-                    help="Seconds to parse one workbook into the cache "
+                    help="Legacy maximum parse time inside the shared query deadline "
                          "(default 120, or DS2_PRELOAD_TIMEOUT). "
                          "With fork the loader is killed at this limit. "
                          "Without fork a parse runs to completion.")
@@ -955,11 +958,11 @@ def main(argv=None):
     previous_term = signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         _flush_submission()
-        skipped = _preload(cache, data, byid, execution, use_fork, preload_timeout)
-        # Checked only between queries. One query already running is not stopped.
-        run_deadline = None
+        # Load each workbook on its first question. Setup and parsing count
+        # toward the 2,390-second processing window, leaving ten seconds for CSV.
+        run_deadline = run_started + PROCESSING_LIMIT_S
         if not use_fork and timeout > 0:
-            run_deadline = time.monotonic() + timeout * max(len(execution), 1)
+            run_deadline = min(run_deadline, run_started + timeout * max(len(execution), 1))
         with _open_run_log(log_path) as lf:
             for index, qid in enumerate(execution):
                 if run_deadline is not None and time.monotonic() >= run_deadline:
@@ -975,14 +978,13 @@ def main(argv=None):
                     lf.flush()
                     _flush_submission()
                     break
-                path = _resolve_workbook(data, byid[qid].get("file_name", ""))
-                whole = _path_key(path) in skipped
                 t = time.perf_counter()
+                left = run_deadline - time.monotonic()
+                query_limit = min(timeout, left) if timeout > 0 else left
                 try:
                     ans, b = answer_one(
-                        byid[qid], data, cache, timeout=timeout,
+                        byid[qid], data, cache, timeout=query_limit,
                         use_fork=use_fork, preload_timeout=preload_timeout,
-                        whole_query=whole,
                     )
                 except KeyboardInterrupt:
                     _flush_submission()
