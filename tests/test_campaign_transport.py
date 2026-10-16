@@ -65,7 +65,7 @@ def test_remote_requires_one_tls_origin(url):
 def proxy():
     calls = []
     class Remote:
-        def post(self,*args):
+        def post(self,*args,**kwargs):
             calls.append(args)
             return {"usage":{"cost":.001}}
     p = object.__new__(CI.ScopedProxy)

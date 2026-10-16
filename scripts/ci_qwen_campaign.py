@@ -38,10 +38,12 @@ class Remote:
         self.url, self.token = url.rstrip("/"), token
         self.opener = urllib.request.build_opener(NoRedirect())
 
-    def request(self, route, data=None, question=None, timeout=100):
+    def request(self, route, data=None, question=None, timeout=100, deadline=None):
         headers = {"Authorization":"Bearer " + self.token, "Content-Type":"application/json"}
         if question is not None:
             headers["X-Eval-Question"] = question
+        if deadline is not None:
+            headers["X-Eval-Deadline"] = str(deadline)
         request = urllib.request.Request(self.url + route, data=data, headers=headers)
         with self.opener.open(request, timeout=timeout) as response:
             raw = response.read(W.MAX_ARCHIVE + 1)
@@ -49,8 +51,8 @@ class Remote:
             raise ValueError("transport object too large")
         return raw
 
-    def post(self, route, data=b"{}", question=None):
-        return json.loads(self.request(route, data, question))
+    def post(self, route, data=b"{}", question=None, deadline=None):
+        return json.loads(self.request(route, data, question, deadline=deadline))
 
 
 class ScopedProxy(socketserver.ThreadingMixIn, getattr(socketserver, "UnixStreamServer", socketserver.TCPServer)):
@@ -97,6 +99,7 @@ class ScopedProxy(socketserver.ThreadingMixIn, getattr(socketserver, "UnixStream
                 if self.current is not None or self.position + 1 >= len(self.ids) or qid != self.ids[self.position + 1]:
                     raise ValueError("invalid case transition")
                 self.position, self.current, self.attempts = self.ids.index(qid), qid, 0
+                self.deadline = time.time() + 90
                 return {"accepted":True}
             if route == "/end" and self.current is not None:
                 self.current = None
@@ -115,7 +118,10 @@ class ScopedProxy(socketserver.ThreadingMixIn, getattr(socketserver, "UnixStream
             if suffix.strip() and not suffix.startswith("\n\nReview the two proposed JSON plans below"):
                 raise ValueError("unapproved question extension")
             self.attempts += 1
-            return self.remote.post(f"/chat/{self.run['number']}", guarded, self.current)
+            current, deadline = self.current, self.deadline
+        # Network settlement must not hold the case-transition lock. A timed
+        # out solver may finish its case while the durable gateway reconciles.
+        return self.remote.post(f"/chat/{self.run['number']}", guarded, current, deadline=deadline)
 
 
 def checked(command, log, timeout=600):

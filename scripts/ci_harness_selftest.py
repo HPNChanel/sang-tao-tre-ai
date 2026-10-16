@@ -36,7 +36,7 @@ def resource_checks(work, inputs, sockets):
 def main():
     calls=[]
     class Remote:
-        def post(self,route,body,question):
+        def post(self,route,body,question,**kwargs):
             assert route=='/chat/0' and question=='probe'
             calls.append(json.loads(body))
             return {'transport_probe':True}

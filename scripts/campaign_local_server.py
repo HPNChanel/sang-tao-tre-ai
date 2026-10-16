@@ -127,7 +127,7 @@ class Session:
             C.atomic_json(self.root / "environment-freeze.json", value)
         return {"accepted":True, "next_run":self.next_run}
 
-    def post(self, path, raw, authorization, question):
+    def post(self, path, raw, authorization, question, deadline=None):
         if path == "/freeze":
             return self.accept_freeze(json.loads(raw))
         match = re.fullmatch(r"/(start|chat|cost|result)/(\d+)", path)
@@ -150,7 +150,9 @@ class Session:
             if action == "chat":
                 if json.loads(raw).get("max_tokens") != self.manifest["runs"][number]["configuration"]["output_tokens"]:
                     raise ValueError("output cap differs from frozen configuration")
-                return gateway.call(authorization, question, raw)
+                if deadline is None:
+                    raise ValueError("paid relay requires a case deadline")
+                return gateway.call(authorization, question, raw, deadline=deadline)
             if action == "cost":
                 return self.ledger.totals(run=gateway.run)
             if len(raw) > W.MAX_ARCHIVE:
@@ -198,7 +200,9 @@ def make_server(session, port):
                 raw = self.rfile.read(size)
                 if len(raw) != size:
                     raise ValueError("incomplete request")
-                result = session.post(self.path, raw, self.headers.get("Authorization"), self.headers.get("X-Eval-Question"))
+                deadline = self.headers.get("X-Eval-Deadline")
+                result = session.post(self.path, raw, self.headers.get("Authorization"),
+                                      self.headers.get("X-Eval-Question"), float(deadline) if deadline else None)
                 self.answer(200, C.canonical(result))
             except Exception:
                 # Never reflect a provider response, prompt, key or traceback.
