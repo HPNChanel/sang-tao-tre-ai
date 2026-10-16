@@ -109,7 +109,7 @@ class Ledger:
             raise CampaignError("unknown evaluation configuration")
         if set(configuration)-{"policy", "output_tokens", "api_enabled", "solver_profile", "model"} or not isinstance(configuration["api_enabled"], bool):
             raise CampaignError("unexpected evaluation configuration")
-        if configuration.get('solver_profile','legacy') not in {'legacy','direct','raw','dual'}:
+        if configuration.get('solver_profile','legacy') not in {'legacy','direct','raw','dual','hybrid'}:
             raise CampaignError('unknown solver profile')
         if configuration.get('model',MODEL) not in {MODEL,'google/gemini-2.5-flash-lite'}:
             raise CampaignError('unapproved evaluation model')

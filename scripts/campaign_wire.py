@@ -115,7 +115,7 @@ def validate_manifest(manifest):
             for p in ("fallback", "selective") for t in (600,1200) for a in (True,False)
         ]:
             raise ValueError("unapproved configuration")
-        if config.get('solver_profile','legacy') not in {'legacy','direct','raw','dual'}:
+        if config.get('solver_profile','legacy') not in {'legacy','direct','raw','dual','hybrid'}:
             raise ValueError('unapproved solver profile')
         if config['api_enabled'] and 'stable_case_keys' not in batches[run['batch_index']]:
             raise ValueError('paid transport runs require stable case identities')

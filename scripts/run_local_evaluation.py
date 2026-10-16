@@ -43,7 +43,7 @@ def main():
     parser.add_argument("--output-tokens", type=int, choices=(600, 1200), default=600)
     parser.add_argument("--repetition", type=int, default=1)
     parser.add_argument("--no-key", action="store_true")
-    parser.add_argument('--solver-profile',choices=('legacy','direct','raw','dual'),default='legacy')
+    parser.add_argument('--solver-profile',choices=('legacy','direct','raw','dual','hybrid'),default='legacy')
     parser.add_argument('--model',default='qwen/qwen3.7-flash')
     parser.add_argument("--parallel", type=int, default=1, choices=range(1, 7),
                         help="20-question batches run at once inside this single ledger owner")

@@ -143,3 +143,25 @@ def test_hybrid_end_to_end_uses_the_existing_transport(workbook,monkeypatch):
     result,budget = ask(workbook,'What is the quantity of b?')
     assert result=='2' and budget.attempts==1 and budget.diagnostics['route']=='cellplan_v2'
     assert bodies[0]['messages'][1]['content'].endswith('\n\nQUESTION:\nWhat is the quantity of b?')
+
+
+def test_ledger_and_transport_accept_the_hybrid_profile_only(tmp_path):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0,str(Path(__file__).parents[1]/'scripts'))
+    import campaign_wire as W
+    import qwen_campaign as C
+    ledger = C.Ledger.create(tmp_path/'ledger.json','test')
+    config = {'policy':'selective','output_tokens':1200}
+    ledger.register('development','a'*40,'b'*64,dict(config,solver_profile='hybrid'),['x'],case_keys={'x':'d'*64})
+    with pytest.raises(C.CampaignError,match='solver profile'):
+        ledger.register('development','a'*40,'c'*64,dict(config,solver_profile='mixed'),['y'],case_keys={'y':'e'*64})
+    files = {'queries.json':'f'*64}
+    manifest = {'schema_version':1,'harness_sha':'a'*40,'sources':{'B':{'sha':'b'*40}},
+                'batches':[{'files':files,'input_sha256':W.input_digest(files),'ids':['x'],'stable_case_keys':{'x':'d'*64}}],
+                'runs':[{'number':0,'label':'B','batch_index':0,
+                         'configuration':dict(config,api_enabled=True,solver_profile='hybrid')}]}
+    W.validate_manifest(manifest)
+    manifest['runs'][0]['configuration']['solver_profile'] = 'mixed'
+    with pytest.raises(ValueError,match='solver profile'):
+        W.validate_manifest(manifest)

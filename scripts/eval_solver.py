@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--output-tokens", type=int, choices=(600, 1200), default=600)
     parser.add_argument("--policy", choices=("fallback", "selective"), default="fallback")
     parser.add_argument("--no-key", action="store_true")
-    parser.add_argument('--solver-profile',choices=('legacy','direct','raw','dual'),default='legacy')
+    parser.add_argument('--solver-profile',choices=('legacy','direct','raw','dual','hybrid'),default='legacy')
     parser.add_argument('--model',default='qwen/qwen3.7-flash')
     args = parser.parse_args()
     token = os.environ.pop("EVAL_GATEWAY_TOKEN", "")

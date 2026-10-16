@@ -29,7 +29,7 @@ def main():
     p.add_argument("--policy", choices=("fallback","selective"), required=True)
     p.add_argument("--output-tokens", type=int, choices=(600,1200), required=True)
     p.add_argument("--no-key", action="store_true")
-    p.add_argument('--solver-profile',choices=('legacy','direct','raw','dual'),default='legacy')
+    p.add_argument('--solver-profile',choices=('legacy','direct','raw','dual','hybrid'),default='legacy')
     p.add_argument('--model',default='qwen/qwen3.7-flash')
     args = p.parse_args()
     from ci_container_boundary_probe import verify
