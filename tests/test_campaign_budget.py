@@ -2,6 +2,7 @@
 import importlib.util
 import hashlib
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -197,6 +198,21 @@ def test_timeout_is_not_reported_as_zero_cost(tmp_path, monkeypatch):
     for private in ("provider-secret", "PRIVATE QUESTION", "case_0"):
         assert private not in persisted and private not in str(caught.value)
     assert ledger.totals()["unresolved_usd"] == "0.03"
+
+
+def test_http_error_keeps_its_status_and_stays_unbilled(tmp_path, monkeypatch):
+    ledger, run = setup_ledger(tmp_path)
+    monkeypatch.setattr(C, "verify_prices", lambda _p: None)
+    def rejected(*_a, **_kw):
+        raise urllib.error.HTTPError(C.API + "/chat/completions", 429, "provider-secret PRIVATE QUESTION", {}, None)
+    monkeypatch.setattr(C, "remote_json", rejected)
+    gateway = C.Gateway(ledger, "provider-secret", "t" * 32, "baseline", run, tmp_path / "pricing.json")
+    with pytest.raises(C.CampaignError, match="reservation retained"):
+        gateway.call("Bearer " + "t" * 32, "case_0", body())
+    entry = C.Ledger(ledger.path).state["attempts"][0]
+    assert entry["status"] == "unknown:HTTPError:429" and entry["cost_usd"] is None
+    assert ledger.state["halt_reason"] == "billing_unresolved"
+    assert "PRIVATE" not in ledger.path.read_text() and ledger.totals()["unresolved_usd"] == "0.03"
 
 
 def test_nonloopback_server_cannot_start(tmp_path):

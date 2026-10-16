@@ -432,7 +432,10 @@ class Gateway:
                     raise TimeoutError("deadline expired before dispatch")
                 response = remote_json("/chat/completions", self.key, guarded, timeout=remaining)
             except Exception as error:
-                self.ledger.finish(number, status=type(error).__name__, duration=time.monotonic() - started)
+                status = type(error).__name__
+                if isinstance(error, urllib.error.HTTPError):
+                    status += ":" + str(error.code)  # the numeric status only; the body is never persisted
+                self.ledger.finish(number, status=status, duration=time.monotonic() - started)
                 raise CampaignError("upstream request failed; reservation retained") from None
             self.ledger.finish(number, response, duration=time.monotonic() - started)
             if self.ledger.state["halt_reason"]:
