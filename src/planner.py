@@ -221,6 +221,15 @@ def match_rows(view: View, q: Query, exclude=frozenset()):
         f, pos = q.match(leaf, exclude)
         nt = len(tokens(leaf))
         lt = tokens(leaf)
+        # Exact named row phrases remain evidence even when a column shares
+        # their words. Keep qualifiers: 'not in X' is not the same label as X.
+        qualifiers = re.findall(r"\b(?:not|except|without)\b", leaf.lower())
+        if any(not re.search(rf"\b{word}\b", q.text, re.I) for word in qualifiers):
+            continue
+        qt = [t for t, _ in q.toks]
+        exact = bool(lt) and any(qt[k:k + len(lt)] == lt for k in range(len(qt) - len(lt) + 1))
+        if exact and nt >= 2:
+            f, pos = q.match(leaf)
         head = leaf.split("(")[0]
         hf, hpos = q.match(head, exclude) if "(" in leaf else (0, set())
         if hf < 1.0 and any(t[0].isdigit() and not q.positions(t, exclude) for t in lt):
@@ -231,15 +240,19 @@ def match_rows(view: View, q: Query, exclude=frozenset()):
             continue
         anc = [q.match(a, exclude) for a in path[:-1]]
         sheet_f, sheet_pos = q.match(df["_sheet"].iat[i], exclude) if view.stacked else (0, set())
-        score = 2 * f + 0.05 * nt * f + sum(a for a, _ in anc) + sheet_f
+        score = 2 * f + 0.05 * nt * f + sum(a for a, _ in anc) + sheet_f + (10 * nt if exact else 0)
         apos = set().union(*[p for _, p in anc]) if anc else set()
-        cands.append((score, i, pos | apos | sheet_pos, " > ".join(path)))
-    kept, covered = [], set()
-    for score, i, pos, path in sorted(cands, key=lambda c: (-c[0], c[1])):
-        if not (pos - covered):
+        cands.append((score, i, pos | apos | sheet_pos, " > ".join(path), pos, apos | sheet_pos))
+    kept, covered, leaf_covered = [], set(), set()
+    for score, i, pos, path, leaf_pos, ancestor_pos in sorted(cands, key=lambda c: (-c[0], c[1])):
+        parent = path.rsplit(" > ", 1)[0] if " > " in path else ""
+        sibling_operand = bool(leaf_pos - leaf_covered) and any(
+            (p.rsplit(" > ", 1)[0] if " > " in p else "") == parent for p, _, _ in kept)
+        if not (pos - covered or sibling_operand):
             continue
         kept.append((path, pos, i))
         covered |= pos
+        leaf_covered |= leaf_pos
     kept = [k for k in kept if not any(o[0] != k[0] and o[0].startswith(k[0] + " > ") for o in kept)]
     # order by first position of the tokens each row uniquely covers
     def first_unique(k):
