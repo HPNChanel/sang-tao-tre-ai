@@ -24,6 +24,10 @@ def refine(plan, view, body, spec):
         metric = "difference"
         years = re.search(r"\bfrom (\d{4}) to (\d{4})\b", low)
         if years:
+            # Change direction follows the named interval, never worksheet
+            # column order. A decrease measures earlier minus later.
+            decreasing = bool(re.search(r"\bdecrease\b", low))
+            operand_years = [years[1], years[2]] if decreasing else [years[2], years[1]]
             parents = {}
             for c in view.numeric_cols():
                 if " | " not in c:
@@ -31,7 +35,12 @@ def refine(plan, view, body, spec):
                 parent, leaf = c.rsplit(" | ", 1)
                 if leaf in years.groups() and Query(body).match(parent)[0] == 1.0:
                     parents.setdefault(parent, {})[leaf] = c
-            groups = [{"name": k, "columns": [v[years[2]], v[years[1]]]} for k, v in parents.items() if len(v) == 2]
+            groups = [{"name": k, "columns": [v[y] for y in operand_years]} for k, v in parents.items() if len(v) == 2]
+            if not groups and re.search(r"\b(increase|decrease)\b", low):
+                named = {y: [c for c in cols if re.findall(r"\b\d{4}\b", c) == [y]]
+                         for y in operand_years}
+                if all(len(named[y]) == 1 for y in operand_years):
+                    cols = [named[y][0] for y in operand_years]
         if groups:
             if len(groups) < 2 or len(plan["rows"]["paths"]) != 1:
                 return False
