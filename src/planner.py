@@ -702,6 +702,9 @@ def _plan_core(query: str, tables, strict=False):
         plan["columns"] = list(num_cols)
     from .derived_metrics import refine
     composed = refine(plan, view, body, spec)
+    from .row_filters import refine as refine_filters
+    filtered = refine_filters(plan, view, body, spec)
+    composed = composed or filtered
     abstain = _unhandled_op(op_low, plan) if not composed else False
     # A refused top-N (scalar number, or a count that is also a stored value) keeps
     # the older max/lookup. That leftover phrase is not an unparsed operation.
@@ -1841,7 +1844,7 @@ def _confidence_legacy(query, plan, info):
             c *= 0.3; reasons.append("lookup:no-match")
         elif not cols and nnum > 1:
             c *= 0.6; reasons.append("lookup:no-col")
-    if op in ("compare", "diff", "ratio"):
+    if op in ("compare", "diff", "ratio") and "value" not in plan["args"]:
         if max(nrows, 1) * max(len(cols), 1) < 2 and not any(str(x).endswith("*") for x in cols):
             c *= 0.3; reasons.append(f"{op}:<2 values")
     if op in ("argmax", "argmin") and (plan["args"].get("over") == "rows") and not cols and nnum > 1:

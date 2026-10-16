@@ -101,7 +101,8 @@
          "<",
          "==",
          "!=",
-         "year=="
+         "year==",
+         "digits=="
         ]
        },
        "value": {
@@ -109,7 +110,8 @@
          "number",
          "string"
         ]
-       }
+       },
+       "value_column": {"type": "string"}
       }
      }
     }
@@ -125,6 +127,7 @@
   "op": {
    "enum": [
     "lookup",
+    "select",
     "values",
     "sum",
     "diff",
@@ -147,6 +150,7 @@
    "additionalProperties": false,
    "properties": {
     "include_value": {"type": "boolean"},
+    "value": {"type": "number"},
     "over": {
      "enum": [
       "rows",

@@ -100,8 +100,13 @@ def _apply_where(view, idx, where):
         keep = []
         for i in idx:
             v = df.at[i, col]
+            if w.get("value_column"):
+                val = df.at[i, w["value_column"]]
             if op == "year==":
                 ok = isinstance(v, (dt.date, dt.datetime)) and v.year == int(val)
+            elif op == "digits==":
+                s = str(int(v)) if isinstance(v, (float, int, np.number)) and pd.notna(v) and float(v).is_integer() else str(v)
+                ok = s.isdigit() and len(s) == int(val)
             else:
                 if v is None or (isinstance(v, float) and math.isnan(v)):
                     continue
@@ -238,6 +243,13 @@ def execute(plan, tables):
             val = vals[best]
         else:
             val = [labels[best], vals[best]] if args.get("include_value") else labels[best]
+    elif op == "select":
+        idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
+        if not idx:
+            raise PlanError("no rows satisfy all conditions")
+        val = [df.at[i, "_label"] for i in idx]
+        if len(val) == 1:
+            val = val[0]
     elif op in ("lookup", "values"):
         vals = cell_list()
         if plan["format"]["kind"] == "date" or (vals and isinstance(vals[0], (dt.date, dt.datetime))):
@@ -245,6 +257,8 @@ def execute(plan, tables):
         val = vals if (op == "values" or len(vals) > 1) else vals[0]
     elif op in ("compare", "diff", "ratio"):
         vals = cell_list()
+        if op == "compare" and "value" in args:
+            vals.append(args["value"])
         if len(vals) < 2:
             raise PlanError(f"{op} needs two values, got {vals}")
         a, b = float(vals[0]), float(vals[1])
@@ -262,7 +276,7 @@ def execute(plan, tables):
             idx = [i for g in groups for i in g]
         else:
             idx = _aggregate_rows(view, plan, base)
-            if r.get("scope") is None and not r.get("range") and not (plan.get("table") or {}).get("sheet"):
+            if r.get("scope") is None and not r.get("range") and not r.get("where") and not (plan.get("table") or {}).get("sheet"):
                 idx = _first_root_scope(view, idx)
         idx = _apply_where(view, idx, r.get("where"))
         if op == "count":

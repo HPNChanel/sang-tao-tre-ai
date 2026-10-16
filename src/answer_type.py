@@ -17,7 +17,7 @@ def expected_type(query: str, fmt: dict) -> str:
         return "list"
     if k == "date" or re.search(r"yyyy-mm-dd|\bwhat date\b|\bwhich date\b|\bon what day\b", low):
         return "date"
-    if re.search(r"\b(which|what|in which) year\b|4-digit year", low):
+    if re.search(r"\b(which|what|in which) year\b|4-digit year|\bonly the year\b", low):
         return "year"
     if re.search(r"\bhow many (more|less|fewer|percentage points?|percent points?)\b|\bhow much\b|\bby how much\b", low):
         return "number"
@@ -43,6 +43,8 @@ def plan_type(plan: dict, view=None) -> str:
         return "yesno"
     if op == "count":
         return "count"
+    if op == "select":
+        return "label"
     if op in ("argmax", "argmin"):
         if a.get("include_value"):
             return "list"
