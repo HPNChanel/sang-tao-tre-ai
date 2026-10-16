@@ -1495,6 +1495,12 @@ def _new_op_blocked(plan, info, original):
     if _main_already_selects(plan, original):
         return False
     triggered = _new_op_keyword_hit(original) or info.get("fresh_op")
+    # A requested pair cannot be collapsed into one aggregate. Keeping the
+    # question body (including a leading 'Give') must preserve this ambiguity
+    # guard before the generic result-shape check runs.
+    if triggered and plan["format"].get("kind") == "list" and plan["op"] in ("sum", "mean", "count", "lookup") \
+            and re.search(r"\brespectively\b|\blan luot\b", _fold_q(original)):
+        return True
     if not triggered or not _guarded_op(plan, info, original):
         return False
     return not _new_op_resolved(plan, info, original)

@@ -26,7 +26,7 @@ def _instr(q: str) -> str:
     sents = re.split(r"(?<=[.?!])\s+(?=[A-Z])", q.strip())
     for i, sentence in enumerate(sents):
         if re.match(r"(answer|provide|respond|give|return|use)\b", sentence, re.I) and re.search(
-                r"\b(exactly|only|integer|decimal|number|name|label|separat\w*|join\w*)\b|[`'\"]|\banswer (with|as)\b",
+                r"\b(exactly|only|integer|decimal|number|name|label|separat\w*|join\w*)\b|[`'\"]|\banswer (with|as)\b|\byes or no\b",
                 sentence, re.I):
             # Keep rounding/sign qualifications after the formatting sentence.
             # They are instructions, not additional operands or row labels.
