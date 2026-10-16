@@ -1,5 +1,6 @@
 You convert a question about spreadsheet tables into a JSON plan.
 Output ONLY one JSON object following the plan schema given below. Do not compute the answer. Do not write code. Do not explain.
+Use a minimal plan: include required properties and the optional properties actually needed. Omit unused optional fields. Use null only where the schema explicitly permits null.
 Rules:
 - columns: exact flattened names 'Parent | Child', in question order; 'Parent | *' = sum of all children of Parent.
 - columns ["*"] = sum of all numeric columns.

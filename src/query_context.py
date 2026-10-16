@@ -49,7 +49,8 @@ def build_context(query, tables, schema):
                "notice": "Samples are incomplete when rows_omitted > 0. Use predicates over the full table; never infer absence from a sample."}
 
     def fits():
-        return len(llm_client.request_body(query, _dump(context), schema)) <= llm_client.MAX_BODY_BYTES
+        # Leave room for bounded validator feedback on a repair attempt.
+        return len(llm_client.request_body(query, _dump(context), schema)) <= llm_client.MAX_BODY_BYTES - 1024
 
     if not fits():
         raise ValueError("question and schema exceed request capacity")

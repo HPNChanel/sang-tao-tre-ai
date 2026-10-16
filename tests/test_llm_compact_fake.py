@@ -119,3 +119,12 @@ def test_disabled_without_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(L, "_post", lambda *a: pytest.fail("network called"))
     assert L.llm_plan("Q", "T", "{}", L.Budget()) is None
+
+
+def test_invalid_plan_gets_bounded_validator_feedback(monkeypatch):
+    bad = {"version":1, "op":"explode", "format":{"kind":"int"}}
+    p, b, transport = _run(monkeypatch, [F.resp(json.dumps(bad)), F.plain()])
+    assert p == F.PLAN and b.attempts == 2
+    assert "not in enum" in transport.bodies[1]["messages"][-1]["content"]
+    assert b.log[0]["plan"] == bad and b.log[0]["validation_errors"]
+    assert all(len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()) <= L.MAX_BODY_BYTES for body in transport.bodies)

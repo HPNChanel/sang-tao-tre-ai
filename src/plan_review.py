@@ -87,6 +87,13 @@ def semantic_errors(plan, query, tables=None):
     low = _fold(query)
     args, columns = plan.get("args", {}), plan.get("columns", [])
     errors = []
+    extreme = re.search(r"\b(?:highest|largest|greatest|maximum|lowest|smallest|minimum|cao nhat|lon nhat|thap nhat|nho nhat)\b", low)
+    combined = re.search(r"\b(?:sum|combined|total|tong)\b", low)
+    if extreme and combined and len(columns) >= 2:
+        if plan["op"] not in ("max", "min", "argmax", "argmin", "nth", "rank", "topk_agg"):
+            errors.append("composed extremum requires a reduction after the per-row calculation")
+        elif re.search(r"\band\b|\bva\b|\bplus\b", low) and not args.get("metric"):
+            errors.append("combined per-row measure must be computed before the extremum")
     direction = re.search(r"\b(increase|gain|growth|tang|decrease|reduction|giam)\b.*\b(?:from|tu) (\d{4}) (?:to|den) (\d{4})\b", low)
     if direction and len(columns) == 2:
         years = direction[2], direction[3]
@@ -109,16 +116,25 @@ def semantic_errors(plan, query, tables=None):
     if tables:
         view = _view_for(plan, tables)
         rows = plan.get("rows", {})
+        aliases = {}
+        for label in view.df["_label"]:
+            short = _fold(re.sub(r"(?:\s*\([a-z]\))+$", "", str(label), flags=re.I))
+            aliases.setdefault(short, set()).add(str(label))
+        def identity(label):
+            short = _fold(re.sub(r"(?:\s*\([a-z]\))+$", "", str(label), flags=re.I))
+            return short if len(aliases.get(short, [])) == 1 else _fold(label)
         # Excluded rows and named parent sections are not requested leaf
         # operands. Resolve paths through the same footnote-aware executor
         # mapping before comparing labels; raw path text is not a row identity.
-        operand_text = re.sub(r"\b(?:excluding|except|other than|not including|khong tinh|khong bao gom)\b[^,;?)]*", " ", low)
-        named = {_fold(label) for label in view.df["_label"] if _fold(label)
-                 and f" {_fold(label)} " in f" {operand_text} "}
+        from .vi import fold
+        exclusion_source = fold(query).lower()
+        operand_text = _fold(re.sub(r"\b(?:excluding|except|other than|not including|khong tinh|khong bao gom)\b[^,;?)]*", " ", exclusion_source))
+        named = {identity(label) for label in view.df["_label"] if identity(label)
+                 and f" {identity(label)} " in f" {operand_text} "}
         population = bool(re.search(r"\b(?:among|within|across|all|every|each|trong|parmi|entre les|greatest|largest|smallest|highest|lowest|maximum|minimum|nhat)\b", operand_text))
         if named and not population:
             indices = [i for group in _resolve_rows(view, rows.get("paths", [])) for i in group]
-            selected = {_fold(view.df.at[i, "_label"]) for i in indices}
+            selected = {identity(view.df.at[i, "_label"]) for i in indices}
             for clause in rows.get("where", []):
                 if clause.get("column") == view.label_name and clause.get("op") == "==":
                     selected.add(_fold(clause.get("value")))
@@ -127,6 +143,17 @@ def semantic_errors(plan, query, tables=None):
         references = list(columns) + [args.get("by"), args.get("return")]
         for clause in rows.get("where", []):
             references.extend([clause.get("column"), clause.get("value_column")])
+        excluded_texts = re.findall(r"\b(?:excluding|except|other than|not including|khong tinh|khong bao gom)\b([^,;?)]*)", exclusion_source)
+        expected_excluded = {i for i in view.df.index for part in excluded_texts
+                             if identity(view.df.at[i, "_label"]) and f" {identity(view.df.at[i, '_label'])} " in f" {_fold(part)} "}
+        if expected_excluded:
+            from .executor import _base_rows, _aggregate_rows, _apply_where
+            selected = {i for group in _resolve_rows(view, rows.get("paths", [])) for i in group}
+            if not rows.get("paths"):
+                selected = set(_apply_where(view, _aggregate_rows(view, plan, _base_rows(view, plan)), rows.get("where")))
+            explicit_excluded = {i for group in _resolve_rows(view, rows.get("exclude_paths", [])) for i in group}
+            if (selected - explicit_excluded) & expected_excluded:
+                errors.append("explicitly excluded row remains in the selected population")
         from .explicit_filters import predicates
         from .planner import strip_instruction
         required, _ = predicates(strip_instruction(query, parse_instruction(query)), view)

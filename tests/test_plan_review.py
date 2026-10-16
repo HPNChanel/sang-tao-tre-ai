@@ -115,6 +115,9 @@ def test_footnoted_paths_use_resolved_identity(tables):
     p = plan("Bay (1)")
     assert not R.reference_errors(p, tables)
     assert not R.semantic_errors(p, "Bay in 2031. Answer with an integer.", tables)
+    tables[0].df.loc[0, "Place"] = "Bay(h)"
+    tables[0].df.loc[0, "_row_path"] = "Bay(h)"
+    assert not R.semantic_errors(plan("Bay(h)"), "Bay in 2031. Answer with an integer.", tables)
 
 
 def test_excluded_leaf_is_not_the_required_operand(tables):
@@ -126,6 +129,22 @@ def test_excluded_leaf_is_not_the_required_operand(tables):
 def test_population_query_does_not_require_every_translated_name_to_match(tables):
     p = plan(); p.update(op="spread"); p["rows"]["paths"] = ["Bay", "Hill"]
     assert not R.semantic_errors(p, "Parmi les groupes (Bay, Colline), find the largest gap in 2031.", tables)
+
+
+def test_composed_extremum_cannot_be_a_grand_sum(tables):
+    p = plan(); p.update(op="sum", columns=["2031","2032"])
+    assert R.semantic_errors(p, "What is the highest sum of 2031 and 2032 per place?", tables)
+    assert R.semantic_errors(p, "Tong 2031 va 2032 cao nhat la bao nhieu?", tables)
+    p.update(op="max", args={"metric":"sum"})
+    assert not R.semantic_errors(p, "What is the highest sum of 2031 and 2032 per place?", tables)
+
+
+def test_named_exclusion_cannot_disappear(tables):
+    p = plan(); p.update(op="sum"); p["rows"]["paths"] = []
+    assert R.semantic_errors(p, "Among places, excluding Bay, sum 2031.", tables)
+    assert R.semantic_errors(p, "Trong cac noi (khong tinh dong `Bay`), tong 2031.", tables)
+    p["rows"]["exclude_paths"] = ["Bay"]
+    assert not R.semantic_errors(p, "Among places, excluding Bay, sum 2031.", tables)
 
 
 def test_explicit_affixes_are_preserved_without_erasing_decimal_precision():

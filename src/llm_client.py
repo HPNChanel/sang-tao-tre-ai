@@ -214,8 +214,11 @@ def build_messages(query, tables_summary, schema):
     return [{"role": "system", "content": sys_p}, {"role": "user", "content": usr}]
 
 
-def request_body(query, tables_summary, schema):
-    return json.dumps({"model": MODEL, "messages": build_messages(query, tables_summary, compact_schema(schema)),
+def request_body(query, tables_summary, schema, feedback=None):
+    messages = build_messages(query, tables_summary, compact_schema(schema))
+    if feedback:
+        messages.append({"role":"user", "content":"The previous attempt failed these checks. Return a corrected minimal JSON plan; omit unused optional fields. Validation data: " + json.dumps(feedback, ensure_ascii=False)})
+    return json.dumps({"model": MODEL, "messages": messages,
                        "max_tokens": min(MAX_TOKENS, 1200), "temperature": 0,
                        "response_format": {"type": "json_object"}, "reasoning": REASONING, "provider": PROVIDER},
                       ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -241,7 +244,13 @@ def llm_plan(query, tables_summary, schema, budget: Budget, timeout=60, validate
         budget.halt_reason = "request_exceeds_24_kib"
         return None
     attempts_here = MAX_ATTEMPTS if max_attempts is None else min(max(0, max_attempts), MAX_ATTEMPTS)
+    feedback = None
     for attempt in range(attempts_here):
+        if feedback:
+            body = request_body(query, tables_summary, schema, feedback)
+            if len(body) > MAX_BODY_BYTES:
+                budget.halt_reason = "repair_request_exceeds_24_kib"
+                return None
         if not budget.allow(chars):
             return None
         index = budget.reserve(chars)  # retained even if SIGALRM interrupts _post
@@ -269,14 +278,18 @@ def llm_plan(query, tables_summary, schema, budget: Budget, timeout=60, validate
         if plan is None:
             budget.finish(index, data, status="truncated" if finish == "length" else "unparseable")
             print(f"[llm] {qid}: attempt {attempt + 1} no JSON plan (finish={finish})", file=sys.stderr)
+            feedback = ["Return one complete JSON object following the schema, using only necessary properties."]
             continue
         budget.finish(index, data, status="ok")
         if budget.halt_reason:
             return None
         if validate is not None:
             errs = validate(plan)
+            budget.log[-1]["plan"] = plan
             if errs:  # counts as a used attempt; cap + MAX_ATTEMPTS still apply
                 budget.log[-1]["status"] = "schema_invalid"
+                budget.log[-1]["validation_errors"] = errs
+                feedback = [str(e)[:160] for e in errs[:4]]
                 print(f"[schema] {qid}: attempt {attempt + 1} plan invalid: "
                       + "; ".join(errs[:3]), file=sys.stderr)
                 continue
