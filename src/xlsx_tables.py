@@ -63,6 +63,7 @@ def to_number(v):
     if isinstance(v, (_dt.date, _dt.datetime)):
         return None
     s = str(v).strip().replace("\u00a0", "")
+    s = re.sub(r"^[~≈]\s*(?=[+-]?\d)", "", s)
     if s.lower() in NA_TOKENS:
         return None
     s = re.sub(r"(?<=\d)\(\d{1,2}\)$|\s+\d/$|[¹²³⁴⁵⁶⁷⁸⁹⁰]+$|\s*\([a-zA-Z]\)$|\*+$", "", s).strip()  # footnote markers
