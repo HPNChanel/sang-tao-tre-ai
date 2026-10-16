@@ -664,7 +664,8 @@ def _plan_core(query: str, tables, strict=False):
         plan["rows"]["where"] = _aim_born_year(plan["rows"]["where"], view, low)
         # a number that only names the chosen row, scope, or sort column is not also a threshold
         band = " ".join([str(plan["rows"].get("scope") or ""), str(args.get("by") or "")]
-                        + list(plan["rows"]["paths"]) + list(plan["columns"]))
+                        + list(plan["rows"]["paths"]) + list(plan["columns"])
+                        + [p for p, _ in rows])
         plan["rows"]["where"] = _drop_label_filters(plan["rows"]["where"], [], [band])
     ambiguous_rank_scope = False
     if plan["op"] == "rank":
