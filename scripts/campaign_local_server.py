@@ -125,7 +125,7 @@ class Session:
         else:
             self.freeze = value
             C.atomic_json(self.root / "environment-freeze.json", value)
-        return {"accepted":True, "next_run":self.next_run}
+        return {"accepted":True, "next_run":self.next_run, "gateway_monotonic":time.monotonic()}
 
     def post(self, path, raw, authorization, question, deadline=None):
         if path == "/freeze":
@@ -143,7 +143,7 @@ class Session:
                 if (self.root / "received" / f"run-{number:03}.aesgcm").exists():
                     raise ValueError("completed run cannot be replayed")
                 self.active = number
-                return {"accepted":True}
+                return {"accepted":True, "gateway_monotonic":time.monotonic()}
             if self.active != number:
                 raise ValueError("run is not active")
             gateway = self.gateways[number]

@@ -6,6 +6,7 @@ from pathlib import Path
 import socket
 import sys
 import threading
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -60,6 +61,79 @@ def test_cipher_authenticates_metadata_and_content():
 def test_remote_requires_one_tls_origin(url):
     with pytest.raises(ValueError):
         CI.Remote(url,"synthetic-token")
+
+
+@pytest.mark.parametrize("wall_skew", [-50, 50])
+@pytest.mark.parametrize("reply_delay", [0, 5, 90])
+def test_cross_host_deadline_ignores_wall_skew_and_counts_reply_transit(tmp_path, monkeypatch, wall_skew, reply_delay):
+    import qwen_campaign as C
+    host = [700 + reply_delay]
+    client = [12345]
+    monkeypatch.setattr(CI, "time", SimpleNamespace(time=lambda:1000 + wall_skew, monotonic=lambda:client[0]))
+    monkeypatch.setattr(C, "time", SimpleNamespace(time=lambda:1000, monotonic=lambda:host[0]))
+    ledger = C.Ledger.create(tmp_path / "ledger.json", "synthetic")
+    configuration = {"policy":"selective", "output_tokens":600, "api_enabled":True}
+    run = ledger.register("baseline", "a" * 40, "b" * 64, configuration, ["a"])
+    gateway = C.Gateway(ledger, "synthetic", "t" * 32, "baseline", run, tmp_path / "pricing.json")
+    monkeypatch.setattr(C, "verify_prices", lambda _:None)
+    timeouts = []
+    def paid(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return {"usage":{"cost":.001}}
+    monkeypatch.setattr(C, "remote_json", paid)
+    remote = CI.Remote("https://synthetic.trycloudflare.com", "t" * 32)
+    remote.set_clock_reference({"accepted":True, "gateway_monotonic":700})
+    class Opener:
+        def open(self, request, timeout):
+            result = gateway.call(request.get_header("Authorization"), request.get_header("X-eval-question"),
+                                  request.data, deadline=float(request.get_header("X-eval-deadline")))
+            return io.BytesIO(json.dumps(result).encode())
+    remote.opener = Opener()
+    p, _ = proxy(); p.remote = remote
+    p.handle("/begin", b'{"id":"a"}')
+    assert p.deadline == 12435  # unrelated client monotonic origin
+    if reply_delay >= 90:
+        with pytest.raises(C.CampaignError, match="expired"):
+            p.handle("/chat", request_body())
+        assert ledger.totals()["attempts"] == 0 and not timeouts
+    else:
+        p.handle("/chat", request_body())
+        assert timeouts == [min(85, 90 - reply_delay)]
+        assert ledger.totals()["actual_usd"] == "0.001"
+
+
+@pytest.mark.parametrize("host", [None, True, "700", float("nan"), float("inf")])
+def test_missing_or_nonfinite_clock_reference_rejects_before_transfer(host):
+    remote = CI.Remote("https://synthetic.trycloudflare.com", "synthetic")
+    with pytest.raises(ValueError):
+        remote.mapped_deadline(100)
+    with pytest.raises(ValueError):
+        remote.set_clock_reference({"accepted":True, "gateway_monotonic":host})
+
+
+def test_freeze_and_each_start_replace_clock_reference_after_reply(monkeypatch):
+    clock = [12345]
+    monkeypatch.setattr(CI, "time", SimpleNamespace(monotonic=lambda:clock[0]))
+    remote = CI.Remote("https://synthetic.trycloudflare.com", "synthetic")
+    replies = iter([700, 800, 900])
+    monkeypatch.setattr(remote, "request", lambda *a, **kw: json.dumps(
+        {"accepted":True, "gateway_monotonic":next(replies)}).encode())
+    for route, host in [("/freeze",700), ("/start/0",800), ("/start/1",900)]:
+        clock[0] += 101  # independent rate/elapsed time is discarded each batch
+        remote.post(route)
+        assert remote.mapped_deadline(clock[0] + 90) == host + 90
+    for deadline in [True, float("nan"), float("inf")]:
+        with pytest.raises(ValueError):
+            remote.mapped_deadline(deadline)
+
+
+def test_start_acknowledgment_samples_gateway_clock(tmp_path, monkeypatch):
+    import campaign_local_server as S
+    session = object.__new__(S.Session)
+    session.freeze = {}; session.gateways = {0:object()}
+    session.lock = threading.RLock(); session.active = None; session.next_run = 0; session.root = tmp_path
+    monkeypatch.setattr(S, "time", SimpleNamespace(monotonic=lambda:700))
+    assert session.post("/start/0", b"{}", "synthetic", None) == {"accepted":True, "gateway_monotonic":700}
 
 
 def proxy():

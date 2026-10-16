@@ -358,28 +358,28 @@ class Gateway:
         if not question or len(question) > 200 or any(ord(c) < 32 for c in question):
             raise CampaignError("missing or invalid question identity")
         guarded = guarded_body(raw)
-        if deadline is not None and (not isinstance(deadline, (int,float)) or not math.isfinite(deadline)):
+        if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, (int,float)) or not math.isfinite(deadline)):
             raise CampaignError("invalid caller deadline")
         with self.serial:
             # Authenticate the logical question before any outbound request.
             self.ledger.question_key(self.run, question)
             if not self.ledger.state["invocations"][self.run]["configuration"]["api_enabled"]:
                 raise CampaignError("this invocation has network disabled")
-            if deadline is not None and not 0 < deadline - time.time() <= 91:
+            if deadline is not None and not 0 < deadline - time.monotonic() <= 91:
                 raise CampaignError("caller deadline expired or is outside the approved window")
             try:
                 verify_prices(self.pricing)
             except Exception:
                 self.ledger.halt("provider_metadata_not_verified")
                 raise CampaignError("provider prices could not be verified; no paid request sent") from None
-            remaining = 85 if deadline is None else min(85, deadline - time.time())
+            remaining = 85 if deadline is None else min(85, deadline - time.monotonic())
             if remaining <= 0:
                 raise CampaignError("caller deadline expired before reservation")
             number = self.ledger.reserve(self.stage, self.run, question, hashlib.sha256(guarded).hexdigest())
             self.ledger.dispatched(number)
             started = time.monotonic()
             try:
-                remaining = 85 if deadline is None else min(85, deadline - time.time())
+                remaining = 85 if deadline is None else min(85, deadline - time.monotonic())
                 if remaining <= 0:
                     raise TimeoutError("deadline expired before dispatch")
                 response = remote_json("/chat/completions", self.key, guarded, timeout=remaining)

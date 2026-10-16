@@ -230,10 +230,10 @@ def test_offline_invocation_cannot_be_used_for_paid_calls(tmp_path, monkeypatch)
         gateway.call("Bearer " + "t" * 32, "case_0", body())
 
 
-@pytest.mark.parametrize("deadline", [99,100,192,float('nan'),float('inf')])
+@pytest.mark.parametrize("deadline", [99,100,192,float('nan'),float('inf'),True])
 def test_expired_or_unbounded_deadline_never_spends(tmp_path,monkeypatch,deadline):
     ledger,run=setup_ledger(tmp_path)
-    monkeypatch.setattr(C.time,'time',lambda:100)
+    monkeypatch.setattr(C.time,'monotonic',lambda:100)
     monkeypatch.setattr(C,'remote_json',lambda *a,**kw:pytest.fail('must not reach network'))
     gateway=C.Gateway(ledger,'synthetic','t'*32,'baseline',run,tmp_path/'pricing.json')
     with pytest.raises(C.CampaignError):
@@ -243,7 +243,7 @@ def test_expired_or_unbounded_deadline_never_spends(tmp_path,monkeypatch,deadlin
 
 def test_expiry_while_queued_or_checking_price_does_not_reserve(tmp_path,monkeypatch):
     ledger,run=setup_ledger(tmp_path);clock=[100]
-    monkeypatch.setattr(C.time,'time',lambda:clock[0])
+    monkeypatch.setattr(C.time,'monotonic',lambda:clock[0])
     monkeypatch.setattr(C,'verify_prices',lambda _:clock.__setitem__(0,103))
     monkeypatch.setattr(C,'remote_json',lambda *a,**kw:pytest.fail('expired request must not dispatch'))
     gateway=C.Gateway(ledger,'synthetic','t'*32,'baseline',run,tmp_path/'pricing.json')
@@ -254,7 +254,7 @@ def test_expiry_while_queued_or_checking_price_does_not_reserve(tmp_path,monkeyp
 
 def test_upstream_timeout_uses_remaining_case_deadline(tmp_path,monkeypatch):
     ledger,run=setup_ledger(tmp_path)
-    monkeypatch.setattr(C.time,'time',lambda:100)
+    monkeypatch.setattr(C.time,'monotonic',lambda:100)
     monkeypatch.setattr(C,'verify_prices',lambda _:None)
     seen=[]
     def remote(*args,**kw):
@@ -263,3 +263,19 @@ def test_upstream_timeout_uses_remaining_case_deadline(tmp_path,monkeypatch):
     gateway=C.Gateway(ledger,'synthetic','t'*32,'baseline',run,tmp_path/'pricing.json')
     gateway.call('Bearer '+'t'*32,'case_0',body(),deadline=102)
     assert seen==[2] and ledger.totals()['actual_usd']=='0.001'
+
+
+def test_expiry_after_reservation_retains_exposure(tmp_path,monkeypatch):
+    ledger,run=setup_ledger(tmp_path);clock=[100]
+    monkeypatch.setattr(C.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(C,'verify_prices',lambda _:None)
+    monkeypatch.setattr(C,'remote_json',lambda *a,**kw:pytest.fail('expired request must not dispatch'))
+    original=ledger.reserve
+    def reserve(*args,**kwargs):
+        number=original(*args,**kwargs);clock[0]=103;return number
+    monkeypatch.setattr(ledger,'reserve',reserve)
+    gateway=C.Gateway(ledger,'synthetic','t'*32,'baseline',run,tmp_path/'pricing.json')
+    with pytest.raises(C.CampaignError,match='reservation retained'):
+        gateway.call('Bearer '+'t'*32,'case_0',body(),deadline=102)
+    assert ledger.totals()['attempts']==1
+    assert ledger.totals()['unresolved_usd']=='0.03'

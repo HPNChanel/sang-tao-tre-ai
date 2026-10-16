@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import csv
 from http.server import BaseHTTPRequestHandler
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -37,13 +38,30 @@ class Remote:
             raise ValueError("approved TLS transfer endpoint required")
         self.url, self.token = url.rstrip("/"), token
         self.opener = urllib.request.build_opener(NoRedirect())
+        self.clock_reference = None
+
+    def set_clock_reference(self, acknowledgment):
+        host = acknowledgment.get("gateway_monotonic")
+        if (acknowledgment.get("accepted") is not True or isinstance(host, bool)
+                or not isinstance(host, (int, float)) or not math.isfinite(host)):
+            raise ValueError("missing or invalid gateway clock reference")
+        # Sample only after the reply is received. Reply transit therefore
+        # shortens the mapped window; wall-clock skew cannot extend it.
+        self.clock_reference = (host, time.monotonic())
+
+    def mapped_deadline(self, deadline):
+        if (self.clock_reference is None or isinstance(deadline, bool)
+                or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)):
+            raise ValueError("missing clock reference or invalid case deadline")
+        host, client = self.clock_reference
+        return host + (deadline - client)
 
     def request(self, route, data=None, question=None, timeout=100, deadline=None):
         headers = {"Authorization":"Bearer " + self.token, "Content-Type":"application/json"}
         if question is not None:
             headers["X-Eval-Question"] = question
         if deadline is not None:
-            headers["X-Eval-Deadline"] = str(deadline)
+            headers["X-Eval-Deadline"] = str(self.mapped_deadline(deadline))
         request = urllib.request.Request(self.url + route, data=data, headers=headers)
         with self.opener.open(request, timeout=timeout) as response:
             raw = response.read(W.MAX_ARCHIVE + 1)
@@ -52,7 +70,12 @@ class Remote:
         return raw
 
     def post(self, route, data=b"{}", question=None, deadline=None):
-        return json.loads(self.request(route, data, question, deadline=deadline))
+        response = json.loads(self.request(route, data, question, deadline=deadline))
+        if route == "/freeze" or re.fullmatch(r"/start/\d+", route):
+            # Refresh each batch, including after reconnects, so independent
+            # monotonic clock rates do not accumulate over a long campaign.
+            self.set_clock_reference(response)
+        return response
 
 
 class ScopedProxy(socketserver.ThreadingMixIn, getattr(socketserver, "UnixStreamServer", socketserver.TCPServer)):
@@ -99,7 +122,7 @@ class ScopedProxy(socketserver.ThreadingMixIn, getattr(socketserver, "UnixStream
                 if self.current is not None or self.position + 1 >= len(self.ids) or qid != self.ids[self.position + 1]:
                     raise ValueError("invalid case transition")
                 self.position, self.current, self.attempts = self.ids.index(qid), qid, 0
-                self.deadline = time.time() + 90
+                self.deadline = time.monotonic() + 90
                 return {"accepted":True}
             if route == "/end" and self.current is not None:
                 self.current = None
