@@ -145,6 +145,7 @@
    "type": "object",
    "additionalProperties": false,
    "properties": {
+    "include_value": {"type": "boolean"},
     "over": {
      "enum": [
       "rows",
@@ -265,6 +266,7 @@
       "null"
      ]
     },
+    "item_kinds": {"type": "array", "items": {"enum": ["name", "number", "int", "decimal"]}},
     "sep": {
      "type": "string"
     },

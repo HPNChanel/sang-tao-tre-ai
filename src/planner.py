@@ -463,7 +463,8 @@ def _plan_core(query: str, tables, strict=False):
                      "exclude_subtotals": C.EXCLUDE_SUBTOTALS_IN_AGGREGATES, "where": []},
             "columns": cols, "op": "lookup", "args": {},
             "format": {"kind": spec.kind, "decimals": spec.decimals, "count": spec.count,
-                       "item_kind": spec.item_kind, "sep": spec.sep, "order": spec.order}}
+                       "item_kind": spec.item_kind, "item_kinds": spec.item_kinds,
+                       "sep": spec.sep, "order": spec.order}}
     if re.search(r"yyyy-mm-dd|\bdate\b.*format", query.lower()):
         plan["format"]["kind"] = "date"
     if view.stacked:
@@ -489,6 +490,8 @@ def _plan_core(query: str, tables, strict=False):
     # op_low folds Vietnamese operation phrases (with or without dấu) onto the English cues.
     op_low = _canon_op(low)
     sup_max, sup_min = re.search(rf"\b({SUP_MAX})\b", op_low), re.search(rf"\b({SUP_MIN})\b", op_low)
+    if not sup_max and re.search(r"\bwhich (?:sheet|group)\b.*\bhigher\b", op_low):
+        sup_max = re.search(r"\bhigher\b", op_low)
     which = re.search(r"\b(which|who|identify|name the|in what|list all|name all)\b", op_low)
     nth = _nth_match(op_low)
     topk = re.search(r"\b(?:among|of) the (\w+) (" + SUP_MAX + "|" + SUP_MIN + r")\b", op_low)
@@ -613,6 +616,13 @@ def _plan_core(query: str, tables, strict=False):
     if plan["op"] in ("nth", "rank") and spec.instruction and args.get("over", "rows") == "rows":
         projected, _ = match_columns(view, Query(spec.instruction))
         projected = [c for c, _ in projected if c in view.df.columns]
+        if len(projected) == 1:
+            args["return"] = projected[0]
+    if plan["op"] in ("argmax", "argmin") and spec.item_kinds:
+        args["include_value"] = True
+        args["ties"] = "first"
+        projected, _ = match_columns(view, Query(spec.order[1]))
+        projected = [c for c, _ in projected if c in view.numeric_cols()]
         if len(projected) == 1:
             args["return"] = projected[0]
     if intersected_column and plan["op"] == "sum":

@@ -266,6 +266,8 @@ def execute(plan, tables):
             vals = {c: v for c, v in vals.items() if v is not None and not (isinstance(v, float) and math.isnan(v))}
             best = _pick(list(vals), lambda c: sign * tf(vals[c]), plan, "columns")
             val = [str(b).split(" | ")[-1] for b in best]
+            if args.get("include_value"):
+                val = [val[0], vals[best[0]]]
         elif over == "sections":
             idx = list(dict.fromkeys(i for g in groups for i in g))
             c = cols[0] if cols else view.numeric_cols()[0]
@@ -273,6 +275,8 @@ def execute(plan, tables):
             vals = {i: v for i, v in vals.items() if pd.notna(v)}
             best = _pick(list(vals), lambda i: sign * tf(vals[i]), plan, "rows")
             val = [strip_footnotes(str(df.at[b, "_section"])) for b in best]
+            if args.get("include_value"):
+                val = [val[0], vals[best[0]]]
         elif over == "sheets":
             g = groups[0]
             leaf = df.at[g[0], "_label"]
@@ -282,6 +286,8 @@ def execute(plan, tables):
                 v = _col_values(view, c, [i]).iloc[0]
                 per[df.at[i, "_sheet"]] = v
             val = _pick(list(per), lambda s: sign * tf(per[s]), plan, "sheets")
+            if args.get("include_value"):
+                val = [val[0], per[val[0]]]
         else:
             idx = _aggregate_rows(view, plan, base)
             # A whole-population total is not a candidate category even when
@@ -293,6 +299,9 @@ def execute(plan, tables):
             vals = {i: v for i, v in vals.items() if isinstance(v, (int, float, np.floating)) and not math.isnan(v)}
             best = _pick(list(vals), lambda i: sign * tf(vals[i]), plan, "rows")
             val = [df.at[b, "_label"] for b in best]
+            if args.get("include_value"):
+                value = _col_values(view, args["return"], [best[0]]).iloc[0] if args.get("return") else vals[best[0]]
+                val = [val[0], value]
         if isinstance(val, list) and len(val) == 1:
             val = val[0]
     elif op == "rank":
@@ -472,6 +481,7 @@ def _first_root_scope(view, idx):
 
 def to_spec(fmt: dict) -> FormatSpec:
     return FormatSpec(kind=fmt.get("kind", "text"), decimals=fmt.get("decimals"), count=fmt.get("count"),
+                      item_kinds=fmt.get("item_kinds") or [],
                       item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [])
 
 

@@ -44,6 +44,8 @@ def plan_type(plan: dict, view=None) -> str:
     if op == "count":
         return "count"
     if op in ("argmax", "argmin"):
+        if a.get("include_value"):
+            return "list"
         return "year" if a.get("over") == "sheets" else "label"
     if op == "rank":
         return "list"
@@ -85,6 +87,13 @@ def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan
         if not _answer_counts(ans, fmt, query, plan):
             return False
     a = str(ans).strip()
+    if fmt.get("item_kinds"):
+        parts = a.rsplit(fmt.get("sep", ", "), len(fmt["item_kinds"]) - 1)
+        if len(parts) != len(fmt["item_kinds"]):
+            return False
+        for part, kind in zip(parts, fmt["item_kinds"]):
+            if kind in ("number", "decimal", "int") and not re.fullmatch(r"-?\d+(?:\.\d+)?", part):
+                return False
     num = re.fullmatch(r"-?\d+(\.\d+)?", a) is not None
     if expected == "yesno":
         return a in ("Yes", "No")
