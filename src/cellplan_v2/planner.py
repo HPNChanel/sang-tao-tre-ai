@@ -27,15 +27,15 @@ At most 16 steps, dependency depth 8, 3 source reads, 1 join. Each step has a un
 read: sheet (zero-based ID or exact name), range (e.g. A4:F90, DATA rows only), columns mapping aliases to ABSOLUTE Excel column letters, optional fill:[aliases] for explicitly carrying group labels downward, label:alias for hierarchy. It returns one record per nonempty row. Automatically adds _row, _sheet, _indent, _hidden, _parent, _path. Text merged labels are available in their merged region. Only use fill where source structure supports it.
 cell: sheet, cell (e.g. B7). Output column is value.
 filter: input, where. Predicate: {column:"x",cmp:"eq",value:"A"}. cmp: eq/ne/lt/le/gt/ge/contains/not_contains/starts_with/in/not_in/is_null/not_null. Optional normalize:true ignores case/accents/extra whitespace; locale:vi or en for numeric/date parsing. Combine {all:[predicates]} or {any:[predicates]}. Dates compare to ISO dates after date conversion. No regex.
-derive: input, columns:{alias:expression,...}. Columns evaluated in written order. Expression is {col:"x"}, {literal:123}, {literal:"text"}, or {op:"mul",args:[expr,expr]}. Ops: add/sub/mul/div, change_ratio(old,new)=(new-old)/old, abs/neg, round(value,digits), number(value), date(value), year(date), month(date) as YYYY-MM text, years(birth,event) completed birthdays, days(start,end), months(start,end), text, concat, coalesce. Optional locale:"vi"/"en"/"iso"/"dmy"/"mdy". Conditional expression {op:"if",where:predicate,then:expr,else:expr}. For locale vi text numbers, . is thousands and , decimal; stored numeric cells never need locale conversion. Convert text dates/numbers before comparing, aggregating or ranking.
-aggregate: input, optional group_by:[aliases], metrics:{alias:{fn:"sum",column:"x"},...}. fn: sum/mean/average/min/max/median/count/count_distinct/weighted_mean. weighted_mean needs column (values) and weight (weights): sum(value*weight)/sum(weight). count with no column counts records; count with a column counts nonblank values. Optional locale in metric. Optional where:predicate in a metric aggregates only matching rows (like SUMIFS), so one aggregate can hold, e.g., two periods' totals side by side for a later derive of their difference. Filter subtotals/detail rows before aggregating to avoid double counting. Empty numeric aggregates are unavailable (count can be zero).
+derive: input, columns:{alias:expression,...}. Instead of input, inputs:[id,id] combines single-row steps (e.g. two aggregates) into one row with all their columns. Columns evaluated in written order. Expression is {col:"x"}, {literal:123}, {literal:"text"}, or {op:"mul",args:[expr,expr]}. Ops: add/sub/mul/div, change_ratio(old,new)=(new-old)/old, abs/neg, round(value,digits), number(value), date(value), year(date), month(date) as YYYY-MM text, years(birth,event) completed birthdays, days(start,end), months(start,end), text, concat, coalesce. Optional locale:"vi"/"en"/"iso"/"dmy"/"mdy". Conditional expression {op:"if",where:predicate,then:expr,else:expr}. For locale vi text numbers, . is thousands and , decimal; stored numeric cells never need locale conversion. Convert text dates/numbers before comparing, aggregating or ranking. Blank cells and missing-value marks such as .. x F - are missing: arithmetic on them yields missing, aggregates skip them, sort places them last.
+aggregate: input, optional group_by:[aliases], metrics:{alias:{fn:"sum",column:"x"},...}. fn: sum/mean/average/min/max/median/count/count_distinct/weighted_mean. weighted_mean needs column (values) and weight (weights): sum(value*weight)/sum(weight); use it for every weighted average, never sum(values)/sum(weights). count with no column counts records; count with a column counts nonblank values. Optional locale in metric. Optional where:predicate in a metric aggregates only matching rows (like SUMIFS), so one aggregate can hold, e.g., two periods' totals side by side for a later derive of their difference. Filter subtotals/detail rows before aggregating to avoid double counting. Empty numeric aggregates are unavailable (count can be zero).
 sort: input, by:[{column:"x",descending:true,type:"number"}]. Optional type:number/text/date (default auto); locale optional. Always give type for numeric-looking text. Keys listed primary first. Use the requested metric, not a nearby original column.
 take: input, count (default 1), offset (default 0), ties (default false). ties:true requires directly preceding sort and includes equal boundary keys. Use ties when the question asks for all joint maxima/minima.
 project: input, columns:[aliases].
 union: inputs:[id,id]. Columns must match.
 unpivot: input, columns:{source_column:"label",...}, key:"period", value:"amount". Other columns retained.
 join: inputs:[left_id,right_id], on:{left_alias:"right_alias",...}, how:"inner" or "left", prefix:"r_" (default). Right keys MUST be unique; use composite identifiers where names repeat. Right rows with a blank key are ignored. Right columns become prefix+name and also keep their plain alias when the left side has no column of that name. how:"cross" takes no on and pairs every left row with every right row, e.g. to combine two single-row results.
-FORMAT: columns:[aliases] to print; decimals:0..12; percent:true multiplies numeric values by 100 and appends %; scale:number multiplies numeric results; suffix/prefix strings; separator (between columns, default ", "); row_separator (default "; "); date_format:iso/dmy/mdy/year; trim_zeros:false preserves requested decimals. Numeric defaults have no thousands separators. If question asks a percentage NUMBER without %, derive *100 then decimals, percent:false. Do not include commentary in answers.
+FORMAT: columns:[aliases] to print; decimals:0..12; percent:true multiplies numeric values by 100 and appends %; suffix/prefix strings; separator (between columns, default ", "); row_separator (default ", "); date_format:iso/dmy/mdy/year; trim_zeros:false preserves requested decimals. Numeric defaults have no thousands separators. A percentage computed as a fraction (change_ratio, part/whole, or cells holding fractions with a percent format) needs percent:true even when the question wants the number without a % sign; an unrequested sign is removed. Cells already holding percent numbers (e.g. 12.5) need no percent:true. Do not include commentary in answers.
 Example summation: {"version":2,"action":"plan","steps":[{"id":"r","op":"read","sheet":0,"range":"A2:C20","columns":{"name":"A","n":"C"}},{"id":"f","op":"filter","input":"r","where":{"column":"name","cmp":"eq","value":"North"}},{"id":"a","op":"aggregate","input":"f","metrics":{"total":{"fn":"sum","column":"n"}}}],"result":"a","format":{"columns":["total"],"decimals":0}}.
 If the question cannot be answered from the workbook, use {"version":2,"action":"abstain"}. Keep JSON compact and complete within 1200 output tokens."""
 
@@ -91,9 +91,16 @@ def direct_answer(reply, book, context):
 
 
 _LIST_VI = re.compile(r'cách nhau|phân cách|liệt kê', re.I)
-_INT_ANY = re.compile(r'\b(?:return|answer|give)\b[^.?!;]*\binteger\b|số nguyên', re.I)
-_DEC_ANY = re.compile(r'\b(\d+|one|two|three|four)\s+decimal places?\b|(\d+)\s+chữ số thập phân', re.I)
-_WORDS = {'one':1,'two':2,'three':3,'four':4}
+_INT_ANY = re.compile(r'\b(?:return|answer|give)\b[^.?!;]*\binteger\b|số nguyên|\bnombre entier\b|정수|整数', re.I)
+_DEC_ANY = re.compile(r'\b(\d+|one|two|three|four)\s+decimal places?\b|\b(\d+|một|hai|ba|bốn)\s+chữ số thập phân'
+                      r'|\b(\d+|une|deux|trois|quatre)\s+décimales?\b|소수점\s*(?:이하\s*)?(\d+|첫째|둘째|셋째|넷째)\s*자리'
+                      r'|(\d+|一|两|二|三|四)\s*位小数', re.I)
+_WORDS = {'one':1,'two':2,'three':3,'four':4,'một':1,'hai':2,'ba':3,'bốn':4,'une':1,'deux':2,'trois':3,'quatre':4,
+          '첫째':1,'둘째':2,'셋째':3,'넷째':4,'一':1,'两':2,'二':2,'三':3,'四':4}
+_SIGN_NO = re.compile(r'(?:không|without|no|sans)\s+(?:kèm\s+|có\s+|a\s+|the\s+|le\s+)?(?:theo\s+)?'
+                      r'(?:ký hiệu|dấu|percent(?:age)? sign|signe|symbole|%)', re.I)
+_SIGN_YES = re.compile(r'(?:kèm|thêm|có)\s+(?:theo\s+)?(?:ký hiệu|dấu)\s*[`\'"]?%'
+                       r'|avec\s+(?:le\s+)?(?:signe|symbole)\s*[`\'"]?%', re.I)
 
 
 def requested_number(query):
@@ -108,16 +115,41 @@ def requested_number(query):
     if spec.kind in {'text','number'}:
         found = _DEC_ANY.search(query)
         if found:
-            word = found.group(1) or found.group(2)
+            word = next(g for g in found.groups() if g)
             return int(word) if word.isdigit() else _WORDS[word.lower()]
         if _INT_ANY.search(query):
             return 0
     return None
 
 
-def single_number(text, places):
+def keeps_percent_sign(query):
+    """A plain-number answer prints % only when the question explicitly asks for the sign."""
+    if _SIGN_NO.search(query):
+        return False
+    return parse_instruction(query).suffix == '%' or bool(_SIGN_YES.search(query))
+
+
+_WEIGHTED = re.compile(r'weighted\s+(?:average|mean)|trung bình (?:có )?trọng số|bình quân gia quyền'
+                       r'|moyenne pondérée|가중\s*평균|加权平均', re.I)
+_PERCENT_ONLY = re.compile(r'-?\d+(?:\.\d+)?%')
+
+
+def check_weighted(query, plan):
+    """A weighted-mean question needs weighted_mean or an explicit value-times-weight product."""
+    if _WEIGHTED.search(query) and not re.search(r'"(?:weighted_mean|mul)"', json.dumps(plan)):
+        raise PlanError('the question asks for a weighted mean: use one aggregate metric '
+                        '{"fn":"weighted_mean","column":values,"weight":weights}; sum(values)/sum(weights) is not one')
+
+
+def drop_unasked_percent(text, query):
+    """A lone percentage loses the % sign unless the question asks for it."""
+    return text[:-1] if _PERCENT_ONLY.fullmatch(text) and not keeps_percent_sign(query) else text
+
+
+def single_number(text, places, keep_percent=False):
     """Apply the question's own precision to one plain numeric answer."""
-    body, percent = (text[:-1], '%') if text.endswith('%') else (text, '')
+    body = text[:-1] if text.endswith('%') else text
+    percent = '%' if keep_percent else ''
     try:
         value = Decimal(body.strip())
     except InvalidOperation:
@@ -141,6 +173,7 @@ def answer(query, path, cache, budget, profile='dual', qid=''):
             return None
         feedback = None
         places = requested_number(query)
+        keep_percent = places is not None and keeps_percent_sign(query)
         system = DIRECT_SYSTEM if profile=='direct' else SYSTEM
         while budget.allow(0):
             # QUESTION stays the last section of message 1 for the scope-enforcing
@@ -166,8 +199,8 @@ def answer(query, path, cache, budget, profile='dual', qid=''):
                     return None
                 if action=='answer' and profile=='direct':
                     result = direct_answer(reply,book,context)
-                    if places is not None:
-                        result = single_number(result,places)
+                    result = (single_number(result,places,keep_percent) if places is not None
+                              else drop_unasked_percent(result,query))
                     budget.diagnostics.update(status='direct_answer',evidence=reply['evidence'])
                     return result
                 if action=='inspect' and profile!='direct':
@@ -178,13 +211,16 @@ def answer(query, path, cache, budget, profile='dual', qid=''):
                     budget.log[-1]['status'] = 'inspected'
                     continue
                 if action=='plan' and profile!='direct':
+                    check_weighted(query,reply)
                     result,trace = execute(reply,book)
                     if places is not None:
                         rows = next((t['rows'] for t in trace if t['id']==reply['result']),None)
                         if rows != 1:
                             raise PlanError(f'the question asks for one number but result {reply["result"]!r} has '
                                             f'{rows} rows; aggregate them or take the requested row')
-                        result = single_number(result,places)
+                        result = single_number(result,places,keep_percent)
+                    else:
+                        result = drop_unasked_percent(result,query)
                     budget.diagnostics.update(status='executed',trace=trace)
                     budget.log[-1]['status'] = 'executed'
                     return result

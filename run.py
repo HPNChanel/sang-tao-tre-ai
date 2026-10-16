@@ -618,6 +618,69 @@ def _rule_answer(query, tables, fname, strict=None):
     return seams.execute(plan, tables, query) if plan else None
 
 
+# The hybrid profile keeps the legacy review path only where the legacy rule
+# planner resolved every operand natively (confidence 1.0, no translation or
+# coverage penalty). Every other question goes to CellPlanV2 first.
+HYBRID_V2_PROFILE = 'raw'
+
+
+def _legacy_resolved(query, tables, fname):
+    from src.code_planner import plan_with_confidence
+    plan, confidence, _ = plan_with_confidence(query, tables, fname, strict=False)
+    return plan is not None and confidence >= 1.0
+
+
+def _answer_hybrid(q, path, fname, cache, budget, limit, use_fork, preload_timeout, started, whole_query):
+    """Baseline legacy sequence where its rules resolve the question; CellPlanV2 otherwise.
+
+    The legacy stage repeats the baseline exactly: strict rule, review gate, then
+    the adjudicated review. A legacy parse or planning error does not end the
+    question; CellPlanV2 reads the workbook through its own index instead.
+    """
+    query = q["query"]
+    budget.diagnostics = {'route': 'legacy_rule'}
+    tables = rule = None
+    try:
+        hit = _MISS if whole_query or not cache.enabled else cache.lookup(path)
+        if hit is _MISS:
+            cache.make_room()
+            left = _remaining(started, limit)
+            if left is not None and left <= 0:
+                raise _QueryTimedOut()
+            parse_limit = min(preload_timeout, left) if left is not None and preload_timeout > 0 else left
+            tables = _load_into_parent(path, use_fork, parse_limit or 0)
+            if cache.enabled and not whole_query:
+                cache.store(path, tables)
+        else:
+            tables = hit
+        if limit is not None and _remaining(started, limit) <= 0:
+            raise _QueryTimedOut()
+        rule = _answer_rule(query, tables, fname, limit, use_fork, started)
+        if rule is not None:
+            from src.plan_review import needs_review
+            if not _run_alarmed(lambda: needs_review(query, tables), _remaining(started, limit)):
+                return rule
+        resolved = seams.have_executor() and _run_alarmed(lambda: _legacy_resolved(query, tables, fname),
+                                                          _remaining(started, limit))
+    except Exception as exc:
+        print(f"[warn] {q.get('id')}: legacy stage {type(exc).__name__}: {exc}", file=sys.stderr)
+        budget.diagnostics['legacy_error'] = type(exc).__name__
+        tables, resolved = None, False
+    if resolved:
+        budget.diagnostics['route'] = 'legacy_review'
+        return _answer_llm(q, tables, fname, budget, limit, use_fork, started)
+    from src.cellplan_v2.planner import answer as answer_v2
+    legacy_error = budget.diagnostics.get('legacy_error')
+    ans = _run_alarmed(lambda: answer_v2(query, path, cache, budget, HYBRID_V2_PROFILE, q.get('id', '')),
+                       _remaining(started, limit))
+    budget.diagnostics.update(route='cellplan_v2', **({'legacy_error': legacy_error} if legacy_error else {}))
+    if ans is not None or tables is None or not seams.have_executor():
+        return ans if ans is not None else rule
+    # The legacy review keeps whatever call budget and time CellPlanV2 left.
+    budget.diagnostics['fallback'] = 'legacy_review'
+    return _answer_llm(q, tables, fname, budget, limit, use_fork, started)
+
+
 def _llm_then_rule(q, tables, fname, budget):
     """LLM plan, or the non-strict rule answer if the LLM fails for any reason.
 
@@ -670,7 +733,12 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
     budget.deadline = None if limit is None else started + limit
     solver_profile = os.environ.get('DS2_SOLVER_PROFILE', 'legacy')
     v2_active = solver_profile in {'direct','raw','dual'} and llm_client.enabled()
+    hybrid = solver_profile == 'hybrid' and llm_client.enabled()
     try:
+        if hybrid:
+            ans = _answer_hybrid(q, path, fname, cache, budget, limit, use_fork, preload_timeout,
+                                 started, whole_query)
+            return ("" if ans is None else str(ans)), budget
         if v2_active:
             from src.cellplan_v2.planner import answer as answer_v2
             ans = _run_alarmed(lambda: answer_v2(q['query'],path,cache,budget,solver_profile,q.get('id','')),

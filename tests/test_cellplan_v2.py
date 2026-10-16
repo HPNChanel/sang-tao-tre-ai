@@ -69,7 +69,7 @@ def test_merged_numeric_exists_once(book):
 def test_age_is_at_event_and_accounts_for_birthday(book):
     p=plan(read(),dict(id='d',op='derive',input='r',columns={'age':{'op':'years','args':[{'col':'birth'},{'col':'event'}]}}),
            fmt={'columns':['age']})
-    assert execute(p,book)[0]=='19; 20'
+    assert execute(p,book)[0]=='19, 20'
 
 
 def test_composite_key_join_and_weighted_sum(book):
@@ -118,6 +118,67 @@ def test_complete_context_keeps_cell_and_formula_metadata(book):
     assert rows[2]['C']=={'n':'0.1'}
     assert rows[4]['C']['v']=={'n':'0.3'} and rows[4]['C']['f']=='SUM(C2:C3)'
     assert context['structure_hints_untrusted']
+
+
+@pytest.fixture
+def marks(tmp_path):
+    """A statistical table that marks unavailable figures with '..' and 'x'."""
+    wb=openpyxl.Workbook();ws=wb.active
+    for row in [('Region','Y2019','Y2020','Grade'),('North',10,'..','M'),('South','x',4,'F'),('East',6,8,'F')]:
+        ws.append(row)
+    path=tmp_path/'marks.xlsx';wb.save(path)
+    index=WorkbookIndex(path)
+    yield index
+    index.close()
+
+
+def stats(*steps, fmt=None):
+    return plan(dict(id='r',op='read',sheet=0,range='A2:D4',columns={'region':'A','a':'B','b':'C','grade':'D'}),
+                *steps,fmt=fmt)
+
+
+def test_missing_marks_propagate_through_arithmetic_and_aggregates_skip_them(marks):
+    assert expression({'op':'add','args':[{'literal':'..'},{'literal':1}]},{}) is None
+    assert execute(stats(dict(id='s',op='aggregate',input='r',metrics={'m':{'fn':'mean','column':'b'}})),marks)[0]=='6'
+    change=stats(dict(id='d',op='derive',input='r',columns={'c':{'op':'sub','args':[{'col':'b'},{'col':'a'}]}}),
+                 dict(id='s',op='aggregate',input='d',metrics={'n':{'fn':'sum','column':'c'},'k':{'fn':'count','column':'c'}}),
+                 fmt={'columns':['n','k']})
+    assert execute(change,marks)[0]=='2, 1'
+
+
+@pytest.mark.parametrize('descending,order',[(True,'East, South, North'),(False,'South, East, North')])
+def test_missing_marks_sort_last_in_either_direction(marks,descending,order):
+    p=stats(dict(id='s',op='sort',input='r',by=[{'column':'b','descending':descending}]),fmt={'columns':['region']})
+    assert execute(p,marks)[0]==order
+
+
+def test_text_sort_keeps_values_that_look_like_marks(marks):
+    p=stats(dict(id='s',op='sort',input='r',by=[{'column':'grade'},{'column':'region'}]),fmt={'columns':['region']})
+    assert execute(p,marks)[0]=='East, South, North'
+
+
+def test_sort_on_a_column_without_values_is_an_error(marks):
+    p=plan(dict(id='r',op='read',sheet=0,range='A2:B3',columns={'region':'A','a':'B'}),
+           dict(id='f',op='filter',input='r',where={'column':'region','cmp':'eq','value':'South'}),
+           dict(id='s',op='sort',input='f',by=[{'column':'a','type':'number'}]))
+    with pytest.raises(PlanError,match="'a' has no values"): execute(p,marks)
+
+
+def test_missing_marks_never_satisfy_numeric_comparisons(marks):
+    p=stats(dict(id='f',op='filter',input='r',where={'column':'b','cmp':'gt','value':5}),fmt={'columns':['region']})
+    assert execute(p,marks)[0]=='East'
+
+
+def test_non_numeric_operands_and_unknown_ops_are_named():
+    with pytest.raises(PlanError,match="numeric operand unavailable: 'abc'"):
+        expression({'op':'add','args':[{'literal':'abc'},{'literal':1}]},{})
+    with pytest.raises(PlanError,match="unsupported expression op 'pow'"):
+        expression({'op':'pow','args':[{'literal':2},{'literal':3}]},{})
+
+
+def test_format_scale_is_rejected_with_derive_guidance(book):
+    p=plan(read(),dict(id='a',op='aggregate',input='r',metrics={'s':{'fn':'sum','column':'v'}}),fmt={'scale':100})
+    with pytest.raises(PlanError,match="unsupported format fields \\['scale'\\].*derive step"): execute(p,book)
 
 
 @pytest.fixture
@@ -177,6 +238,64 @@ def test_conditional_metrics_and_cross_join_combine_periods(side_tables):
     assert execute(q,side_tables)[0]=='2'
 
 
+def test_derive_combines_single_row_steps(side_tables):
+    p=plan(dict(id='r',op='read',sheet=0,range='A3:D6',columns={'site':'B','qty':'D'}),
+           dict(id='n',op='filter',input='r',where={'column':'site','cmp':'eq','value':'North'}),
+           dict(id='s',op='filter',input='r',where={'column':'site','cmp':'eq','value':'South'}),
+           dict(id='na',op='aggregate',input='n',metrics={'north':{'fn':'sum','column':'qty'}}),
+           dict(id='sa',op='aggregate',input='s',metrics={'south':{'fn':'sum','column':'qty'}}),
+           dict(id='d',op='derive',inputs=['na','sa'],columns={'gap':{'op':'sub','args':[{'col':'north'},{'col':'south'}]}}),
+           fmt={'columns':['gap']})
+    assert execute(p,side_tables)[0]=='2'
+    p['steps'][-1]['inputs']=['na','n']
+    with pytest.raises(PlanError,match="step 'n' has 3 rows"): execute(p,side_tables)
+    p['steps'][-1]['inputs']=['na','na']
+    with pytest.raises(PlanError,match="share column 'north'"): execute(p,side_tables)
+    p['steps'][-1].update(inputs=['na','sa'],input='na')
+    with pytest.raises(PlanError,match='not both'): execute(p,side_tables)
+
+
+def test_weighted_mean_questions_need_value_times_weight():
+    ratio=plan(dict(id='r',op='read',sheet=0,range='A2:B9',columns={'v':'A','w':'B'}),
+               dict(id='a',op='aggregate',input='r',metrics={'s':{'fn':'sum','column':'v'},'t':{'fn':'sum','column':'w'}}),
+               dict(id='d',op='derive',input='a',columns={'m':{'op':'div','args':[{'col':'s'},{'col':'t'}]}}))
+    for query in ('Điểm trung bình có trọng số là bao nhiêu?','What is the weighted average score?','가중 평균은?'):
+        with pytest.raises(PlanError,match='weighted mean'): planner.check_weighted(query,ratio)
+    planner.check_weighted('What is the mean of the ratio?',ratio)
+    ratio['steps'][1]['metrics']={'m':{'fn':'weighted_mean','column':'v','weight':'w'}}
+    planner.check_weighted('What is the weighted average score?',ratio)
+
+
+def test_weighted_mean_question_repairs_a_ratio_of_sums(side_tables,monkeypatch):
+    steps=[dict(id='r',op='read',sheet=0,range='K4:M5',columns={'price':'L','code':'M'}),
+           dict(id='w',op='read',sheet=0,range='C3:D6',columns={'code':'C','qty':'D'}),
+           dict(id='j',op='join',inputs=['w','r'],on={'code':'code'})]
+    ratio=plan(*steps,dict(id='a',op='aggregate',input='j',metrics={'p':{'fn':'sum','column':'r_price'},'q':{'fn':'sum','column':'qty'}}),
+               dict(id='d',op='derive',input='a',columns={'m':{'op':'div','args':[{'col':'p'},{'col':'q'}]}}),fmt={'columns':['m']})
+    good=plan(*steps,dict(id='a',op='aggregate',input='j',metrics={'m':{'fn':'weighted_mean','column':'r_price','weight':'qty'}}))
+    replies=iter([ratio,good]);feedback=[]
+    def post(body,timeout):
+        sent=json.loads(body)['messages'];feedback.append(sent[-1]['content'] if len(sent)>2 else '')
+        return response(next(replies))
+    monkeypatch.setattr(L,'_post',post)
+    cache=run.TableCache();b=L.Budget()
+    try: assert planner.answer('What is the weighted average price by quantity? Return two decimal places.',
+                               side_tables.path,cache,b,'raw','q')=='5.60'
+    finally: planner.close_cache(cache)
+    assert b.attempts==2 and 'weighted mean' in feedback[1]
+
+
+@pytest.mark.parametrize('text,query,expected',[
+    ('12.5%','What share of the units are wood?','12.5'),
+    ('-3%','Tỷ lệ thay đổi là bao nhiêu phần trăm?','-3'),
+    ('12.5%','Trả lời kèm ký hiệu %.','12.5%'),
+    ('12.5%, 13%','List the shares.','12.5%, 13%'),
+    ('North','Which site?','North'),
+])
+def test_a_lone_percentage_drops_an_unrequested_sign(text,query,expected):
+    assert planner.drop_unasked_percent(text,query)==expected
+
+
 def test_weighted_mean_uses_value_times_weight(side_tables):
     p=plan(dict(id='r',op='read',sheet=0,range='K4:M5',columns={'price':'L','code':'M'}),
            dict(id='w',op='read',sheet=0,range='C3:D6',columns={'code':'C','qty':'D'}),
@@ -231,9 +350,29 @@ def test_unknown_columns_name_the_available_aliases(side_tables):
     ('Which sites? Answer with the names separated by a comma and one space.',None),
     ('Liệt kê các số nguyên, cách nhau bởi dấu phẩy.',None),
     ('Who is youngest? Answer with only the last name.',None),
+    ('Quelle est la moyenne ? Arrondissez à deux décimales.',2),
+    ('Donnez la réponse sous forme de nombre entier.',0),
+    ('평균은 얼마입니까? 소수점 이하 둘째 자리까지 반올림하세요.',2),
+    ('평균을 정수로 답하세요.',0),
+    ('平均值是多少？保留两位小数。',2),
+    ('总数是多少？请给出整数。',0),
+    ('Tỷ lệ là bao nhiêu? Làm tròn đến 1 chữ số thập phân.',1),
+    ('Quels pays ? Séparez les noms par une virgule.',None),
 ])
 def test_requested_single_number_is_read_from_the_question(query,places):
     assert planner.requested_number(query)==places
+
+
+@pytest.mark.parametrize('query,keep',[
+    ('Tỷ lệ là bao nhiêu phần trăm? Ghi 1 chữ số thập phân, không kèm ký hiệu %.',False),
+    ('Give the share with one decimal place, without the percent sign.',False),
+    ('What share? Round to one decimal place.',False),
+    ('Trả lời kèm ký hiệu %, 1 chữ số thập phân.',True),
+    ('Donnez le taux avec une décimale, avec le signe %.',True),
+])
+def test_percent_sign_is_printed_only_when_asked(query,keep):
+    assert planner.keeps_percent_sign(query) is keep
+    assert planner.single_number('81.25%',1,planner.keeps_percent_sign(query))==('81.3%' if keep else '81.3')
 
 
 def test_single_number_questions_reject_lists_and_apply_precision(side_tables,monkeypatch):

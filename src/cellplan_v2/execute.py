@@ -16,7 +16,7 @@ MAX_COLUMNS = 32
 OPS = {'read','cell','filter','derive','aggregate','sort','take','project','union','unpivot','join'}
 FIELDS = {
  'read': {'sheet','range','columns','fill','label'}, 'cell': {'sheet','cell'},
- 'filter': {'input','where'}, 'derive': {'input','columns'},
+ 'filter': {'input','where'}, 'derive': {'input','inputs','columns'},
  'aggregate': {'input','group_by','metrics'}, 'sort': {'input','by'},
  'take': {'input','count','offset','ties'}, 'project': {'input','columns'},
  'union': {'inputs'}, 'unpivot': {'input','columns','key','value'},
@@ -52,10 +52,22 @@ def parse_date(value, locale='iso'):
     raise PlanError('unrecognized date; specify locale')
 
 
+# Statistical tables mark unavailable figures with these instead of leaving the cell blank.
+MISSING_MARKS = frozenset({'..','...','…','x','X','F','-','–','—','n/a','N/A',':'})
+EXPRESSION_OPS = frozenset({'number','date','text','concat','coalesce','years','days','months','year','month',
+                            'abs','neg','round','add','sub','mul','div','change_ratio'})
+
+
+def missing(value):
+    """True for blank cells and missing-value marks, which carry no number or date."""
+    return value is None or (isinstance(value,str) and (not value.strip() or value.strip() in MISSING_MARKS))
+
+
 def numeric(value, locale='en'):
     result = number(value,locale)
     if result is None:
-        raise PlanError('numeric operand unavailable')
+        raise PlanError(f'numeric operand unavailable: {str(value)[:40]!r} is not a number; '
+                        'check the column letter or convert text with number(value) and a locale')
     return result
 
 
@@ -85,11 +97,17 @@ def expression(node, row, depth=0):
         raise PlanError('expression needs 1..4 arguments')
     vals = [expression(arg,row,depth+1) for arg in args]
     op, locale = node['op'],node.get('locale','en')
-    if op=='number' and len(vals)==1: return numeric(vals[0],locale)
-    if op=='date' and len(vals)==1: return parse_date(vals[0],locale)
+    if op not in EXPRESSION_OPS:
+        raise PlanError(f'unsupported expression op {str(op)[:20]!r}')
     if op=='text' and len(vals)==1: return '' if vals[0] is None else str(vals[0])
     if op=='concat': return ''.join('' if v is None else str(v) for v in vals)
     if op=='coalesce': return next((v for v in vals if v is not None and v!=''),None)
+    if op not in {'text','concat','coalesce'} and any(missing(v) for v in vals):
+        # A missing operand yields a missing result for this row, as a blank
+        # spreadsheet cell does; aggregates and sorts then pass over it.
+        return None
+    if op=='number' and len(vals)==1: return numeric(vals[0],locale)
+    if op=='date' and len(vals)==1: return parse_date(vals[0],locale)
     if op in {'years','days','months'} and len(vals)==2:
         a,b = (parse_date(v,locale) for v in vals)
         if op=='days': return Decimal((b-a).days)
@@ -136,6 +154,8 @@ def predicate(spec,row,depth=0):
     if op=='not_null': return a is not None and a!=''
     if a is None:
         return False
+    if op in {'lt','le','gt','ge'} and missing(a) and not isinstance(b,str):
+        return False  # a missing-value mark is never above or below a number
     if op in {'in','not_in'}:
         if not isinstance(b,list) or len(b)>100:
             raise PlanError('membership requires a bounded list')
@@ -195,10 +215,15 @@ def validate(plan):
             raise PlanError('step IDs must be unique simple names')
         if set(step)-({'id','op'}|FIELDS[op]):
             raise PlanError(f'unexpected fields for {op}')
-        inputs = [] if op in {'read','cell'} else (step.get('inputs') if op in {'union','join'} else [step.get('input')])
+        combined = op in {'union','join'} or (op=='derive' and 'inputs' in step)
+        inputs = [] if op in {'read','cell'} else (step.get('inputs') if combined else [step.get('input')])
         if not isinstance(inputs,list) or any(not isinstance(i,str) or i not in depths for i in inputs):
             raise PlanError(f'step {sid!r} inputs must name earlier step ids; {op} takes '+
-                            ('inputs:[id,id]' if op in {'union','join'} else 'one input id; combine two steps with join'))
+                            ('inputs:[id,id]' if op in {'union','join'} else
+                             'input:id, or inputs:[id,id] of single-row steps' if op=='derive' else
+                             'one input id; combine two steps with join'))
+        if op=='derive' and combined and ('input' in step or not 2<=len(inputs)<=4):
+            raise PlanError('derive takes input:id or inputs:[2..4 single-row step ids], not both')
         if op=='join' and len(inputs)!=2: raise PlanError('join needs two inputs')
         if op=='union' and not 1<=len(inputs)<=3: raise PlanError('union needs 1..3 inputs')
         depth = 1+max((depths[i] for i in inputs),default=0)
@@ -211,6 +236,22 @@ def validate(plan):
     if not isinstance(plan.get('format',{}),dict):
         raise PlanError('format must be an object')
     return plan
+
+
+def _combine(ids, values):
+    """One row holding the columns of several single-row steps, e.g. the totals of two periods."""
+    row = {}
+    for sid in ids:
+        if len(values[sid])!=1:
+            raise PlanError(f'derive inputs must each be one row; step {sid!r} has {len(values[sid])} rows; '
+                            'aggregate it first or use join')
+        for name,value in values[sid][0].items():
+            if name.startswith('_'):
+                continue
+            if name in row:
+                raise PlanError(f'derive inputs share column {name!r}; give each metric its own alias')
+            row[name] = value
+    return row
 
 
 def execute(plan,book):
@@ -279,6 +320,8 @@ def execute(plan,book):
             columns = step.get('columns')
             if not isinstance(columns,dict) or not 1<=len(columns)<=MAX_COLUMNS:
                 raise PlanError('derive needs columns mapping')
+            if 'inputs' in step:
+                source = [_combine(step['inputs'],values)]
             rows = []
             for row in source:
                 updated = dict(row)
@@ -287,7 +330,7 @@ def execute(plan,book):
                         raise PlanError('invalid derived column name')
                     updated[name] = expression(expr,updated)
                 rows.append(updated)
-            trace = {'input':step['input'],'columns':columns}
+            trace = {('inputs' if 'inputs' in step else 'input'):step.get('inputs',step.get('input')),'columns':columns}
         elif op=='aggregate':
             by = step.get('group_by',[])
             if not isinstance(by,list) or len(by)>8 or any(not isinstance(k,str) for k in by):
@@ -320,12 +363,12 @@ def execute(plan,book):
                     elif fn=='count_distinct': out[name] = Decimal(len(set(raw)))
                     elif fn=='weighted_mean':
                         pairs = [(numeric(r[col],locale),numeric(r[weight],locale)) for r in chosen
-                                 if r[col] not in (None,'') and r[weight] not in (None,'')]
+                                 if not missing(r[col]) and not missing(r[weight])]
                         total = sum((w for _,w in pairs),Decimal(0))
                         if not pairs or total==0: raise PlanError('weighted_mean has no observations or zero total weight')
                         out[name] = sum((v*w for v,w in pairs),Decimal(0))/total
                     else:
-                        nums = [numeric(v,locale) for v in raw]
+                        nums = [numeric(v,locale) for v in raw if not missing(v)]
                         if not nums: raise PlanError('aggregate has no numeric observations')
                         if fn=='sum': out[name] = sum(nums,Decimal(0))
                         elif fn in {'mean','average'}: out[name] = sum(nums,Decimal(0))/len(nums)
@@ -346,20 +389,30 @@ def execute(plan,book):
                 if not isinstance(item,dict) or set(item)-{'column','descending','type','locale'} or not isinstance(item.get('column'),str):
                     raise PlanError('invalid sort key')
                 col = item['column']
-                if any(col not in row or row[col] is None for row in rows):
-                    raise PlanError('sort key missing; filter nulls first')
+                if any(col not in row for row in rows):
+                    raise PlanError(f'unknown sort column {col!r}; input has {_visible(rows[0])}')
                 if type(item.get('descending',False)) is not bool: raise PlanError('descending must be boolean')
                 kind = item.get('type','auto')
                 if kind not in {'auto','number','text','date'}: raise PlanError('unsupported sort type')
-                if kind=='auto' and any(isinstance(r[col],str) and number(r[col]) is not None for r in rows):
+                # Rows without a key value rank after every row that has one, in either direction.
+                # A missing-value mark counts as absent only where the key is not plain text.
+                blank = lambda v: v is None or v==''
+                typed = kind in {'number','date'} or (kind=='auto' and any(
+                    not blank(r[col]) and not isinstance(r[col],str) for r in rows))
+                absent = missing if typed else blank
+                present = [r for r in rows if not absent(r[col])]
+                if rows and not present:
+                    raise PlanError(f'sort column {col!r} has no values in any row')
+                if kind=='auto' and any(isinstance(r[col],str) and number(r[col]) is not None for r in present):
                     raise PlanError('numeric-looking text needs explicit sort type number or text')
                 def sort_value(row):
                     if kind=='number': return numeric(row[col],item.get('locale','en'))
                     if kind=='text': return str(row[col])
                     if kind=='date': return parse_date(row[col],item.get('locale','iso'))
                     return row[col]
-                try: rows.sort(key=sort_value,reverse=item.get('descending',False))
+                try: present.sort(key=sort_value,reverse=item.get('descending',False))
                 except TypeError: raise PlanError('mixed sort types; derive a typed column first') from None
+                rows = present+[r for r in rows if absent(r[col])]
             sorted_by[sid] = [item['column'] for item in by]
             trace = {'input':step['input'],'by':by}
         elif op=='take':
@@ -453,9 +506,10 @@ def execute(plan,book):
 
 
 def format_answer(rows,fmt):
-    allowed = {'columns','decimals','percent','scale','suffix','prefix','separator','row_separator','date_format','trim_zeros'}
+    allowed = {'columns','decimals','percent','suffix','prefix','separator','row_separator','date_format','trim_zeros'}
     if set(fmt)-allowed:
-        raise PlanError('unsupported answer format')
+        raise PlanError(f'unsupported format fields {sorted(set(fmt)-allowed)[:4]}; allowed: {", ".join(sorted(allowed))}. '
+                        'Scale values in a derive step')
     columns = fmt.get('columns') or [k for k in rows[0] if not k.startswith('_')]
     _names(columns)
     if len(rows)>200 or len(columns)>8:
@@ -468,12 +522,10 @@ def format_answer(rows,fmt):
             raise PlanError('invalid output delimiter')
     if type(fmt.get('percent',False)) is not bool or type(fmt.get('trim_zeros',True)) is not bool:
         raise PlanError('format flags must be boolean')
-    scale = numeric(fmt.get('scale',1))
-    if abs(scale)>Decimal('1e12'): raise PlanError('format scale too large')
     def render(value):
         if value is None: raise PlanError('answer value unavailable')
         if isinstance(value,Decimal):
-            value *= scale * (100 if fmt.get('percent') else 1)
+            value *= 100 if fmt.get('percent') else 1
             if decimals is not None: value = value.quantize(Decimal(1).scaleb(-decimals),rounding=ROUND_HALF_UP)
             if value==0: value = abs(value)
             text = format(value,'f')
@@ -485,4 +537,4 @@ def format_answer(rows,fmt):
             return value.strftime(pattern)
         if isinstance(value,bool): return 'true' if value else 'false'
         return str(value).strip()
-    return fmt.get('prefix','')+fmt.get('row_separator','; ').join(fmt.get('separator',', ').join(render(row[k]) for k in columns) for row in rows)+fmt.get('suffix','')
+    return fmt.get('prefix','')+fmt.get('row_separator',', ').join(fmt.get('separator',', ').join(render(row[k]) for k in columns) for row in rows)+fmt.get('suffix','')
