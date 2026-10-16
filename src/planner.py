@@ -774,6 +774,27 @@ def _tie_mode(low, fmt):
 def _choose_over(plan, view, rows, cols, low):
     args = plan["args"]
     args["ties"] = _tie_mode(low, plan["format"])
+    # The named leaf can repeat under several groups. In that case the
+    # comparison axis is its parent section, not descendants of that leaf.
+    if re.search(r"\bwhich (?:group|industry|sector)\b", low):
+        q = Query(low)
+        leaves = [str(x) for x in dict.fromkeys(view.df["_label"])
+                  if tokens(x) and q.match(strip_footnotes(str(x)))[0] == 1.0]
+        leaves.sort(key=lambda x: len(tokens(x)), reverse=True)
+        for leaf in leaves:
+            selected = view.df[view.df["_label"] == leaf]
+            secs = [s for s in dict.fromkeys(selected["_section"]) if s]
+            if len(secs) < 2:
+                continue
+            mentioned = [s for s in secs if q.match(strip_footnotes(str(s)))[0] == 1.0]
+            if len(mentioned) == 1:
+                continue
+            if mentioned:
+                selected = selected[selected["_section"].isin(mentioned)]
+            args["over"] = "sections"
+            plan["rows"]["paths"] = list(dict.fromkeys(selected["_row_path"]))
+            plan["rows"]["scope"] = None
+            return
     if view.stacked and len(rows) == 1 and re.search(r"\b(which|what|in which) (year|sheet|period)\b", low):
         args["over"] = "sheets"
     elif len(rows) == 1 and not [c for c in cols if c != view.label_name]:

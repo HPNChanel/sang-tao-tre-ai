@@ -149,6 +149,7 @@
      "enum": [
       "rows",
       "columns",
+      "sections",
       "sheets"
      ]
     },

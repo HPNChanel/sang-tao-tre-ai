@@ -266,6 +266,13 @@ def execute(plan, tables):
             vals = {c: v for c, v in vals.items() if v is not None and not (isinstance(v, float) and math.isnan(v))}
             best = _pick(list(vals), lambda c: sign * tf(vals[c]), plan, "columns")
             val = [str(b).split(" | ")[-1] for b in best]
+        elif over == "sections":
+            idx = list(dict.fromkeys(i for g in groups for i in g))
+            c = cols[0] if cols else view.numeric_cols()[0]
+            vals = {i: _col_values(view, c, [i]).iloc[0] for i in idx}
+            vals = {i: v for i, v in vals.items() if pd.notna(v)}
+            best = _pick(list(vals), lambda i: sign * tf(vals[i]), plan, "rows")
+            val = [strip_footnotes(str(df.at[b, "_section"])) for b in best]
         elif over == "sheets":
             g = groups[0]
             leaf = df.at[g[0], "_label"]
