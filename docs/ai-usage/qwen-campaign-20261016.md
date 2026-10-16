@@ -47,6 +47,15 @@ evaluation report and updated oral-defense notes.
 Implementation is in progress. No benchmark, correctness, cost, runtime or
 release result is claimed by this contract.
 
+Follow-up authorized on 2026-10-16: the first frozen candidate failed the public
+gate at 49/50. The user explicitly authorized one general row-name repair,
+another frozen public run requiring 50/50, and then the existing paired 360-case
+sealed evaluation. This supersedes the earlier three-wave stop for this repair;
+the original freeze and report remain preserved. The USD 5 ledger, stage caps,
+USD 0.10 per-question ceiling including retries, sealed custody, and no-merge /
+no-submission boundaries remain in force. The new source must not inherit the
+old candidate's measured DEV scores as if they were measured on the new source.
+
 The Windows development adapter verifies all frozen source hashes, strips the
 provider credential from the solver environment, binds API identity at the
 enclosing question call, and denies Python socket egress except its exact

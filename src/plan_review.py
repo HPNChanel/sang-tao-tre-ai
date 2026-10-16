@@ -82,6 +82,76 @@ def reference_errors(plan, tables):
     return errors
 
 
+def _listed_row_operands(view, text, identity):
+    """Resolve explicit colon lists without trusting model-provided names.
+
+    Exact names take precedence; a shortened name must be a whole-word prefix
+    identifying one row, using an explicit section or the unique overall Total
+    section when labels repeat. Keep indices to distinguish repeated leaves.
+    """
+    if ":" not in text:
+        return set(), [], set()
+    names = {i: {identity(view.df.at[i, "_label"]), _fold(view.df.at[i, "_row_path"])}
+             for i in view.df.index}
+    columns = {_fold(c) for c in view.columns}
+    from .planner import TOTAL_LABEL
+    sections = {str(s) for s in view.df["_section"] if s}
+    scope_text = " " + _fold(text.split(":", 1)[0]) + " "
+    explicit_sections = {s for s in sections if " " + _fold(s) + " " in scope_text}
+    overall_sections = {s for s in sections if TOTAL_LABEL.fullmatch(s.strip())}
+
+    def matches(name, prefix=True):
+        exact = {i for i, variants in names.items() if name in variants}
+        found = exact if exact or not prefix else {
+            i for i, variants in names.items() if any(v.startswith(name + " ") for v in variants)}
+        return found
+
+    resolved, complete_lists, errors = set(), [], set()
+    for fragment in re.findall(r":\s*([^.?]+)", text):
+        # Protect complete compound names before splitting their internal commas
+        # or conjunctions. Longest exact name wins over its component names.
+        compounds = sorted({n for variants in names.values() for n in variants
+                            if len(n.split()) > 1}, key=len, reverse=True)
+        protected = {}
+        if compounds:
+            pattern = r"(?<!\w)(?:" + "|".join(
+                r"\W+".join(map(re.escape, n.split())) for n in compounds) + r")(?!\w)"
+            def protect(match):
+                token = "rowoperand" + str(len(protected)) + "token"
+                protected[token] = match[0]
+                return token
+            fragment = re.sub(pattern, protect, fragment, flags=re.I)
+        operands = []
+        for part in re.split(r"[,;]", fragment):
+            part = re.sub(r"^\s*(?:and|va)\s+", "", part)
+            # An 'and' inside an exact row name is part of its identity.
+            operands.extend([part] if matches(_fold(part), prefix=False)
+                            else re.split(r"\s+(?:and|va)\s+", part, flags=re.I))
+        listed, complete = set(), bool(operands)
+        for operand in operands:
+            name = _fold(protected.get(_fold(operand), operand))
+            found = matches(name) if name and name not in columns else set()
+            if len(explicit_sections) == 1:
+                scoped = {i for i in found if str(view.df.at[i, "_section"]) in explicit_sections}
+                if found and not scoped:
+                    errors.add("explicit row name is outside the named section")
+                found = scoped
+            elif not explicit_sections and len(found) > 1 and len(overall_sections) == 1:
+                scoped = {i for i in found if str(view.df.at[i, "_section"]) in overall_sections}
+                if scoped:
+                    found = scoped
+            if len(found) == 1:
+                listed.update(found)
+            else:
+                complete = False
+                if len(found) > 1:
+                    errors.add("explicit row name is ambiguous")
+        resolved.update(listed)
+        if complete:
+            complete_lists.append(listed)
+    return resolved, complete_lists, errors
+
+
 def semantic_errors(plan, query, tables=None):
     """Only reject a contradiction that can be grounded in explicit wording."""
     low = _fold(query)
@@ -137,13 +207,22 @@ def semantic_errors(plan, query, tables=None):
         # operands. Resolve paths through the same footnote-aware executor
         # mapping before comparing labels; raw path text is not a row identity.
         from .vi import fold
-        exclusion_source = fold(query).lower()
-        operand_text = _fold(re.sub(r"\b(?:excluding|except|other than|not including|khong tinh|khong bao gom)\b[^,;?)]*", " ", exclusion_source))
+        from .planner import strip_instruction
+        exclusion_source = fold(strip_instruction(query, parse_instruction(query))).lower()
+        operand_source = re.sub(r"\b(?:excluding|except|other than|not including|khong tinh|khong bao gom)\b[^,;?)]*", " ", exclusion_source)
+        operand_text = _fold(operand_source)
         named = {identity(label) for label in view.df["_label"] if identity(label)
                  and f" {identity(label)} " in f" {operand_text} "}
+        listed, complete_lists, operand_errors = _listed_row_operands(view, operand_source, identity) \
+            if args.get("over", "rows") == "rows" else (set(), [], set())
+        named.update(identity(view.df.at[i, "_label"]) for i in listed)
+        errors.extend(sorted(operand_errors))
         population = bool(re.search(r"\b(?:among|within|across|all|every|each|trong|parmi|entre les|greatest|largest|smallest|highest|lowest|maximum|minimum|nhat)\b", operand_text))
+        indices = [i for group in _resolve_rows(view, rows.get("paths", [])) for i in group] \
+            if named or complete_lists else []
+        if complete_lists and set(indices) - set.union(*complete_lists):
+            errors.append("selected row contradicts explicit row list")
         if named and not population:
-            indices = [i for group in _resolve_rows(view, rows.get("paths", [])) for i in group]
             selected = {identity(view.df.at[i, "_label"]) for i in indices}
             for clause in rows.get("where", []):
                 if clause.get("column") == view.label_name and clause.get("op") == "==":
