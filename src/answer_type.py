@@ -19,7 +19,7 @@ def expected_type(query: str, fmt: dict) -> str:
         return "date"
     if re.search(r"\b(which|what|in which) year\b|4-digit year", low):
         return "year"
-    if re.search(r"\bhow many (more|less|fewer)\b|\bhow much\b|\bby how much\b", low):
+    if re.search(r"\bhow many (more|less|fewer|percentage points?|percent points?)\b|\bhow much\b|\bby how much\b", low):
         return "number"
     if re.search(r"\bhow many\b", low):
         return "count"

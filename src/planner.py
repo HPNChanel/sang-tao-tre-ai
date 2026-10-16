@@ -537,7 +537,8 @@ def _plan_core(query: str, tables, strict=False):
                 paths.append(rr[0][0] if rr else n)
             plan["rows"]["paths"] = paths
     elif re.search(r"\bshare\b|\bproportion\b|percentage of|what percent", low) \
-            and not ((sup_max or sup_min) and which and spec.kind == "name"):
+            and not ((sup_max or sup_min) and which and spec.kind == "name") \
+            and not re.search(r"\b(?:absolute )?difference\b|\bgap\b", low):
         plan["op"] = "share"
         args["percent"] = True
     elif re.search(r"\(([^()/]+)/([^()]+)\)|\bratio\b|\brate\b.*/", body):
@@ -571,6 +572,12 @@ def _plan_core(query: str, tables, strict=False):
         plan["op"] = "diff"
         args["abs"] = bool(re.search(r"absolute|\bdifference between\b", low)) and not re.search(r"\bsigned\b", query.lower())
         args["signed_order"] = "second_minus_first" if re.search(r"\bchange\b|\bfrom\b.*\bto\b|increase|decrease", low) else "first_minus_second"
+        # A period mentioned inside a stored measure is not the order of a
+        # comparative subtraction: 'A higher than B' is A - B.
+        comparative = re.search(r"\b(higher|larger|greater|more|lower|smaller|less|fewer)\b.*\bthan\b", low)
+        if comparative and re.search(r"\bhow (?:many|much)\b", low):
+            args["signed_order"] = ("second_minus_first" if comparative.group(1) in
+                                    {"lower", "smaller", "less", "fewer"} else "first_minus_second")
     elif re.search(r"\baverage\b|\bmean\b", low) and not any(re.search(r"\baverage\b|\bmean\b", c, re.I) for c in cols):
         plan["op"] = "mean"
     elif (sup_max or sup_min) and (which or (spec.kind == "name" and not re.search(r"\bwhat (was|is) the (highest|lowest)", low))):
@@ -1051,6 +1058,7 @@ _DIFF_LEGACY = (
 )
 _DIFF_SRC = (
     r"how (?:many|much) (?:more|less|fewer|higher|lower|greater|bigger|smaller)\b"
+    r"|how many (?:percentage|percent) points? (?:higher|lower|larger|smaller|greater|less)\b"
     r"|how (?:many|much) (?:is|was|were|are|did|does|do)\b.{0,40}?\b(?:more|higher|greater|bigger|less|lower|smaller|fewer)\b"
     r"|by how much"
     r"|\bdifference\b|\bdiffer\b|\bchange\b|\bgap\b|\bincrease\b|\bdecrease\b"
