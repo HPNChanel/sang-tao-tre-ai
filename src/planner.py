@@ -700,7 +700,9 @@ def _plan_core(query: str, tables, strict=False):
     if plan["op"] == "mean" and not plan["columns"] and len(plan["rows"]["paths"]) == 1 \
             and re.search(r"\bacross all\b", low):
         plan["columns"] = list(num_cols)
-    abstain = _unhandled_op(op_low, plan)
+    from .derived_metrics import refine
+    composed = refine(plan, view, body, spec)
+    abstain = _unhandled_op(op_low, plan) if not composed else False
     # A refused top-N (scalar number, or a count that is also a stored value) keeps
     # the older max/lookup. That leftover phrase is not an unparsed operation.
     if abstain and topn and plan["op"] in ("lookup", "values", "sum", "count") \

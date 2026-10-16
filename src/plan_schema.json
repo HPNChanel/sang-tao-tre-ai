@@ -53,6 +53,7 @@
      },
      "description": "row labels or ' > ' paths, in question order; prefix 'Sheet!' to pick a row from one sheet of a stacked table"
     },
+    "label_kind": {"enum": ["year"]},
     "scope": {
      "type": [
       "string",
@@ -151,12 +152,17 @@
       "rows",
       "columns",
       "sections",
+      "column_groups",
       "sheets"
      ]
     },
     "abs": {
      "type": "boolean"
     },
+    "metric": {"enum": ["difference", "previous_difference", "sum"]},
+    "reverse_metric": {"type": "boolean"},
+    "metric_groups": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+      "required": ["name", "columns"], "properties": {"name": {"type": "string"}, "columns": {"type": "array", "items": {"type": "string"}}}}},
     "signed_order": {
      "enum": [
       "first_minus_second",

@@ -77,6 +77,8 @@ def _aggregate_rows(view, plan, idx):
     """rows used when aggregating over 'all rows'."""
     df = view.df
     r = plan.get("rows") or {}
+    if r.get("label_kind") == "year":
+        idx = [i for i in idx if re.fullmatch(r"\d{4}", str(df.at[i, "_label"]))]
     if r.get("range"):
         lo, hi = r["range"]
         idx = [i for i in idx if (rg := _label_range(df.at[i, "_label"])) and lo <= rg[0] and rg[1] <= hi]
@@ -215,7 +217,28 @@ def execute(plan, tables):
                     out.append(_col_values(view, c, g).sum(min_count=1))
         return out
 
-    if op in ("lookup", "values"):
+    if args.get("metric"):
+        from .derived_metrics import series
+        if args.get("over") == "column_groups":
+            if len(groups) != 1 or len(groups[0]) != 1:
+                raise PlanError("derived column groups need one exact row")
+            vals = {g["name"]: series(view, groups[0], g["columns"], args).iloc[0]
+                    for g in args["metric_groups"]}
+            labels = {k: k for k in vals}
+        else:
+            idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
+            vals = series(view, idx, cols, args).to_dict()
+            labels = {i: df.at[i, "_label"] for i in idx}
+        vals = {k: abs(v) if args.get("abs") else v for k, v in vals.items() if pd.notna(v)}
+        if not vals:
+            raise PlanError("derived metric has no complete candidates")
+        sign = -1 if op in ("min", "argmin") else 1
+        best = max(vals, key=lambda i: sign * vals[i])
+        if op in ("max", "min"):
+            val = vals[best]
+        else:
+            val = [labels[best], vals[best]] if args.get("include_value") else labels[best]
+    elif op in ("lookup", "values"):
         vals = cell_list()
         if plan["format"]["kind"] == "date" or (vals and isinstance(vals[0], (dt.date, dt.datetime))):
             pass
