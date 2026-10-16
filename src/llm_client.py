@@ -214,6 +214,13 @@ def build_messages(query, tables_summary, schema):
     return [{"role": "system", "content": sys_p}, {"role": "user", "content": usr}]
 
 
+def request_body(query, tables_summary, schema):
+    return json.dumps({"model": MODEL, "messages": build_messages(query, tables_summary, compact_schema(schema)),
+                       "max_tokens": min(MAX_TOKENS, 1200), "temperature": 0,
+                       "response_format": {"type": "json_object"}, "reasoning": REASONING, "provider": PROVIDER},
+                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 def _post(body: bytes, timeout):
     """Single HTTP attempt (mocked in tests)."""
     req = urllib.request.Request(URL, data=body, headers={
@@ -229,10 +236,7 @@ def llm_plan(query, tables_summary, schema, budget: Budget, timeout=60, validate
         return None
     msgs = build_messages(query, tables_summary, compact_schema(schema))
     chars = sum(len(m["content"]) for m in msgs)
-    body = json.dumps({"model": MODEL, "messages": msgs, "max_tokens": min(MAX_TOKENS, 1200),
-                       "temperature": 0, "response_format": {"type": "json_object"},
-                       "reasoning": REASONING, "provider": PROVIDER},
-                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    body = request_body(query, tables_summary, schema)
     if len(body) > MAX_BODY_BYTES:
         budget.halt_reason = "request_exceeds_24_kib"
         return None

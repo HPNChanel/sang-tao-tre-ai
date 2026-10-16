@@ -627,7 +627,8 @@ def _llm_then_rule(q, tables, fname, budget):
     ans = None
     try:
         schema = PLAN_SCHEMA_FILE.read_text() if PLAN_SCHEMA_FILE.exists() else "{}"
-        plan = llm_client.llm_plan(query, summarize(tables), schema, budget,
+        from src.query_context import build_context
+        plan = llm_client.llm_plan(query, build_context(query, tables, schema), schema, budget,
                                    validate=plan_validate.validate, qid=q.get("id", ""))
         if plan is None:
             print(f"[schema] {q.get('id')}: no schema-valid LLM plan "
