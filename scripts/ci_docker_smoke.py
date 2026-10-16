@@ -11,8 +11,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import zipfile
 
 import openpyxl
+
+from build_submission_package import create_package
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "sangtaotreai-ci:smoke"
@@ -63,13 +66,12 @@ def main():
         work = Path(temporary)
         context = work / "build"
         context.mkdir()
-        # Send only runtime sources to Docker, never local datasets or credentials.
-        for name in ("Dockerfile", "requirements.txt", "run.py"):
-            shutil.copyfile(ROOT / name, context / name)
-        shutil.copytree(
-            ROOT / "src", context / "src",
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
+        # Build the actual source package, extract it, then build that exact copy.
+        archive_path = work / "PDU Team.zip"
+        receipt = create_package(archive_path)
+        print("SUBMISSION_PACKAGE=" + json.dumps(receipt, sort_keys=True), flush=True)
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(context)
         checked("docker", "build", "--platform=linux/amd64", "-t", IMAGE,
                 str(context), timeout=600)
         metadata = json.loads(checked("docker", "image", "inspect", IMAGE).stdout)[0]
