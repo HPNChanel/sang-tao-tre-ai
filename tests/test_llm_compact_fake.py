@@ -8,7 +8,7 @@ from src import llm_client as L  # noqa: E402
 from src.plan_validate import validate, load_schema, SCHEMA_FILE  # noqa: E402
 import fake_llm as F  # noqa: E402
 
-SCHEMA_SHA256_LF = "29849424a2f1d6082880000021378c256da5d08eef2be42ceb16cb355dcc1b0a"
+SCHEMA_SHA256_LF = "bdb3b13c5179707826236e5f9d7c7fa1a2db4dff91555d091f279f6443b709eb"
 VALID = [F.PLAN,
          {"version": 1, "op": "sum", "columns": ["Revenue | *"], "format": {"kind": "int"}},
          {"version": 1, "op": "argmax", "rows": {"paths": ["S1!A > B"]}, "args": {"by": "age"},
