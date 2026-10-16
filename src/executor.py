@@ -243,6 +243,11 @@ def execute(plan, tables):
             val = vals[best]
         else:
             val = [labels[best], vals[best]] if args.get("include_value") else labels[best]
+    elif op == "winner_diff":
+        vals = cell_list()
+        if len(vals) != 2 or len(args.get("names", [])) != 2 or any(pd.isna(v) for v in vals) or vals[0] == vals[1]:
+            raise PlanError("winner comparison needs two unequal observed values")
+        val = [args["names"][int(vals[1] > vals[0])], abs(vals[0] - vals[1])]
     elif op == "select":
         idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
         if not idx:

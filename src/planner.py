@@ -705,6 +705,8 @@ def _plan_core(query: str, tables, strict=False):
     from .row_filters import refine as refine_filters
     filtered = refine_filters(plan, view, body, spec)
     composed = composed or filtered
+    from .column_operands import refine as refine_operands
+    composed = refine_operands(plan, view, body, spec) or composed
     abstain = _unhandled_op(op_low, plan) if not composed else False
     # A refused top-N (scalar number, or a count that is also a stored value) keeps
     # the older max/lookup. That leftover phrase is not an unparsed operation.

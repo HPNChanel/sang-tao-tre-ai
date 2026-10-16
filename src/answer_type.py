@@ -53,6 +53,8 @@ def plan_type(plan: dict, view=None) -> str:
         return "list"
     if op == "values":
         return "list"
+    if op == "winner_diff":
+        return "list"
     if op == "nth":
         ret = a.get("return")
         if view is not None and ret and ret in view.date_cols():
