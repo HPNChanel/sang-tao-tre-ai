@@ -84,6 +84,13 @@ def compatible(expected: str, got: str) -> bool:
 def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan: dict | None = None) -> bool:
     if ans is None or str(ans).strip() == "":
         return False
+    # Formatting affixes do not change the computed value's type. Require
+    # their exact presence before checking the numeric/list payload.
+    ans = str(ans)
+    prefix, suffix = fmt.get("prefix", ""), fmt.get("suffix", "")
+    if not ans.startswith(prefix) or not ans.endswith(suffix):
+        return False
+    ans = ans[len(prefix):len(ans) - len(suffix) if suffix else None]
     from . import blank_guards as G
     # A ranking that already has its column and direction, or a single superlative,
     # is not rejected on shape. The same predicate gates the pre-exec blanks.

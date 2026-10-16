@@ -282,7 +282,9 @@ def strip_instruction(query, spec):
         r"(?:\bfor example\b|\be\.g\.|\beg\.?|\bví\s*dụ\b|\bvi\s*du\b)[^.;?!]*",
         " ", q, flags=re.I)
     if spec.instruction:
-        q = q.replace(spec.instruction, " ")
+        stripped = q.replace(spec.instruction, " ")
+        if stripped.strip():
+            q = stripped
     q = re.sub(
         r"\b(?:Provide|Answer|Respond|Chỉ\s+trả\s+lời|Chi\s+tra\s+loi)\b[^.?!]*[.?!]?",
         " ", q, flags=re.I)
@@ -475,7 +477,8 @@ def _plan_core(query: str, tables, strict=False):
             "columns": cols, "op": "lookup", "args": {},
             "format": {"kind": spec.kind, "decimals": spec.decimals, "count": spec.count,
                        "item_kind": spec.item_kind, "item_kinds": spec.item_kinds,
-                       "sep": spec.sep, "order": spec.order}}
+                       "sep": spec.sep, "order": spec.order,
+                       "prefix": spec.prefix, "suffix": spec.suffix}}
     if re.search(r"yyyy-mm-dd|\bdate\b.*format", query.lower()):
         plan["format"]["kind"] = "date"
     if view.stacked:

@@ -542,7 +542,8 @@ def _first_root_scope(view, idx):
 def to_spec(fmt: dict) -> FormatSpec:
     return FormatSpec(kind=fmt.get("kind", "text"), decimals=fmt.get("decimals"), count=fmt.get("count"),
                       item_kinds=fmt.get("item_kinds") or [],
-                      item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [])
+                      item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [],
+                      prefix=fmt.get("prefix", ""), suffix=fmt.get("suffix", ""))
 
 
 def answer(plan, tables) -> str:
@@ -559,5 +560,6 @@ def answer(plan, tables) -> str:
         return str(int(f)) if f.is_integer() else f"{f:.10g}"
     if isinstance(val, list) and spec.kind != "list":
         spec = FormatSpec(kind="list", sep=spec.sep or ", ",
-                          item_kind="name" if isinstance(val[0], str) else "int" if spec.kind == "int" else "number")
+                          item_kind="name" if val and isinstance(val[0], str) else "int" if spec.kind == "int" else "number",
+                          prefix=spec.prefix, suffix=spec.suffix)
     return format_answer(val, spec)

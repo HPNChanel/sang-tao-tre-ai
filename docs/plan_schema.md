@@ -1,4 +1,12 @@
 # Table QA plan schema (v1)
+
+`format.prefix` and `format.suffix` are optional literal output decorations.
+Their default is the empty string, so existing v1 plans keep their behavior.
+Use them only when the question explicitly requests that literal text, such as
+`suffix: "%"` or `suffix: " pp"`. They do not perform percentage arithmetic;
+that remains the operation's responsibility. Numeric type checks still validate
+the computed payload after requiring the exact decorations.
+
 Machine-readable: `src/plan_schema.json`. Produced by the rule planner (`src/planner.py`) and — later —
 by an optional LLM fallback, which must return exactly this JSON (no prose). Executed by `src/executor.py`.
 

@@ -285,6 +285,8 @@
     "sep": {
      "type": "string"
     },
+    "prefix": {"type": "string"},
+    "suffix": {"type": "string"},
     "order": {
      "type": "array",
      "items": {
