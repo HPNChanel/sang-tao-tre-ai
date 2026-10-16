@@ -97,8 +97,8 @@ def docker_json(*args):
     return json.loads(subprocess.check_output(["docker", *args], text=True))
 
 
-def run_container(inputs, out, measured, entrypoint):
-    name = "public1-" + uuid.uuid4().hex
+def run_container(inputs, out, measured, entrypoint, label="PUBLIC1"):
+    name = "public-validation-" + uuid.uuid4().hex
     args = [
         "--xlsx-dir", "/input/xlsx_files", "--queries", "/input/queries.json",
         "--output", "/output/submission.csv", "--openrouter-key", "",
@@ -141,7 +141,7 @@ def run_container(inputs, out, measured, entrypoint):
             "wall_seconds_including_start": round(elapsed, 6),
             "memory_cap_bytes": host["Memory"], "network": host["NetworkMode"],
         }
-        emit("PUBLIC1_CONTAINER", record)
+        emit(label + "_CONTAINER", record)
         result.check_returncode()
         assert state["ExitCode"] == 0 and not state["OOMKilled"]
         assert "[timed-out] none" in result.stderr and "[deadline-skip] none" in result.stderr

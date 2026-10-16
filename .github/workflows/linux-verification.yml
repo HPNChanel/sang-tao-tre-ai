@@ -2,10 +2,15 @@ name: Linux verification (free public runner)
 
 on:
   pull_request:
-    branches: [main, codex/free-linux-ci]
+    branches: [main, 'codex/**']
   push:
-    branches: [codex/public1-integration]
+    branches: [codex/public1-integration, codex/public2-integration]
   workflow_dispatch:
+    inputs:
+      public2_url:
+        description: Temporary HTTPS download for the exact Public data 2 ZIP pinned by the manifest
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -58,5 +63,11 @@ jobs:
       - name: Verify Public data 1 and measure container memory
         if: ${{ !cancelled() && steps.docker_smoke.outcome == 'success' }}
         run: python scripts/ci_public_data1.py
+
+      - name: Verify supplied Public data 2 and measure container memory
+        if: ${{ !cancelled() && steps.docker_smoke.outcome == 'success' && inputs.public2_url != '' }}
+        env:
+          PUBLIC2_URL: ${{ inputs.public2_url }}
+        run: python scripts/ci_public_data2.py
 
       # Deliberately no artifact upload, cache action, registry push, or API key.
