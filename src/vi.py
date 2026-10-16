@@ -19,6 +19,8 @@ _VI_WORDS = re.compile(r"\b(bao nhieu|nhieu nhat|cao nhat|thap nhat|tong|trung b
 
 
 def is_vietnamese(q: str) -> bool:
+    if re.search(r"\b(parmi|répondez|pourcentage|uniquement)\b", q, re.I):
+        return False
     return bool(_VI_HINT.search(q)) or len(_VI_WORDS.findall(fold(q).lower())) >= 2
 
 
@@ -91,6 +93,9 @@ NEW_OP_KEYWORDS = [
 
 # (folded Vietnamese regex, English replacement). Order matters: longer phrases first.
 KEYWORDS = [
+    (r"\b(?:chi tra loi bang so voi dung|lam tron den) (mot|hai|ba|\d+) chu so thap phan[^.?!]*",
+     lambda m: " Answer with only the number rounded to " + str({"mot": 1, "hai": 2, "ba": 3}.get(m[1], m[1])) + " decimal places."),
+    (r"\bbang bao nhieu phan tram so voi\b", " ratio percent to "),
     # instructions
     (r"chi (tra loi|ghi|dien) (bang )?so nguyen( duong)?", " Answer with only the integer."),
     (r"chi (tra loi|ghi|dien) (bang )?so,? lam tron (den )?(\d+) chu so thap phan", r" Answer with only the number rounded to \4 decimal places."),
@@ -195,13 +200,27 @@ KEYWORDS = [
 ]
 
 
-def translate(q: str, new_ops: bool = True) -> tuple[str, int]:
+def translate(q: str, new_ops: bool = True, entities=()) -> tuple[str, int]:
     """Return (rewritten query, number of keyword hits). Entity names keep their original form.
 
     new_ops=False skips the operation phrases added for paraphrases (rank, difference,
     top-N number words, pair). Callers use that when those phrases did not resolve.
     """
-    s = fold(q)
+    s = q
+    instruction = re.search(r"\b(?:chỉ (?:trả lời|ghi|điền)|làm tròn|chi (?:tra loi|ghi|dien)|lam tron|answer|respond)\b", s, re.I)
+    tail = s[instruction.start():] if instruction else ""
+    s = s[:instruction.start()] if instruction else s
+    protected = {}
+    for entity in sorted(set(entities), key=len, reverse=True):
+        label = entity.lower()
+        if len(label) < 2:
+            continue
+        pattern = r"(?<!\w)" + re.escape(label) + r"(?!\w)"
+        if re.search(pattern, s, re.I):
+            key = "zzentity" + str(len(protected)) + "zz"
+            s = re.sub(pattern, key, s, flags=re.I)
+            protected[key] = entity
+    s = fold(s + tail)
     hits = 0
     patterns = (NEW_OP_KEYWORDS + KEYWORDS) if new_ops else KEYWORDS
     for pat, rep in patterns:
@@ -210,4 +229,6 @@ def translate(q: str, new_ops: bool = True) -> tuple[str, int]:
     s = re.sub(r"\s+", " ", s).strip()
     s = re.sub(r"\s*\?\s*(?=Answer)", "? ", s)
     s = re.sub(r"\.{2,}", ".", s)
+    for key, entity in protected.items():
+        s = s.replace(key, entity)
     return s, hits

@@ -5,6 +5,11 @@ import re
 def refine(plan, view, body, spec):
     from .textmatch import Query, tokens
     low = body.lower()
+    if plan["op"] == "ratio" and len(plan["columns"]) == 2 and len(plan["rows"]["paths"]) > 1:
+        exact = [p for p in plan["rows"]["paths"] if tokens(p.split(" > ")[-1])
+                 and Query(body).match(p.split(" > ")[-1])[0] == 1.0]
+        if len(exact) == 1:
+            plan["rows"]["paths"] = exact
     if re.search(r"\b(as reported|not summed|reported total|stored total)\b", low):
         q = Query(body)
         parents = [c for c in view.numeric_cols() if " | " in c and c.split(" | ")[-1].lower() == "total"

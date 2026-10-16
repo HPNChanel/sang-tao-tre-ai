@@ -313,7 +313,12 @@ def _plan_with_confidence(query, tables, strict):
     vi_factor = 1.0
     hits = hits_base = 0
     if is_vietnamese(query):
-        query, hits = translate(query, new_ops=True)
+        entities = []
+        for table in tables:
+            labels = list(table.df[table.label_col].astype(str)) if table.label_col in table.df else []
+            labels += [part for c in table.df.columns if not str(c).startswith("_") for part in str(c).split(" | ")]
+            entities += [x for x in labels if re.search(r"[^\x00-\x7f]", x) or x.lower() in {"nam"}]
+        query, hits = translate(query, new_ops=True, entities=entities)
         _, hits_base = translate(original, new_ops=False)
         vi_factor = 0.9 if hits >= 2 else 0.6
         reasons.append(f"vi:{hits}")
