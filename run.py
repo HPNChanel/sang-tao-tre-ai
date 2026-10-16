@@ -627,21 +627,12 @@ def _llm_then_rule(q, tables, fname, budget):
     ans = None
     try:
         schema = PLAN_SCHEMA_FILE.read_text() if PLAN_SCHEMA_FILE.exists() else "{}"
-        from src.query_context import build_context
-        plan = llm_client.llm_plan(query, build_context(query, tables, schema), schema, budget,
-                                   validate=plan_validate.validate, qid=q.get("id", ""))
-        if plan is None:
-            print(f"[schema] {q.get('id')}: no schema-valid LLM plan "
-                  f"(attempts={budget.attempts}, cap/retries exhausted); "
-                  f"using non-strict planner",
-                  file=sys.stderr)
-        else:
-            ans = seams.execute(plan, tables, query)
+        from src.plan_review import choose
+        ans = choose(query, tables, fname, budget, schema, q.get("id", ""))
     except Exception as e:
         print(f"[warn] {q.get('id')}: LLM {type(e).__name__}: {e}", file=sys.stderr)
-        ans = None
-    if ans is None:
-        ans = _rule_answer(query, tables, fname, False)
+        from src.plan_review import safe_rule
+        ans = safe_rule(query, tables, fname)
     return ans
 
 
@@ -693,7 +684,11 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
             tables = _cached_tables(cache, path, use_fork, preload_timeout)
             started = time.monotonic()
             ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
-        if ans is None and llm_client.enabled() and seams.have_executor():
+        review = False
+        if ans is not None and tables is not None and llm_client.enabled():
+            from src.plan_review import needs_review
+            review = needs_review(q["query"], tables)
+        if (ans is None or review) and llm_client.enabled() and seams.have_executor():
             if tables is None:
                 left = _remaining(started, limit)
                 if left is not None and left <= 0:
@@ -1001,7 +996,9 @@ def main(argv=None):
                                      "actual_cost_usd": b.actual_usd,
                                      "unresolved_cost_usd": b.unresolved_usd,
                                      "budget_exposure_usd": b.spent,
-                                     "token_usage_unknown": b.token_usage_unknown}) + "\n")
+                                     "token_usage_unknown": b.token_usage_unknown,
+                                     "decision": getattr(b, "decision", {"source": "rule"}),
+                                     "elapsed_seconds": time.perf_counter()-t}) + "\n")
                 lf.flush()
                 print(f"{qid}\t{time.perf_counter()-t:.4f}s\t{ans!r}", file=sys.stderr)
                 _RUN.pending += 1

@@ -28,7 +28,8 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
     assert len(logs) == 20
     for l in logs:
         assert {"id", "tokens", "cost_usd", "completion_tokens", "reasoning_tokens", "attempts",
-                "actual_cost_usd", "unresolved_cost_usd", "budget_exposure_usd", "token_usage_unknown"} == set(l)
+                "actual_cost_usd", "unresolved_cost_usd", "budget_exposure_usd", "token_usage_unknown",
+                "decision", "elapsed_seconds"} == set(l)
         assert l["tokens"] == 0 and l["cost_usd"] == 0 and l["budget_exposure_usd"] == 0
         assert l["token_usage_unknown"] is False
 
