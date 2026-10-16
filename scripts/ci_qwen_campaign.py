@@ -171,7 +171,7 @@ def build_images(manifest, remote, work):
         if set(W.snapshot(source)) != set(inventory["files"]) | {"SOURCE_MANIFEST.json", "PACKAGE_INFO.json"}:
             # Current source package has one README, not an executable wildcard.
             extra = set(W.snapshot(source)) - set(inventory["files"]) - {"SOURCE_MANIFEST.json"}
-            if extra - {"README_SUBMISSION.md", "README_SUBMISSION.txt", "README.txt", "PACKAGE_INFO.json"}:
+            if extra - {"README.md", "README_SUBMISSION.md", "README_SUBMISSION.txt", "README.txt", "PACKAGE_INFO.json"}:
                 raise ValueError("unmanifested runtime file")
         sources[label] = source
     # Equalize only the build environment, while preserving every run.py/src

@@ -103,8 +103,9 @@ def main():
     run.answer_one = identified_answer
     inputs = Path(args.input)
     output = Path(args.output)
+    # One argv item: a token_urlsafe value can begin with "-", which argparse reads as an option.
     run.main(["--xlsx-dir", str(inputs / "xlsx_files"), "--queries", str(inputs / "queries.json"),
-              "--output", str(output), "--openrouter-key", "" if args.no_key else token,
+              "--output", str(output), "--openrouter-key=" + ("" if args.no_key else token),
               "--openrouter-model", args.model, "--openrouter-base-url",
               args.gateway + "/api/v1" if not args.no_key else "https://openrouter.ai/api/v1",
               "--log", str(output.parent / "solver-log.jsonl")])

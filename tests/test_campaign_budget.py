@@ -2,6 +2,9 @@
 import importlib.util
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import urllib.error
 from pathlib import Path
 
@@ -17,6 +20,30 @@ adapter_spec.loader.exec_module(eval_solver)
 def test_gateway_rejects_url_confusion(url):
     with pytest.raises(ValueError):
         eval_solver.checked_gateway(url)
+
+
+def test_adapter_passes_a_dash_leading_gateway_token_intact(tmp_path):
+    # token_urlsafe can begin with "-"; the source's argparse must still read it as the key.
+    source = tmp_path / "source"
+    (source / "src").mkdir(parents=True)
+    (source / "src" / "__init__.py").write_text("")
+    (source / "src" / "llm_client.py").write_text("MAX_TOKENS = 0\ndef llm_plan(*a, **k): pass\ndef _post(*a, **k): pass\n")
+    (source / "run.py").write_text(
+        "import argparse\n"
+        "def answer_one(*a, **k): pass\n"
+        "def main(argv):\n"
+        "    ap = argparse.ArgumentParser()\n"
+        "    for name in ('--xlsx-dir', '--queries', '--output', '--openrouter-key', '--openrouter-model',\n"
+        "                 '--openrouter-base-url', '--log'):\n"
+        "        ap.add_argument(name, default=None)\n"
+        "    a = ap.parse_args(argv)\n"
+        "    open(a.output, 'w').write(a.openrouter_key)\n")
+    output = tmp_path / "submission.csv"
+    token = "-" + "t" * 42
+    subprocess.run([sys.executable, adapter_spec.origin, "--source", str(source), "--input", str(tmp_path / "input"),
+                    "--output", str(output), "--gateway", "http://127.0.0.1:9"],
+                   env=dict(os.environ, EVAL_GATEWAY_TOKEN=token), check=True, timeout=60)
+    assert output.read_text() == token
 
 
 def test_python_egress_guard_allows_only_gateway():

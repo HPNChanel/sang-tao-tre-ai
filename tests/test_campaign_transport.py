@@ -213,6 +213,31 @@ def test_container_flags_enforce_resource_and_network_boundary(tmp_path):
     assert not any("TOKEN" in x or "KEY" in x for x in args)
 
 
+def test_ci_accepts_the_submission_package_readme_but_no_other_extra(tmp_path, monkeypatch):
+    import build_submission_package as B
+    archive = tmp_path / "source.zip"
+    receipt = B.create_package(archive)
+    monkeypatch.setattr(CI, "checked", lambda *a, **k: None)
+    def docker(command, **_):
+        if command[1] == "image":
+            return json.dumps([{"Id": "sha256:" + "0" * 64, "Os": "linux", "Architecture": "amd64"}])
+        return "openpyxl==3.1.5\n"
+    monkeypatch.setattr(CI.subprocess, "check_output", docker)
+    def build(raw, work):
+        manifest = {"sources": {"candidate": {"archive": "source-candidate.zip", "archive_sha256": W.digest(raw),
+                                              "sha": receipt["source_commit"]}}}
+        return CI.build_images(manifest, SimpleNamespace(request=lambda _path: raw), work)
+    raw = archive.read_bytes()
+    assert "README.md" in zipfile.ZipFile(io.BytesIO(raw)).namelist()
+    (tmp_path / "accepted").mkdir()
+    assert build(raw, tmp_path / "accepted")["candidate"]["source_sha"] == receipt["source_commit"]
+    with zipfile.ZipFile(io.BytesIO(raw)) as original:
+        extra = zip_bytes([(name, original.read(name)) for name in original.namelist()] + [("helper.py", b"")])
+    (tmp_path / "rejected").mkdir()
+    with pytest.raises(ValueError, match="unmanifested runtime file"):
+        build(extra, tmp_path / "rejected")
+
+
 def test_completed_receipts_recover_without_replaying_or_changing_identity(tmp_path):
     from campaign_local_server import Session
     key=bytes(range(32)); session=object.__new__(Session)
