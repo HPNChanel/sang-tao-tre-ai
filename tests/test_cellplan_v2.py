@@ -504,6 +504,22 @@ def test_global_stable_question_cost_includes_older_source_and_resharding(tmp_pa
     assert C.money(ledger.totals()['actual_usd'])==Decimal('.08')
 
 
+def test_sealed_rerun_repetition_keeps_the_stable_question_cap(tmp_path):
+    sys.path.insert(0,str(Path(__file__).parents[1]/'scripts'))
+    import qwen_campaign as C
+    ledger=C.Ledger.create(tmp_path/'ledger.json','test')
+    config={'policy':'selective','output_tokens':1200}
+    first=ledger.register('sealed','a'*40,'b'*64,config,['x'],case_keys={'x':'e'*64})
+    # Re-running a halted split gets its own invocation, but no fresh .10 allowance per case.
+    again=ledger.register('sealed','a'*40,'b'*64,config,['x'],2,case_keys={'x':'e'*64})
+    assert again!=first
+    for _ in range(3):
+        n=ledger.reserve('sealed',first,'x','c'*64);ledger.finish(n,{'usage':{'cost':'.03'}})
+    with pytest.raises(C.CampaignError,match='cumulative'): ledger.reserve('sealed',again,'x','c'*64)
+    with pytest.raises(C.CampaignError,match='repetition'):
+        ledger.register('development','a'*40,'b'*64,config,['x'],2,case_keys={'x':'e'*64})
+
+
 def test_unresolved_billing_stops_other_questions(tmp_path):
     sys.path.insert(0,str(Path(__file__).parents[1]/'scripts'))
     import qwen_campaign as C

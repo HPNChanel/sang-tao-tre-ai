@@ -113,7 +113,9 @@ class Ledger:
             raise CampaignError('unknown solver profile')
         if configuration.get('model',MODEL) not in {MODEL,'google/gemini-2.5-flash-lite'}:
             raise CampaignError('unapproved evaluation model')
-        if isinstance(repetition, bool) or repetition not in range(1, 4) or (stage != "performance" and repetition != 1):
+        # Performance repeats time a run; a sealed repeat re-runs a whole split after a ledger halt.
+        # Either way the stable per-case cap still counts every repetition.
+        if isinstance(repetition, bool) or repetition not in range(1, 4) or (stage not in {"performance", "sealed"} and repetition != 1):
             raise CampaignError("undeclared evaluation repetition")
         ids = list(case_ids)
         if not ids or len(set(ids)) != len(ids) or any(not isinstance(q, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", q) for q in ids):
