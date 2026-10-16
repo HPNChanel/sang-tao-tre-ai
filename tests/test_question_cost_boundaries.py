@@ -42,9 +42,11 @@ def test_three_attempt_limit_shared_across_separate_planning_rounds(monkeypatch)
 def test_invalid_usage_cost_remains_reserved(monkeypatch, cost):
     setup(monkeypatch, response(cost))
     budget = L.Budget()
-    assert L.llm_plan("question", "tables", "{}", budget)
+    assert L.llm_plan("question", "tables", "{}", budget) is None
     assert budget.actual_usd == 0 and budget.unresolved_usd == .03 and budget.cost_usd is None
     assert budget.tokens == 20
+    assert L.BILLING_HALT_REASON=='billing_unresolved'
+    assert not L.Budget().allow(0)
 
 
 def test_interrupt_during_transport_keeps_pre_dispatch_reservation(monkeypatch):

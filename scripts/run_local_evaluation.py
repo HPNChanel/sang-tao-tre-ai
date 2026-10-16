@@ -42,6 +42,8 @@ def main():
     parser.add_argument("--output-tokens", type=int, choices=(600, 1200), default=600)
     parser.add_argument("--repetition", type=int, default=1)
     parser.add_argument("--no-key", action="store_true")
+    parser.add_argument('--solver-profile',choices=('legacy','direct','raw','dual'),default='legacy')
+    parser.add_argument('--model',default='qwen/qwen3.7-flash')
     args = parser.parse_args()
     control, source, dataset, output = map(lambda p: Path(p).resolve(),
                                           (args.control, args.source, args.dataset, args.output))
@@ -68,6 +70,8 @@ def main():
         C.preflight(key, control / "pricing.json")
     all_rows, receipts = [], []
     configuration = {"policy": args.policy, "output_tokens": args.output_tokens, "api_enabled": paid}
+    if args.solver_profile!='legacy': configuration['solver_profile'] = args.solver_profile
+    if args.model!=C.MODEL: configuration['model'] = args.model
     with C.exclusive_ledger(control / "ledger.json"):
         ledger = C.Ledger(control / "ledger.json")
         for start in range(0, len(queries), 20):
@@ -82,7 +86,8 @@ def main():
             before = snapshot(inputs)
             input_sha = hashlib.sha256(C.canonical(before)).hexdigest()
             invocation = ledger.register(args.stage, args.source_sha, input_sha, configuration,
-                                         [str(q["id"]) for q in batch], args.repetition)
+                                         [str(q["id"]) for q in batch], args.repetition,
+                                         case_keys=C.stable_case_keys(batch,before))
             token = secrets.token_urlsafe(32)
             server = thread = None
             gateway_url = ""
@@ -94,7 +99,8 @@ def main():
                 gateway_url = f"http://127.0.0.1:{server.server_address[1]}"
             command = [sys.executable, str(Path(__file__).with_name("eval_solver.py")),
                        "--source", str(source), "--input", str(inputs), "--output", str(outputs / "submission.csv"),
-                       "--gateway", gateway_url, "--policy", args.policy, "--output-tokens", str(args.output_tokens)]
+                       "--gateway", gateway_url, "--policy", args.policy, "--output-tokens", str(args.output_tokens),
+                       '--solver-profile',args.solver_profile,'--model',args.model]
             if not paid:
                 command.append("--no-key")
             started = time.monotonic()

@@ -240,7 +240,9 @@ def _run_batch(manifest, run, batch, inputs, image, remote, work, manifest_sha, 
     name = "stai-" + uuid.uuid4().hex
     args = ["/harness/ci_memory_probe.py", "python", "/harness/eval_unix_solver.py",
             "--socket","/gateway/request.sock", "--policy",run["configuration"]["policy"],
-            "--output-tokens",str(run["configuration"]["output_tokens"])]
+            "--output-tokens",str(run["configuration"]["output_tokens"]),
+            '--solver-profile',run['configuration'].get('solver_profile','legacy'),
+            '--model',run['configuration'].get('model',C.MODEL)]
     if not run["configuration"]["api_enabled"]:
         args.append("--no-key")
     started, timed_out, code = time.monotonic(), False, -1
@@ -333,6 +335,10 @@ def main():
                 inputs.chmod(0o755)
                 for path in inputs.rglob("*"):
                     path.chmod(0o755 if path.is_dir() else 0o644)
+            if 'stable_case_keys' in batch:
+                queries=json.loads((inputs/'queries.json').read_text(encoding='utf-8-sig'))
+                if C.stable_case_keys(queries,batch['files'])!=batch['stable_case_keys']:
+                    raise ValueError('stable case identities differ from authenticated inputs')
             run_batch(manifest, run, batch, inputs, images[run["label"]]["image_id"], remote,
                       work, manifest_sha, base64.b64decode(secret["output_key"]))
     print("Encrypted evaluation completed; no plaintext results published.")

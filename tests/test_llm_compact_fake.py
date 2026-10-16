@@ -85,7 +85,8 @@ def _run(monkeypatch, responses, cap=None):
 def test_error_paths_no_plan_bounded(monkeypatch, bad):
     plan, b, t = _run(monkeypatch, [bad] * 5)
     assert plan is None
-    assert len(t.bodies) == b.attempts == L.MAX_ATTEMPTS == len(b.log)
+    expected = 1 if b.unresolved_usd else L.MAX_ATTEMPTS
+    assert len(t.bodies) == b.attempts == len(b.log) == expected
     assert b.spent > 0 and b.spent <= b.cap
     if b.token_usage_unknown:
         assert b.unresolved_usd > 0 and b.cost_usd is None
@@ -104,8 +105,9 @@ def test_reasoning_tokens_logged_separately(monkeypatch):
 
 def test_error_charged_worst_case(monkeypatch):
     plan, b, _ = _run(monkeypatch, [F.http_error(402), F.plain()])
-    assert plan == F.PLAN and b.log[0]["worst_case"] and b.log[0]["status"] == "error:HTTPError"
-    assert b.log[1]["worst_case"] is False
+    assert plan is None and b.log[0]["worst_case"] and b.log[0]["status"] == "error:HTTPError"
+    assert len(b.log)==1 and b.unresolved_usd==.03
+    assert L.BILLING_HALT_REASON=='billing_unresolved'
 
 
 def test_cap_stops_before_overrun(monkeypatch):

@@ -1,5 +1,6 @@
 """Campaign transport/cost boundaries. These tests never call OpenRouter."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 
@@ -36,7 +37,8 @@ def setup_ledger(tmp_path, *, stage="baseline", count=100):
     ledger = C.Ledger.create(tmp_path / "ledger.json", "test")
     run = ledger.register(stage, "a" * 40, "b" * 64,
                           {"policy": "fallback", "output_tokens": 600},
-                          [f"case_{i}" for i in range(count)])
+                          [f"case_{i}" for i in range(count)],
+                          case_keys={f'case_{i}':hashlib.sha256(f'case_{i}'.encode()).hexdigest() for i in range(count)})
     return ledger, run
 
 
@@ -95,14 +97,16 @@ def test_re_registering_cannot_reset_same_question(tmp_path):
         reserve(ledger, run)
     again = ledger.register("baseline", "a" * 40, "b" * 64,
                             {"policy": "fallback", "output_tokens": 600},
-                            [f"case_{i}" for i in range(100)])
+                            [f"case_{i}" for i in range(100)],
+                            case_keys={f'case_{i}':hashlib.sha256(f'case_{i}'.encode()).hexdigest() for i in range(100)})
     assert again == run
     with pytest.raises(C.CampaignError):
         reserve(ledger, again)
     with pytest.raises(C.CampaignError, match="between stages"):
         ledger.register("reserve", "a" * 40, "b" * 64,
                         {"policy": "fallback", "output_tokens": 600},
-                        [f"case_{i}" for i in range(100)])
+                        [f"case_{i}" for i in range(100)],
+                        case_keys={f'case_{i}':hashlib.sha256(f'case_{i}'.encode()).hexdigest() for i in range(100)})
 
 
 @pytest.mark.parametrize("stage,capacity", [("baseline", 16), ("development", 66), ("sealed", 50), ("performance", 16), ("reserve", 16)])

@@ -29,6 +29,8 @@ def main():
     p.add_argument("--policy", choices=("fallback","selective"), required=True)
     p.add_argument("--output-tokens", type=int, choices=(600,1200), required=True)
     p.add_argument("--no-key", action="store_true")
+    p.add_argument('--solver-profile',choices=('legacy','direct','raw','dual'),default='legacy')
+    p.add_argument('--model',default='qwen/qwen3.7-flash')
     args = p.parse_args()
     from ci_container_boundary_probe import verify
     print("BOUNDARY_JSON=" + json.dumps(verify(args.socket)), flush=True)
@@ -39,7 +41,8 @@ def main():
             raise PermissionError("name resolution disabled")
     sys.addaudithook(audit)
     os.environ["OPENROUTER_API_KEY"] = "" if args.no_key else "scoped-evaluation-marker"
-    os.environ["OPENROUTER_MODEL"] = "qwen/qwen3.7-flash"
+    os.environ["OPENROUTER_MODEL"] = args.model
+    os.environ['DS2_SOLVER_PROFILE'] = args.solver_profile
     os.environ["QWEN_REVIEW_POLICY"] = args.policy
     os.environ["QWEN_MAX_OUTPUT_TOKENS"] = str(args.output_tokens)
     sys.path.insert(0, "/app")
@@ -79,7 +82,7 @@ def main():
     run.answer_one, llm_client.llm_plan, llm_client._post = answer, plan, post
     run.main(["--xlsx-dir","/input/xlsx_files", "--queries","/input/queries.json",
               "--output","/output/submission.csv", "--openrouter-key",os.environ["OPENROUTER_API_KEY"],
-              "--openrouter-model","qwen/qwen3.7-flash", "--openrouter-base-url","https://openrouter.ai/api/v1",
+              "--openrouter-model",args.model, "--openrouter-base-url","https://openrouter.ai/api/v1",
               "--log","/output/solver-log.jsonl"])
 
 

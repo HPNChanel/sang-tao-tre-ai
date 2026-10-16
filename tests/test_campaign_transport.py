@@ -73,7 +73,7 @@ def test_cross_host_deadline_ignores_wall_skew_and_counts_reply_transit(tmp_path
     monkeypatch.setattr(C, "time", SimpleNamespace(time=lambda:1000, monotonic=lambda:host[0]))
     ledger = C.Ledger.create(tmp_path / "ledger.json", "synthetic")
     configuration = {"policy":"selective", "output_tokens":600, "api_enabled":True}
-    run = ledger.register("baseline", "a" * 40, "b" * 64, configuration, ["a"])
+    run = ledger.register("baseline", "a" * 40, "b" * 64, configuration, ["a"],case_keys={'a':'d'*64})
     gateway = C.Gateway(ledger, "synthetic", "t" * 32, "baseline", run, tmp_path / "pricing.json")
     monkeypatch.setattr(C, "verify_prices", lambda _:None)
     timeouts = []
@@ -252,5 +252,6 @@ def test_public_packet_excludes_goldens_and_preserves_ledger_identity(tmp_path,m
     clear=W.decrypt((out/batch['cipher_file']).read_bytes(),base64.b64decode(private['input_key']),batch['aad'])
     assert b'NEVER COPY THIS' not in clear and set(batch['files'])=={'queries.json','xlsx_files/book.xlsx'}
     ledger=C.Ledger.create(tmp_path/'ledger.json','synthetic')
-    expected=ledger.register('baseline','a'*40,batch['input_sha256'],configuration,batch['ids'])
+    expected=ledger.register('baseline','a'*40,batch['input_sha256'],configuration,batch['ids'],case_keys=batch['stable_case_keys'])
+    assert set(batch['stable_case_keys'])=={'opaque'}
     assert expected==manifest['runs'][0]['invocation']

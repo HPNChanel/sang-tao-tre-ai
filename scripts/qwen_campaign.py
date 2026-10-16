@@ -28,6 +28,7 @@ MODEL = "qwen/qwen3.7-flash"
 MAX_BODY = 24 * 1024
 RESERVE = Decimal("0.03")
 QUESTION_CAP = Decimal("0.09")
+STABLE_QUESTION_CAP = Decimal("0.10")
 CAMPAIGN_CAP = Decimal("5.00")
 STAGE_CAPS = {"baseline": "0.50", "development": "2.00", "sealed": "1.50",
               "performance": "0.50", "reserve": "0.50"}
@@ -72,6 +73,7 @@ class Ledger:
         self.path = Path(path)
         self.lock = threading.RLock()
         self.state = json.loads(self.path.read_text(encoding="utf-8"))
+        self._question_lookup = {}
         if self.state.get("schema_version") != 1 or money(self.state["cap_usd"]) != CAMPAIGN_CAP:
             raise CampaignError("unexpected ledger contract")
         if self.state.get("stage_caps_usd") != STAGE_CAPS:
@@ -96,7 +98,7 @@ class Ledger:
     def save(self):
         atomic_json(self.path, self.state)
 
-    def register(self, stage, source_sha, input_sha, configuration, case_ids, repetition=1):
+    def register(self, stage, source_sha, input_sha, configuration, case_ids, repetition=1, case_keys=None):
         configuration = dict(configuration)
         configuration.setdefault("api_enabled", True)
         if stage not in STAGE_CAPS:
@@ -105,20 +107,41 @@ class Ledger:
             raise CampaignError("source/input hashes required")
         if configuration.get("policy") not in {"fallback", "selective"} or configuration.get("output_tokens") not in {600, 1200}:
             raise CampaignError("unknown evaluation configuration")
-        if set(configuration) != {"policy", "output_tokens", "api_enabled"} or not isinstance(configuration["api_enabled"], bool):
+        if set(configuration)-{"policy", "output_tokens", "api_enabled", "solver_profile", "model"} or not isinstance(configuration["api_enabled"], bool):
             raise CampaignError("unexpected evaluation configuration")
+        if configuration.get('solver_profile','legacy') not in {'legacy','direct','raw','dual'}:
+            raise CampaignError('unknown solver profile')
+        if configuration.get('model',MODEL) not in {MODEL,'google/gemini-2.5-flash-lite'}:
+            raise CampaignError('unapproved evaluation model')
         if isinstance(repetition, bool) or repetition not in range(1, 4) or (stage != "performance" and repetition != 1):
             raise CampaignError("undeclared evaluation repetition")
         ids = list(case_ids)
         if not ids or len(set(ids)) != len(ids) or any(not isinstance(q, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", q) for q in ids):
             raise CampaignError("case IDs must be unique opaque identifiers")
         id_hashes = [hashlib.sha256(q.encode()).hexdigest() for q in ids]
+        stable = None
+        if case_keys is not None:
+            if set(case_keys)!=set(ids) or any(not isinstance(v,str) or not re.fullmatch(r'[0-9a-f]{64}',v) for v in case_keys.values()):
+                raise CampaignError('stable case keys must match all case IDs')
+            stable = {hashlib.sha256(q.encode()).hexdigest():case_keys[q] for q in ids}
         identity = {"source_sha": source_sha, "input_sha256": input_sha,
                     "configuration": configuration, "repetition": repetition,
                     "case_ids_sha256": hashlib.sha256(canonical(id_hashes)).hexdigest()}
+        if stable is not None:
+            identity['stable_cases_sha256'] = hashlib.sha256(canonical(stable)).hexdigest()
         invocation = hashlib.sha256(canonical(identity)).hexdigest()
         with self.lock:
+            if stable is None and configuration['api_enabled'] and invocation not in self.state['invocations']:
+                raise CampaignError('new paid invocations require stable case keys')
             entry = dict(identity, stage=stage, cases=id_hashes)
+            if stable is not None:
+                entry['stable_cases'] = stable
+                aliases = self.state.setdefault('stable_case_aliases',{})
+                for hashed,key in stable.items():
+                    alias = hashlib.sha256((input_sha+':'+hashed).encode()).hexdigest()
+                    if alias in aliases and aliases[alias]!=key:
+                        raise CampaignError('stable case identity cannot change')
+                    aliases[alias] = key
             old = self.state["invocations"].get(invocation)
             if old is not None and old != entry:
                 raise CampaignError("invocation identity cannot move between stages")
@@ -137,7 +160,17 @@ class Ledger:
             raise CampaignError("unknown question identifier")
         return hashlib.sha256((run + ":" + hashed).encode()).hexdigest()
 
-    def totals(self, *, stage=None, run=None, question=None):
+    def stable_question_key(self, run, question_key):
+        invocation = self.state['invocations'][run]
+        if run not in self._question_lookup:
+            self._question_lookup[run] = {hashlib.sha256((run+':'+h).encode()).hexdigest():
+                (h,hashlib.sha256((invocation['input_sha256']+':'+h).encode()).hexdigest()) for h in invocation['cases']}
+        found = self._question_lookup[run].get(question_key)
+        if found is None: raise CampaignError('unknown persisted question identity')
+        hashed,fallback = found
+        return invocation.get('stable_cases',{}).get(hashed,
+            self.state.get('stable_case_aliases',{}).get(fallback,fallback))
+    def totals(self, *, stage=None, run=None, question=None, stable_question=None):
         actual = Decimal(0)
         unresolved = Decimal(0)
         count = 0
@@ -147,6 +180,8 @@ class Ledger:
             if run is not None and entry["run"] != run:
                 continue
             if question is not None and entry["question"] != question:
+                continue
+            if stable_question is not None and self.stable_question_key(entry['run'],entry['question'])!=stable_question:
                 continue
             count += 1
             if entry["cost_usd"] is None:
@@ -168,6 +203,9 @@ class Ledger:
             own = self.totals(run=run, question=question_key)
             if own["attempts"] >= 3 or money(own["exposure_usd"]) + RESERVE > QUESTION_CAP:
                 raise CampaignError("question attempt or cost limit")
+            stable = self.stable_question_key(run,question_key)
+            if money(self.totals(stable_question=stable)['exposure_usd'])+RESERVE > STABLE_QUESTION_CAP:
+                raise CampaignError('stable question cumulative cost limit')
             if money(self.totals(stage=stage)["exposure_usd"]) + RESERVE > money(STAGE_CAPS[stage]):
                 raise CampaignError("stage budget exhausted")
             if money(self.totals()["exposure_usd"]) + RESERVE > CAMPAIGN_CAP:
@@ -212,6 +250,8 @@ class Ledger:
             entry["reasoning_tokens"] = reasoning if isinstance(reasoning, int) and reasoning >= 0 else None
             if billed is not None and billed > money(entry["reserved_usd"]):
                 self.state["halt_reason"] = "actual_cost_exceeded_reservation"
+            if billed is None:
+                self.state['halt_reason'] = 'billing_unresolved'
             if money(self.totals()["exposure_usd"]) > CAMPAIGN_CAP:
                 self.state["halt_reason"] = "campaign_cost_exceeded_cap"
             self.save()
@@ -220,6 +260,11 @@ class Ledger:
         with self.lock:
             self.state["halt_reason"] = reason
             self.save()
+
+
+def stable_case_keys(queries, files):
+    return {str(q['id']):hashlib.sha256(canonical({'workbook':files['xlsx_files/'+q['file_name']],
+            'query':q['query']})).hexdigest() for q in queries}
 
 
 @contextmanager
@@ -365,6 +410,9 @@ class Gateway:
             self.ledger.question_key(self.run, question)
             if not self.ledger.state["invocations"][self.run]["configuration"]["api_enabled"]:
                 raise CampaignError("this invocation has network disabled")
+            config=self.ledger.state['invocations'][self.run]['configuration']
+            if json.loads(guarded)['max_tokens']!=config['output_tokens']:
+                raise CampaignError('request output cap differs from frozen configuration')
             if deadline is not None and not 0 < deadline - time.monotonic() <= 91:
                 raise CampaignError("caller deadline expired or is outside the approved window")
             try:
@@ -484,7 +532,7 @@ def main():
             invocation = Ledger(ledger_path).register(
                 args.stage, args.source_sha, hashlib.sha256(canonical(files)).hexdigest(),
                 {"policy": args.policy, "output_tokens": args.output_tokens},
-                [str(q["id"]) for q in queries], args.repetition)
+                [str(q["id"]) for q in queries], args.repetition,case_keys=stable_case_keys(queries,files))
         print(json.dumps({"invocation": invocation, "questions": len(queries)}))
     else:
         if not args.stage or not args.run:

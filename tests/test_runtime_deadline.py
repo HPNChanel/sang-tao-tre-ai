@@ -17,9 +17,11 @@ def test_global_remaining_time_caps_next_question(tmp_path, monkeypatch):
     queries = [{"id": str(i), "query": "Q", "file_name": "unused.xlsx"} for i in range(3)]
     query_path = tmp_path / "queries.json"; query_path.write_text(json.dumps(queries))
     limits = []
+    clock = [100.0]
+    monkeypatch.setattr(run.time,'monotonic',lambda:clock[0])
     def answer(*args, **kwargs):
         limits.append(kwargs["timeout"])
-        time.sleep(.06)
+        clock[0] += .06
         return "ok", L.Budget()
     monkeypatch.setattr(run, "PROCESSING_LIMIT_S", .1)
     monkeypatch.setattr(run, "answer_one", answer)

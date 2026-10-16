@@ -193,6 +193,8 @@ class Budget:
             self._actual += amount
             if amount > RESERVATION:
                 self.halt_reason = BILLING_HALT_REASON = "actual_cost_exceeded_reservation"
+        else:
+            self.halt_reason = BILLING_HALT_REASON = "billing_unresolved"
         entry.update(status=status, finished=True, prompt_tokens=pin if known_tokens else None,
                      completion_tokens=pout if known_tokens else None, reasoning_tokens=reasoning,
                      worst_case=amount is None, cost_usd=None if amount is None else float(amount),
@@ -295,3 +297,103 @@ def llm_plan(query, tables_summary, schema, budget: Budget, timeout=60, validate
                 continue
         return plan
     return None
+
+
+# Portable planning uses the same _post seam and Budget as v1. Profiles are
+# capability/price guards, never permission to change the requested model.
+MODEL_PROFILES = {
+    APPROVED_MODEL: {"input": Decimal("0.25"), "output": Decimal("1"),
+                     "mode": "json_object", "only": ["alibaba"], "reasoning": True},
+    "google/gemini-2.5-flash-lite": {"input": Decimal("0.10"), "output": Decimal("0.40"),
+                                     "mode": "json_object", "reasoning": False},
+}
+_DISCOVERED_PROFILES = {}
+
+
+def model_profile(model):
+    if model in MODEL_PROFILES:
+        return MODEL_PROFILES[model]
+    if model in _DISCOVERED_PROFILES:
+        return _DISCOVERED_PROFILES[model]
+    profile = None
+    try:
+        # Public metadata only: no key, question, file or other private input.
+        request = urllib.request.Request("https://openrouter.ai/api/v1/models")
+        with urllib.request.urlopen(request, timeout=8) as response:
+            catalog = json.loads(response.read(4_000_000))
+        item = next(x for x in catalog.get("data", []) if x.get("id") == model)
+        prices = item.get("pricing", {})
+        pin, pout, fixed = (_money(prices.get(k)) for k in ("prompt", "completion", "request"))
+        if pin is not None and pout is not None and fixed in (None, Decimal(0)):
+            # Conservative byte-to-token ceiling includes message framing.
+            upper = (MAX_BODY_BYTES + 4096) * pin + 1200 * pout
+            if upper <= RESERVATION:
+                parameters = item.get("supported_parameters", [])
+                mode = ("json_schema" if "structured_outputs" in parameters else
+                        "json_object" if "response_format" in parameters else "text")
+                profile = {"input": pin * 1_000_000, "output": pout * 1_000_000,
+                           "mode": mode, "reasoning": "reasoning" in parameters}
+    except Exception:
+        pass
+    _DISCOVERED_PROFILES[model] = profile
+    return profile
+
+
+def request_json(messages, budget, *, qid="", max_tokens=1200):
+    """One accounted attempt. The caller owns the shared three-call loop."""
+    if not enabled() or BILLING_HALT_REASON:
+        return None, "api_unavailable"
+    profile = model_profile(MODEL)
+    if profile is None:
+        return None, "model_capability_or_price_unverified"
+    provider = {"allow_fallbacks": False, "require_parameters": True,
+                "max_price": {"prompt": float(profile["input"]), "completion": float(profile["output"]), "request": 0}}
+    if profile.get("only"):
+        provider["only"] = profile["only"]
+    payload = {"model": MODEL, "messages": messages, "max_tokens": min(max_tokens, MAX_TOKENS, 1200),
+               "temperature": 0, "provider": provider}
+    if profile.get("reasoning"):
+        payload["reasoning"] = {"enabled": False}
+    mode = profile["mode"]
+    if mode == "json_schema":
+        payload["response_format"] = {"type": "json_schema", "json_schema": {
+            "name": "cell_answer", "strict": False,
+            "schema": {"type": "object", "properties": {"version": {"const": 2},
+                        "action": {"enum": ["plan", "inspect", "answer", "abstain"]}},
+                       "required": ["version", "action"]}}}
+    elif mode == "json_object":
+        payload["response_format"] = {"type": "json_object"}
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(body) > MAX_BODY_BYTES:
+        return None, "request_exceeds_24_kib"
+    remaining = 60 if budget.deadline is None else min(60, budget.deadline - time.monotonic())
+    if remaining <= 0:
+        return None, "deadline"
+    index = budget.reserve(len(body))
+    if index is None:
+        return None, "budget_or_attempt_limit"
+    try:
+        data = _post(body, remaining)
+    except Exception as exc:
+        budget.finish(index, status="error:" + type(exc).__name__)
+        return None, "transport_error_billing_unresolved"
+    budget.finish(index, data, status="received")
+    if budget.halt_reason:
+        return None, budget.halt_reason
+    try:
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise ValueError("truncated")
+        content = choice["message"].get("content", "").strip()
+        fences = _FENCE.findall(content)
+        if fences:
+            content = fences[0].strip()
+        parsed = json.loads(content, parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+        if not isinstance(parsed, dict):
+            raise ValueError("JSON object required")
+    except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+        budget.log[index]["status"] = "invalid_json"
+        return None, str(exc)[:120]
+    budget.log[index]["status"] = "json_ok"
+    budget.log[index]["plan"] = parsed
+    return parsed, None

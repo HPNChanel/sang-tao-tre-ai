@@ -32,8 +32,10 @@ def test_http_failure_reserves_unknown_cost(monkeypatch, status):
     monkeypatch.setattr(L, "_post", post)
     budget = L.Budget()
     assert L.llm_plan("Q", "T", "{}", budget) is None
-    assert budget.attempts == len(calls) == 3
-    assert budget.cost_usd is None and budget.unresolved_usd == pytest.approx(.09)
+    assert budget.attempts == len(calls) == 1
+    assert budget.cost_usd is None and budget.unresolved_usd == pytest.approx(.03)
+    assert L.BILLING_HALT_REASON == 'billing_unresolved'
+    assert not L.Budget().allow(0)
 
 
 @pytest.mark.parametrize("content", ["", "not json", "[]", "null", "{", '```json\n{"op":',

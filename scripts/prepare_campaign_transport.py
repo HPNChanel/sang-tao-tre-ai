@@ -21,6 +21,9 @@ def identity(source, batch, configuration, repetition=1):
     value = {"source_sha":source, "input_sha256":batch["input_sha256"],
              "configuration":configuration, "repetition":repetition,
              "case_ids_sha256":hashlib.sha256(C.canonical(hashes)).hexdigest()}
+    if 'stable_case_keys' in batch:
+        stable = {hashlib.sha256(q.encode()).hexdigest():key for q,key in batch['stable_case_keys'].items()}
+        value['stable_cases_sha256'] = hashlib.sha256(C.canonical(stable)).hexdigest()
     return hashlib.sha256(C.canonical(value)).hexdigest()
 
 
@@ -67,7 +70,7 @@ def prepare(spec, output, harness_sha):
             target=f"shards/batch-{index:03}.aesgcm"; (output/target).write_bytes(encrypted)
             manifest["batches"].append({"index":index,"ids":item["ordered_ids"],"files":item["file_sha256"],
                 "input_sha256":item["input_sha256"],"cipher_file":target,"cipher_sha256":W.digest(encrypted),
-                "aad":aad,"order":item["order"]})
+                "aad":aad,"order":item["order"],"stable_case_keys":item['stable_case_keys']})
     else:
         for dataset in spec["datasets"]:
             folder=Path(dataset["path"])
@@ -89,7 +92,8 @@ def prepare(spec, output, harness_sha):
                 target=f'shards/batch-{index:03}.aesgcm';(output/target).write_bytes(encrypted)
                 manifest['batches'].append({'index':index,'ids':[str(q['id']) for q in batch],
                     'files':files,'input_sha256':input_sha,'aad':aad,'cipher_file':target,
-                    'cipher_sha256':W.digest(encrypted),'dataset':dataset['label']})
+                    'cipher_sha256':W.digest(encrypted),'dataset':dataset['label'],
+                    'stable_case_keys':C.stable_case_keys(batch,files)})
     for batch in manifest['batches']:
         order=batch.get('order',spec.get('order',['candidate']))
         if order in ('AB','BA'):

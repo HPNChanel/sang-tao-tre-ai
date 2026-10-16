@@ -51,6 +51,8 @@ def main():
     parser.add_argument("--output-tokens", type=int, choices=(600, 1200), default=600)
     parser.add_argument("--policy", choices=("fallback", "selective"), default="fallback")
     parser.add_argument("--no-key", action="store_true")
+    parser.add_argument('--solver-profile',choices=('legacy','direct','raw','dual'),default='legacy')
+    parser.add_argument('--model',default='qwen/qwen3.7-flash')
     args = parser.parse_args()
     token = os.environ.pop("EVAL_GATEWAY_TOKEN", "")
     if not args.no_key and not token:
@@ -58,7 +60,8 @@ def main():
     port = None if args.no_key else checked_gateway(args.gateway)
     sys.addaudithook(egress_guard(port))
     os.environ["OPENROUTER_API_KEY"] = "" if args.no_key else token
-    os.environ["OPENROUTER_MODEL"] = "qwen/qwen3.7-flash"
+    os.environ["OPENROUTER_MODEL"] = args.model
+    os.environ['DS2_SOLVER_PROFILE'] = args.solver_profile
     os.environ["QWEN_REVIEW_POLICY"] = args.policy
     os.environ["QWEN_MAX_OUTPUT_TOKENS"] = str(args.output_tokens)
     sys.path.insert(0, str(Path(args.source).resolve()))
@@ -102,7 +105,7 @@ def main():
     output = Path(args.output)
     run.main(["--xlsx-dir", str(inputs / "xlsx_files"), "--queries", str(inputs / "queries.json"),
               "--output", str(output), "--openrouter-key", "" if args.no_key else token,
-              "--openrouter-model", "qwen/qwen3.7-flash", "--openrouter-base-url",
+              "--openrouter-model", args.model, "--openrouter-base-url",
               args.gateway + "/api/v1" if not args.no_key else "https://openrouter.ai/api/v1",
               "--log", str(output.parent / "solver-log.jsonl")])
 

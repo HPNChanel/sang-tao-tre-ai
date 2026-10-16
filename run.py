@@ -668,7 +668,16 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
     tables = None
     started = time.monotonic()
     budget.deadline = None if limit is None else started + limit
+    solver_profile = os.environ.get('DS2_SOLVER_PROFILE', 'legacy')
+    v2_active = solver_profile in {'direct','raw','dual'} and llm_client.enabled()
     try:
+        if v2_active:
+            from src.cellplan_v2.planner import answer as answer_v2
+            ans = _run_alarmed(lambda: answer_v2(q['query'],path,cache,budget,solver_profile,q.get('id','')),
+                               _remaining(started,limit))
+            if ans is not None:
+                return str(ans),budget
+            budget.diagnostics['fallback'] = 'deterministic_rules'
         hit = _MISS if whole_query or not cache.enabled else cache.lookup(path)
         if hit is _MISS:
             cache.make_room()
@@ -687,10 +696,10 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
             raise _QueryTimedOut()
         ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
         review = False
-        if ans is not None and tables is not None and llm_client.enabled():
+        if ans is not None and tables is not None and llm_client.enabled() and not v2_active:
             from src.plan_review import needs_review
             review = _run_alarmed(lambda: needs_review(q["query"], tables), _remaining(started, limit))
-        if (ans is None or review) and llm_client.enabled() and seams.have_executor():
+        if (ans is None or review) and llm_client.enabled() and seams.have_executor() and not v2_active:
             if tables is None:
                 left = _remaining(started, limit)
                 if left is not None and left <= 0:
@@ -706,6 +715,9 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
     except Exception as e:  # never crash the whole run
         print(f"[warn] {q.get('id')}: {type(e).__name__}: {e}", file=sys.stderr)
         ans = None
+    finally:
+        if budget.unresolved_usd:
+            budget.halt_reason = llm_client.BILLING_HALT_REASON = 'billing_unresolved'
     return ("" if ans is None else str(ans)), budget
 
 
@@ -998,6 +1010,7 @@ def main(argv=None):
                                      "actual_cost_usd": b.actual_usd,
                                      "unresolved_cost_usd": b.unresolved_usd,
                                      "budget_exposure_usd": b.spent,
+                                     "solver_diagnostics": getattr(b,'diagnostics',None),
                                      "token_usage_unknown": b.token_usage_unknown,
                                      "decision": getattr(b, "decision", {"source": "rule"}),
                                      "elapsed_seconds": time.perf_counter()-t}) + "\n")
@@ -1023,6 +1036,8 @@ def main(argv=None):
         signal.signal(signal.SIGTERM, previous_term)
         _kill_pid(_RUN.child)
         _RUN.child = None
+        from src.cellplan_v2.planner import close_cache
+        close_cache(cache)
         _restore_openrouter_cli(openrouter_saved)
     return 0
 

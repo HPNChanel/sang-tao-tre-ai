@@ -59,7 +59,8 @@ class Session:
         for run in self.manifest["runs"]:
             batch = self.manifest["batches"][run["batch_index"]]
             invocation = self.ledger.register(self.manifest["stage"], self.manifest["sources"][run["label"]]["sha"],
-                batch["input_sha256"], run["configuration"], batch["ids"], run.get("repetition", 1))
+                batch["input_sha256"], run["configuration"], batch["ids"], run.get("repetition", 1),
+                case_keys=batch.get('stable_case_keys'))
             if invocation != run["invocation"]:
                 raise ValueError("invocation identity differs from preregistration")
             self.gateways[run["number"]] = C.Gateway(self.ledger, key, self.secret["token"],

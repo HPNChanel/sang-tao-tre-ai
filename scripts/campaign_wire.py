@@ -101,14 +101,26 @@ def validate_manifest(manifest):
             raise ValueError("input inventory must contain only queries and workbooks")
         if not 1 <= len(batch["ids"]) <= 20 or len(set(batch["ids"])) != len(batch["ids"]):
             raise ValueError("invalid batch IDs")
+        keys=batch.get('stable_case_keys')
+        if keys is not None and (not isinstance(keys,dict) or set(keys)!=set(batch['ids']) or
+                                 any(not isinstance(v,str) or not re.fullmatch(r'[0-9a-f]{64}',v) for v in keys.values())):
+            raise ValueError('invalid stable case keys')
     for number, run in enumerate(manifest["runs"]):
         if run["number"] != number or run["label"] not in sources or run["batch_index"] not in range(len(batches)):
             raise ValueError("invalid ordered run")
-        if run["configuration"] not in [
+        config = run['configuration']
+        core = {k:v for k,v in config.items() if k not in {'solver_profile','model'}}
+        if core not in [
             {"policy":p, "output_tokens":t, "api_enabled":a}
             for p in ("fallback", "selective") for t in (600,1200) for a in (True,False)
         ]:
             raise ValueError("unapproved configuration")
+        if config.get('solver_profile','legacy') not in {'legacy','direct','raw','dual'}:
+            raise ValueError('unapproved solver profile')
+        if config['api_enabled'] and 'stable_case_keys' not in batches[run['batch_index']]:
+            raise ValueError('paid transport runs require stable case identities')
+        if config.get('model','qwen/qwen3.7-flash') not in {'qwen/qwen3.7-flash','google/gemini-2.5-flash-lite'}:
+            raise ValueError('unapproved model')
 
 
 def result_metadata(manifest_sha, run, batch, source, image):

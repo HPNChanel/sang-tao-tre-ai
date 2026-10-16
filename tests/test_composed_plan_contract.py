@@ -26,7 +26,7 @@ def test_mocked_fallback_executes_compositions_without_network(tmp_path, monkeyp
     calls = []
     def fake_post(body, timeout):
         calls.append(json.loads(body))
-        return {"usage": {"prompt_tokens": 20, "completion_tokens": 40},
+        return {"usage": {"prompt_tokens": 20, "completion_tokens": 40, "cost": .0001},
                 "choices": [{"message": {"content": json.dumps(plan)}, "finish_reason": "stop"}]}
     monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-test-key")
     monkeypatch.setattr(llm_client, "_post", fake_post)

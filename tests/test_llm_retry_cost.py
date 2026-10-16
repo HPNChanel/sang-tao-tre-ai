@@ -37,16 +37,16 @@ def _setup(monkeypatch, responses, tmp_path):
     return calls
 
 
-def test_failed_then_retry_logged(monkeypatch, tmp_path):
+def test_unknown_transport_cost_halts_before_retry(monkeypatch, tmp_path):
     ok = {"usage": {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.000045},
           "choices": [{"message": {"content": '{"version": 1, "op": "sum", "format": {"kind": "int"}}'}}]}
     calls = _setup(monkeypatch, [TimeoutError("boom"),
                                  {"choices": [{"message": {"content": "not json"}}]}, ok], tmp_path)
     ans, b = run.answer_one({"id": "q1", "file_name": "f.xlsx", "query": "Q?"}, tmp_path, {})
-    assert ans == "42" and len(calls) == 3 and b.attempts == 3
-    real = 100 * llm_client.PRICE_IN + 20 * llm_client.PRICE_OUT
-    assert b.tokens == 120 and b.unresolved_usd == 0.06
-    assert abs(b.actual_usd - real) < 1e-12 and b.cost_usd is None
+    assert ans == "" and len(calls) == 1 and b.attempts == 1
+    assert b.tokens == 0 and b.unresolved_usd == 0.03
+    assert b.actual_usd == 0 and b.cost_usd is None
+    assert llm_client.BILLING_HALT_REASON == 'billing_unresolved'
     assert b.token_usage_unknown  # no fabricated token usage for failed calls
 
 
@@ -58,7 +58,7 @@ def test_all_fail_blank_answer_still_logs_cost(monkeypatch, tmp_path):
     run.main(["--data", str(d), "--out", str(out)])
     log = [json.loads(l) for l in open(out.parent / "run_log.jsonl")]
     assert log[0]["id"] == "q1" and log[0]["tokens"] == 0 and log[0]["cost_usd"] is None
-    assert log[0]["unresolved_cost_usd"] == .09 and log[0]["budget_exposure_usd"] == .09
+    assert log[0]["unresolved_cost_usd"] == .03 and log[0]["budget_exposure_usd"] == .03
     assert log[0]["token_usage_unknown"] is True
     assert out.read_text().splitlines()[1] == "q1,"
 
@@ -73,7 +73,7 @@ def test_cap_blocks_before_exceeding(monkeypatch, tmp_path):
 
 
 def test_schema_invalid_plan_blank_bounded(monkeypatch, tmp_path, capsys):
-    bad = {"usage": {"prompt_tokens": 50, "completion_tokens": 10},
+    bad = {"usage": {"prompt_tokens": 50, "completion_tokens": 10, "cost": .0001},
            "choices": [{"message": {"content": '{"version": 1, "op": "explode", "format": {"kind": "int"}}'}}]}
     calls = _setup(monkeypatch, [bad] * 10, tmp_path)
     executed = []
