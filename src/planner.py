@@ -308,6 +308,12 @@ def plan_with_confidence(query: str, tables, strict=None):
 
 def _plan_with_confidence(query, tables, strict):
     from .vi import is_vietnamese, translate
+    from .native_comparisons import plan as native_plan
+    native = native_plan(query, tables)
+    if native is not None:
+        from .plan_validate import validate
+        errors = validate(native)
+        return native, 0.0 if errors else 1.0, errors or ["native:exact-operands"]
     original = query
     reasons = []
     vi_factor = 1.0
@@ -317,7 +323,7 @@ def _plan_with_confidence(query, tables, strict):
         for table in tables:
             labels = list(table.df[table.label_col].astype(str)) if table.label_col in table.df else []
             labels += [part for c in table.df.columns if not str(c).startswith("_") for part in str(c).split(" | ")]
-            entities += [x for x in labels if re.search(r"[^\x00-\x7f]", x) or x.lower() in {"nam"}]
+            entities += [x for x in labels if len(x.strip()) > 1 and not x.strip().isdigit()]
         query, hits = translate(query, new_ops=True, entities=entities)
         _, hits_base = translate(original, new_ops=False)
         vi_factor = 0.9 if hits >= 2 else 0.6

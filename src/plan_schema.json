@@ -129,6 +129,7 @@
     "lookup",
     "select",
     "winner_diff",
+    "percent_change",
     "values",
     "sum",
     "diff",
@@ -151,6 +152,7 @@
    "additionalProperties": false,
    "properties": {
     "include_value": {"type": "boolean"},
+    "decrease": {"type": "boolean"},
     "value": {"type": "number"},
     "over": {
      "enum": [

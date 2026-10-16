@@ -260,13 +260,17 @@ def execute(plan, tables):
         if plan["format"]["kind"] == "date" or (vals and isinstance(vals[0], (dt.date, dt.datetime))):
             pass
         val = vals if (op == "values" or len(vals) > 1) else vals[0]
-    elif op in ("compare", "diff", "ratio"):
+    elif op in ("compare", "diff", "ratio", "percent_change"):
         vals = cell_list()
         if op == "compare" and "value" in args:
             vals.append(args["value"])
         if len(vals) < 2:
             raise PlanError(f"{op} needs two values, got {vals}")
         a, b = float(vals[0]), float(vals[1])
+        if op == "percent_change":
+            if len(vals) != 2 or a == 0:
+                raise PlanError("percent change needs two values and a nonzero baseline")
+            return (a - b if args.get("decrease") else b - a) / a * 100
         if op == "ratio" and b == 0:
             raise PlanError("ratio: division by zero")
         if op == "compare":
