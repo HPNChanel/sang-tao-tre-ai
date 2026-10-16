@@ -831,8 +831,11 @@ def _choose_over(plan, view, rows, cols, low):
         args["over"] = "rows"
         plan["columns"] = [c for c in cols if c != view.label_name]
         if args["over"] == "rows" and len(rows) == 1 and plan["columns"]:
-            # the matched row is context (scope), e.g. a province, not the answer
-            plan["rows"]["scope"] = rows[0][0]
+            # Only a structural parent can define a descendant comparison
+            # domain. A leaf label is not an empty group to broaden later.
+            parent = rows[0][0]
+            if any(str(p).startswith(parent + " > ") for p in view.df["_row_path"]):
+                plan["rows"]["scope"] = parent
             plan["rows"]["paths"] = []
         elif args["over"] == "rows":
             plan["rows"]["paths"] = []
