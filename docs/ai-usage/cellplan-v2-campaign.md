@@ -57,3 +57,72 @@ Source freeze target 07:00, handoff target 10:30, official closing 12:00 on
 RoutingReceipt: {"schema_version":1,"implementation":{"owner":"root"},
 "independent_benchmark":{"model":"gpt-6-sol","effort":"xhigh"},
 "independent_review":{"model":"gpt-6-sol","effort":"xhigh"}}
+
+## Outcome on 2026-10-17
+
+The final solution is baseline A, runtime `d123308` with the `selective` review
+policy and 600 output tokens. The challenger did not pass the pre-registered
+public gate, so no sealed result could promote it.
+
+- Pilot on 60 DEV cases: A 0, B 14, C 41 and D 43 correct.
+- Full DEV (360): A 0 correct, 153 wrong, 207 blank. V2.1 `f7fdd12` raw 316,
+  dual 313. V2.2 `c2b1e07` hybrid 337 correct, 18 wrong, 5 blank. These are
+  development numbers: the implementer saw DEV answers while fixing failures.
+- Frozen challenger V2.3 `9b36478` is V2.2 plus the hybrid Dockerfile defaults
+  and a value-scale percent correction. An offline re-execution of every logged
+  CellPlanV2 plan changed 0 of the V2.2 DEV answers (V2.1 raw/dual DEV: 8/7
+  fixed, 0 broken; `0c980ca` public: 2 fixed, 0 broken). Its own DEV API run was
+  halted by an HTTP 429 after 4 of 18 batches, so this exact revision has no DEV
+  API score.
+- Public Linux gate: `0c980ca` 48/50 (GitHub run 38965773502, percent scale).
+  Two executions of `9b36478` were halted by the ledger after provider 429s with
+  unknown billing and do not count (48/50 each). The first halt-free execution,
+  harness `92631c9`, scored 49/50 (run 38976982800). The miss, `p4_q016`, went
+  through the legacy review and adjudication path that is shared with A; the
+  same question kept the rule answer in A's 16/10 run.
+- The source freeze records `promotion.possible=false`; the configuration freeze
+  records the controls and the rerun rule.
+- Sealed MAIN and stress, informational only: MAIN (repetition 1, run
+  38978617638): A 0/360, V2.3 314/360, paired difference +314 (V2.3 only 314, A
+  only 0), world-cluster bootstrap 95% [+301, +326] questions (proportions 0.836
+  to 0.906); stress (repetition 1, run 38988044952): A 0/120, V2.3 116/120,
+  difference +116. The MAIN requirement was met and the stress requirement was
+  met; neither can promote.
+- A on the final handoff ZIP bytes, public Linux 50: 49/50 (run 38987219465);
+  CSV contract, memory (peak 106266624 bytes), swap and time limits pass.
+  Public2 question 25 was left blank: the rule path rejected its own plan and
+  both Qwen plans failed schema validation, while in the 16/10 run the second
+  Qwen plan was valid and the answer correct. The 50/50 check of the final
+  package therefore fails; the rule decides only whether a challenger replaces
+  A, so the final stays A and the re-run is recorded as a limitation.
+- Not run: portability and a second model.
+- Ledger: USD 0.922942498 actual cost across all campaigns, USD 0.615279586 of
+  it on 17/10, plus USD 0.18 retained reservations (exposure USD 1.102942498,
+  cap USD 5). Six attempts with unknown billing keep their USD 0.03
+  reservations; none was recorded as zero.
+
+The benchmark author and sealed custodian was a separate subagent with its own
+context, used in place of the `gpt-6-sol` named in the RoutingReceipt; on 17/10
+a separate Claude subagent held custody to amend the scorer, re-wrap the sealed
+transport and score the paired runs. No `gpt-6-sol` review was run either; the
+custodian checked the freeze files against its six sealed packets without
+opening any sealed result (all three items PASS: 11/11, 3/3 and 5/5 checks, plus
+5/5 pre-checks; receipt dated 2026-10-16T22:59:10Z, after the freeze files at
+2026-10-16T22:53:53Z). A second Claude subagent, which did not open sealed data,
+fact-checked the Vietnamese handoff drafts against the evidence files before
+assembly. Before the freeze the implementation side saw the MAIN `main_question`
+template code, but no world values or answers; the MAIN wording was rewritten
+before the freeze (recorded in the benchmark freeze manifest `199d8375…`). MAIN
+is therefore not fully unexposed. The custodian also notes that
+`benchmark/author.py`, outside the encrypted area, holds the MAIN question
+templates; the implementer did not open it from 01:26 on 17/10 (per that
+session's own log, not in the handoff), and for the time before, the record is
+the `main_question` note above. MAIN and stress have now been used to measure
+V2.3: a revised V2 needs a new sealed set.
+
+This branch head keeps the challenger defaults from `0c980ca` in the Dockerfile
+(`hybrid`, 1200 output tokens). The final package runs `d123308`, so it must not
+be rebuilt from this branch head.
+
+The handoff folder is `deliverables/ban-giao-pdu-team-20261017/`, which is
+ignored by Git (not tracked). Nothing was merged or submitted.
