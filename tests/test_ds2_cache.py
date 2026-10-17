@@ -209,7 +209,7 @@ def test_sigterm_handler_flushes_every_id(tmp_path, monkeypatch):
     assert any(sig == signal.SIGTERM and handler is run._on_sigterm for sig, handler in seen)
 
 
-def test_slow_parse_is_outside_the_answer_timeout(tmp_path, monkeypatch):
+def test_slow_parse_counts_inside_the_query_timeout(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     data = _pack(tmp_path, [_q("a")])
     real = run.load_tables
@@ -223,9 +223,9 @@ def test_slow_parse_is_outside_the_answer_timeout(tmp_path, monkeypatch):
     t0 = time.perf_counter()
     assert run.main(["--data", str(data), "--out", str(out), "--query-timeout", "0.25"]) == 0
     elapsed = time.perf_counter() - t0
-    assert _rows(out)[1][1] == "2"
-    assert elapsed >= 0.5
-    assert "a" not in run._RUN.timed_out
+    assert _rows(out)[1][1] == ""
+    assert elapsed < 2
+    assert "a" in run._RUN.timed_out
 
 
 def _worker_children():
@@ -246,7 +246,7 @@ def _worker_children():
     return found
 
 
-def test_preload_timeout_skips_cache_and_bounds_the_query(tmp_path, monkeypatch, capsys):
+def test_lazy_parse_timeout_bounds_only_affected_queries(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     data = tmp_path / "pack"
     _workbook(data / "xlsx_files" / "book.xlsx")
@@ -282,7 +282,7 @@ def test_preload_timeout_skips_cache_and_bounds_the_query(tmp_path, monkeypatch,
     assert elapsed < 8
     assert run._RUN.timed_out == ["slow", "slow2"]
     err = capsys.readouterr().err
-    assert "[preload-timeout] slow.xlsx: not cached; 2 queries will parse inside the answer timeout and may be blank" in err
+    assert "[timeout] slow" in err and "[timeout] slow2" in err
     names = _load_names(log)
     assert names.count("book.xlsx") == 1
     assert names.count("slow.xlsx") >= 1

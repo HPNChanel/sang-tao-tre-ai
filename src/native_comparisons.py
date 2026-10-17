@@ -18,6 +18,9 @@ def mentions(text, labels):
 
 
 def plan(query, tables):
+    division = _division(query, tables)
+    if division is not None:
+        return division
     chinese = bool(re.search(r"比.+(?:低|高)多少个?百分点", query))
     korean = "퍼센트" in query and bool(re.search(r"감소|증가", query)) and "대비" in query
     if not (chinese or korean):
@@ -62,4 +65,27 @@ def plan(query, tables):
                            "rows": {"paths": paths}, "columns": cols,
                            "op": "percent_change" if korean else "diff", "args": args,
                            "format": {"kind": "decimal" if decimals is not None else "number", "decimals": decimals}})
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _division(query, tables):
+    """Explicit divide-A-by-B syntax supplies the operation and operand order."""
+    match = re.search(r"\bdivide\s+(.+?)\s+by\s+([^.;?]+)", query, re.I)
+    if not match:
+        return None
+    from dataclasses import asdict
+    from .answer_format import parse_instruction
+    from .planner import build_views
+    from .textmatch import Query
+    candidates = []
+    for view in build_views(tables):
+        operands = [[c for c in view.numeric_cols() if Query(part).match(c)[0] == 1.0] for part in match.groups()]
+        paths = [p for p, label in zip(view.df["_row_path"], view.df["_label"])
+                 if re.search(r"(?<!\w)" + re.escape(str(label)) + r"(?!\w)", query, re.I)]
+        if any(len(x) != 1 for x in operands) or len(paths) != 1 or operands[0] == operands[1]:
+            continue
+        fmt = asdict(parse_instruction(query)); fmt.pop("instruction")
+        candidates.append({"version":1, "table":{"index":view.idx[0], "stack_sheets":view.stacked},
+                           "rows":{"paths":paths}, "columns":[x[0] for x in operands],
+                           "op":"ratio", "args":{}, "format":fmt})
     return candidates[0] if len(candidates) == 1 else None

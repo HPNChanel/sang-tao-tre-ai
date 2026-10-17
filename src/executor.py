@@ -264,10 +264,20 @@ def execute(plan, tables):
     elif op == "select":
         idx = _apply_where(view, _aggregate_rows(view, plan, base), r.get("where"))
         if not idx:
+            if plan.get("format", {}).get("empty") is not None:
+                return plan["format"]["empty"]
             raise PlanError("no rows satisfy all conditions")
         val = [df.at[i, "_label"] for i in idx]
         if len(val) == 1:
             val = val[0]
+    elif op == "date_diff":
+        from .calendar_ops import interval
+        if not groups or not cols or any(len(g) != 1 for g in groups):
+            raise PlanError("calendar difference needs exact date cells")
+        dates = [df.at[g[0], c] for g in groups for c in cols]
+        if len(dates) != 2:
+            raise PlanError("calendar difference needs exactly two date cells")
+        val = interval(dates[0], dates[1], args.get("date_unit", "days"))
     elif op in ("lookup", "values"):
         vals = cell_list()
         if plan["format"]["kind"] == "date" or (vals and isinstance(vals[0], (dt.date, dt.datetime))):
@@ -301,6 +311,8 @@ def execute(plan, tables):
             if r.get("scope") is None and not r.get("range") and not r.get("where") and not (plan.get("table") or {}).get("sheet"):
                 idx = _first_root_scope(view, idx)
         idx = _apply_where(view, idx, r.get("where"))
+        if not idx and plan.get("format", {}).get("empty") is not None:
+            return plan["format"]["empty"]
         if op == "count":
             val = len(idx)
         else:
@@ -542,7 +554,8 @@ def _first_root_scope(view, idx):
 def to_spec(fmt: dict) -> FormatSpec:
     return FormatSpec(kind=fmt.get("kind", "text"), decimals=fmt.get("decimals"), count=fmt.get("count"),
                       item_kinds=fmt.get("item_kinds") or [],
-                      item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [])
+                      item_kind=fmt.get("item_kind"), sep=fmt.get("sep", ", "), order=fmt.get("order") or [],
+                      prefix=fmt.get("prefix", ""), suffix=fmt.get("suffix", ""), empty=fmt.get("empty"))
 
 
 def answer(plan, tables) -> str:
@@ -559,5 +572,6 @@ def answer(plan, tables) -> str:
         return str(int(f)) if f.is_integer() else f"{f:.10g}"
     if isinstance(val, list) and spec.kind != "list":
         spec = FormatSpec(kind="list", sep=spec.sep or ", ",
-                          item_kind="name" if isinstance(val[0], str) else "int" if spec.kind == "int" else "number")
+                          item_kind="name" if val and isinstance(val[0], str) else "int" if spec.kind == "int" else "number",
+                          prefix=spec.prefix, suffix=spec.suffix)
     return format_answer(val, spec)

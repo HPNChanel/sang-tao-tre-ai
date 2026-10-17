@@ -1,7 +1,9 @@
 """Check the contest Docker contract using only a generated workbook.
 
 Run after installing requirements.txt on a host with Docker. The image stays
-local to that host. Both container runs have no network and a 1 GiB memory cap.
+local to that host. Both container runs have no network and a 1,000,000,000-byte memory cap.
+The image, and each container's root filesystem after its run, must also stay
+within 1,000,000,000 bytes.
 """
 import csv
 import datetime as dt
@@ -19,6 +21,7 @@ from build_submission_package import create_package
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "sangtaotreai-ci:smoke"
+SIZE_LIMIT = 1_000_000_000
 QUESTION = "How many people scored at least 60? Answer with only the integer."
 
 
@@ -77,6 +80,8 @@ def main():
         metadata = json.loads(checked("docker", "image", "inspect", IMAGE).stdout)[0]
         assert (metadata["Os"], metadata["Architecture"]) == ("linux", "amd64")
         assert metadata["Config"]["Entrypoint"] == ["python", "run.py"]
+        print(f"IMAGE_SIZE_BYTES={metadata['Size']}", flush=True)
+        assert metadata["Size"] <= SIZE_LIMIT, metadata["Size"]
 
         inputs = work / "input"
         make_input(inputs)
@@ -85,9 +90,10 @@ def main():
         for label, key in (("no-key", ""), ("fake-key", "test-not-a-real-key")):
             out = work / label
             out.mkdir()
+            name = "sangtaotreai-ci-" + label
             result = checked(
-                "docker", "run", "--rm", "--platform=linux/amd64",
-                "--network=none", "--memory=1g", "--memory-swap=1g",
+                "docker", "run", "--name", name, "--platform=linux/amd64",
+                "--network=none", "--memory=1000000000", "--memory-swap=1000000000",
                 "--cpus=2", "--pids-limit=128",
                 "--mount", f"type=bind,src={inputs},dst=/input,readonly",
                 "--mount", f"type=bind,src={out},dst=/output",
@@ -99,6 +105,11 @@ def main():
                 "--openrouter-model", "qwen/qwen3.7-flash",
                 "--openrouter-base-url", "https://openrouter.ai/api/v1",
             )
+            # The container is kept until its written layer has been measured.
+            state = json.loads(checked("docker", "container", "inspect", "--size", name).stdout)[0]
+            checked("docker", "rm", name)
+            print(f"CONTAINER_SIZE_BYTES {label}: written={state['SizeRw']} root={state['SizeRootFs']}", flush=True)
+            assert state["SizeRootFs"] <= SIZE_LIMIT, state["SizeRootFs"]
             output = out / "submission.csv"
             with output.open(encoding="utf-8", newline="") as handle:
                 rows = list(csv.reader(handle))
@@ -109,7 +120,8 @@ def main():
             outputs.append(output.read_bytes())
             print(f"PASS {label}: six arguments, exact CSV and ID order, stderr logs, input unchanged")
         assert outputs[0] == outputs[1], "fake-key and no-key results differ"
-        print("PASS Docker: linux/amd64, ENTRYPOINT, network disabled, 1 GiB cap, no GPU requested")
+        print("PASS Docker: linux/amd64, ENTRYPOINT, network disabled, 1,000,000,000-byte cap, no GPU requested, "
+              "image and container filesystem within 1,000,000,000 bytes")
 
 
 if __name__ == "__main__":

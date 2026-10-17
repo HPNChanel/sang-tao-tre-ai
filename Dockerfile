@@ -1,6 +1,8 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 
 WORKDIR /app
+
+ENV DS2_SOLVER_PROFILE=hybrid QWEN_REVIEW_POLICY=selective QWEN_MAX_OUTPUT_TOKENS=1200
 
 COPY requirements.txt /tmp/requirements.txt
 RUN python -c "from pathlib import Path; lines=Path('/tmp/requirements.txt').read_text(encoding='utf-8').splitlines(); kept=[ln for ln in lines if ln.strip() and not ln.lstrip().lower().startswith('pytest')]; Path('/tmp/runtime-requirements.txt').write_text('\n'.join(kept)+('\n' if kept else ''))" \

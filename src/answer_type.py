@@ -21,6 +21,8 @@ def expected_type(query: str, fmt: dict) -> str:
         return "year"
     if re.search(r"\bhow many (more|less|fewer|percentage points?|percent points?)\b|\bhow much\b|\bby how much\b", low):
         return "number"
+    if re.search(r"\bhow many (?:signed )?(?:calendar )?days\b", low):
+        return "number"
     if re.search(r"\bhow many\b", low):
         return "count"
     if k in ("int", "decimal", "number"):
@@ -62,6 +64,8 @@ def plan_type(plan: dict, view=None) -> str:
         if view is not None and ret and ret in view.numeric_cols():
             return "number"
         return "label"
+    if a.get("metric") == "completed_years":
+        return "number"
     if op in ("max", "min") and view is not None and plan.get("columns") and all(c in view.date_cols() for c in plan["columns"]):
         return "date"
     return "number"
@@ -84,6 +88,16 @@ def compatible(expected: str, got: str) -> bool:
 def answer_ok(expected: str, ans: str, fmt: dict, query: str | None = None, plan: dict | None = None) -> bool:
     if ans is None or str(ans).strip() == "":
         return False
+    # Formatting affixes do not change the computed value's type. Require
+    # their exact presence before checking the numeric/list payload.
+    ans = str(ans)
+    from .answer_format import parse_instruction
+    if query and fmt.get("empty") is not None and ans == fmt["empty"] == parse_instruction(query).empty:
+        return True
+    prefix, suffix = fmt.get("prefix", ""), fmt.get("suffix", "")
+    if not ans.startswith(prefix) or not ans.endswith(suffix):
+        return False
+    ans = ans[len(prefix):len(ans) - len(suffix) if suffix else None]
     from . import blank_guards as G
     # A ranking that already has its column and direction, or a single superlative,
     # is not rejected on shape. The same predicate gates the pre-exec blanks.

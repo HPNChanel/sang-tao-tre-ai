@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import openpyxl
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.code_planner import plan_with_confidence
@@ -33,3 +34,17 @@ def test_largest_gap_uses_derived_measure_not_largest_operand(tmp_path):
     rows = [["Region", "Revenue", "Cost"], ["Coast", 90, 80], ["Hill", 40, 10], ["Lake", None, 1]]
     q = "Which region has the largest gap between Revenue and Cost? Answer as `group, gap`, with one decimal place."
     assert run(tmp_path, rows, q) == "Hill, 30.0"
+
+
+@pytest.mark.parametrize("headers,rows,query,expected", [
+    (["Region", "2022", "2023"], [["Coast", 80, 90], ["Hill", 20, 50]],
+     "Which region had the greatest increase from 2022 to 2023? Answer with only the region name.", "Hill"),
+    (["Region", "2023", "2022"], [["Coast", 90, 80], ["Hill", 50, 20]],
+     "Which region had the greatest increase from 2022 to 2023? Answer with only the region name.", "Hill"),
+    (["Region", "2022", "2023"], [["Coast", 80, 70], ["Hill", 50, 20]],
+     "Which region had the greatest decrease from 2022 to 2023? Answer with only the region name.", "Hill"),
+    (["Region", "2022", "2023"], [["Coast", 80, 70], ["Hill", 50, 20]],
+     "Which region had the greatest increase from 2022 to 2023? Answer with only the region name.", "Coast"),
+])
+def test_year_change_operand_direction(tmp_path, headers, rows, query, expected):
+    assert run(tmp_path, [headers] + rows, query) == expected

@@ -11,6 +11,18 @@ on:
         description: Temporary HTTPS download for the exact Public data 2 ZIP pinned by the manifest
         required: false
         type: string
+      campaign_url:
+        description: Temporary authenticated TLS endpoint for the frozen evaluation
+        required: false
+        type: string
+      campaign_manifest:
+        description: SHA256 of the preregistered encrypted transport manifest
+        required: false
+        type: string
+      harness_sha:
+        description: Exact reviewed harness commit for manual evaluation
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -22,7 +34,7 @@ concurrency:
 jobs:
   verify:
     # Standard runners are free for public repos; do not run if visibility changes.
-    if: github.event.repository.private == false
+    if: github.event.repository.private == false && inputs.campaign_url == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -47,6 +59,7 @@ jobs:
           git rev-parse HEAD
           python --version
           python -m pip install -r requirements.txt
+          python -m pip install -r requirements-evaluation.txt
           python -m pip freeze
           docker version
 
@@ -64,6 +77,10 @@ jobs:
         if: ${{ !cancelled() && steps.docker_smoke.outcome == 'success' }}
         run: python scripts/ci_public_data1.py
 
+      - name: Exercise encrypted-evaluation container boundaries without a key
+        if: ${{ !cancelled() && steps.docker_smoke.outcome == 'success' }}
+        run: python scripts/ci_harness_selftest.py
+
       - name: Verify supplied Public data 2 and measure container memory
         if: ${{ !cancelled() && steps.docker_smoke.outcome == 'success' && inputs.public2_url != '' }}
         env:
@@ -71,3 +88,31 @@ jobs:
         run: python scripts/ci_public_data2.py
 
       # Deliberately no artifact upload, cache action, registry push, or API key.
+
+  encrypted_evaluation:
+    if: github.event_name == 'workflow_dispatch' && github.event.repository.private == false && github.actor == 'HPNChanel' && inputs.campaign_url != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      PYTHONUTF8: '1'
+      PIP_NO_CACHE_DIR: '1'
+    steps:
+      - name: Check out the exact dispatch revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up the evaluation host
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+      - name: Install only the transfer dependency
+        run: python -m pip install -r requirements-evaluation.txt
+      - name: Run the reviewed harness and return encrypted receipts
+        env:
+          STAI_EVAL_SECRET: ${{ secrets.STAI_EVAL_SECRET }}
+          STAI_TRANSFER_URL: ${{ inputs.campaign_url }}
+          STAI_MANIFEST_SHA256: ${{ inputs.campaign_manifest }}
+          STAI_HARNESS_SHA: ${{ inputs.harness_sha }}
+        run: python scripts/ci_qwen_campaign.py
+      # Inputs, predictions and solver logs are never uploaded as plaintext.

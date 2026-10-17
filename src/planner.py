@@ -282,7 +282,9 @@ def strip_instruction(query, spec):
         r"(?:\bfor example\b|\be\.g\.|\beg\.?|\bví\s*dụ\b|\bvi\s*du\b)[^.;?!]*",
         " ", q, flags=re.I)
     if spec.instruction:
-        q = q.replace(spec.instruction, " ")
+        stripped = q.replace(spec.instruction, " ")
+        if stripped.strip():
+            q = stripped
     q = re.sub(
         r"\b(?:Provide|Answer|Respond|Chỉ\s+trả\s+lời|Chi\s+tra\s+loi)\b[^.?!]*[.?!]?",
         " ", q, flags=re.I)
@@ -309,7 +311,9 @@ def plan_with_confidence(query: str, tables, strict=None):
 def _plan_with_confidence(query, tables, strict):
     from .vi import is_vietnamese, translate
     from .native_comparisons import plan as native_plan
-    native = native_plan(query, tables)
+    from .calendar_ops import plan as calendar_plan
+    from .explicit_filters import plan as filter_plan
+    native = calendar_plan(query, tables) or filter_plan(query, tables) or native_plan(query, tables)
     if native is not None:
         from .plan_validate import validate
         errors = validate(native)
@@ -475,7 +479,8 @@ def _plan_core(query: str, tables, strict=False):
             "columns": cols, "op": "lookup", "args": {},
             "format": {"kind": spec.kind, "decimals": spec.decimals, "count": spec.count,
                        "item_kind": spec.item_kind, "item_kinds": spec.item_kinds,
-                       "sep": spec.sep, "order": spec.order}}
+                       "sep": spec.sep, "order": spec.order,
+                       "prefix": spec.prefix, "suffix": spec.suffix}}
     if re.search(r"yyyy-mm-dd|\bdate\b.*format", query.lower()):
         plan["format"]["kind"] = "date"
     if view.stacked:
@@ -1492,6 +1497,12 @@ def _new_op_blocked(plan, info, original):
     if _main_already_selects(plan, original):
         return False
     triggered = _new_op_keyword_hit(original) or info.get("fresh_op")
+    # A requested pair cannot be collapsed into one aggregate. Keeping the
+    # question body (including a leading 'Give') must preserve this ambiguity
+    # guard before the generic result-shape check runs.
+    if triggered and plan["format"].get("kind") == "list" and plan["op"] in ("sum", "mean", "count", "lookup") \
+            and re.search(r"\brespectively\b|\blan luot\b", _fold_q(original)):
+        return True
     if not triggered or not _guarded_op(plan, info, original):
         return False
     return not _new_op_resolved(plan, info, original)

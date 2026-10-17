@@ -1,0 +1,2 @@
+# Host-only authenticated transfer dependency; excluded from submission runtime.
+cryptography==50.0.2

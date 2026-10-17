@@ -8,7 +8,7 @@ from src import llm_client as L  # noqa: E402
 from src.plan_validate import validate, load_schema, SCHEMA_FILE  # noqa: E402
 import fake_llm as F  # noqa: E402
 
-SCHEMA_SHA256_LF = "29849424a2f1d6082880000021378c256da5d08eef2be42ceb16cb355dcc1b0a"
+SCHEMA_SHA256_LF = "6516e559836a7d531ccb1ba7fc722335ee86d51fe0eee89ff93dfb8ecbe49cec"
 VALID = [F.PLAN,
          {"version": 1, "op": "sum", "columns": ["Revenue | *"], "format": {"kind": "int"}},
          {"version": 1, "op": "argmax", "rows": {"paths": ["S1!A > B"]}, "args": {"by": "age"},
@@ -85,8 +85,13 @@ def _run(monkeypatch, responses, cap=None):
 def test_error_paths_no_plan_bounded(monkeypatch, bad):
     plan, b, t = _run(monkeypatch, [bad] * 5)
     assert plan is None
-    assert len(t.bodies) == b.attempts == L.MAX_ATTEMPTS == len(b.log)
-    assert b.spent > 0 and b.tokens > 0 and b.spent <= b.cap
+    expected = 1 if b.unresolved_usd else L.MAX_ATTEMPTS
+    assert len(t.bodies) == b.attempts == len(b.log) == expected
+    assert b.spent > 0 and b.spent <= b.cap
+    if b.token_usage_unknown:
+        assert b.unresolved_usd > 0 and b.cost_usd is None
+    else:
+        assert b.tokens > 0
 
 
 def test_reasoning_tokens_logged_separately(monkeypatch):
@@ -100,8 +105,9 @@ def test_reasoning_tokens_logged_separately(monkeypatch):
 
 def test_error_charged_worst_case(monkeypatch):
     plan, b, _ = _run(monkeypatch, [F.http_error(402), F.plain()])
-    assert plan == F.PLAN and b.log[0]["worst_case"] and b.log[0]["status"] == "error:HTTPError"
-    assert b.log[1]["worst_case"] is False
+    assert plan is None and b.log[0]["worst_case"] and b.log[0]["status"] == "error:HTTPError"
+    assert len(b.log)==1 and b.unresolved_usd==.03
+    assert L.BILLING_HALT_REASON=='billing_unresolved'
 
 
 def test_cap_stops_before_overrun(monkeypatch):
@@ -115,3 +121,12 @@ def test_disabled_without_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(L, "_post", lambda *a: pytest.fail("network called"))
     assert L.llm_plan("Q", "T", "{}", L.Budget()) is None
+
+
+def test_invalid_plan_gets_bounded_validator_feedback(monkeypatch):
+    bad = {"version":1, "op":"explode", "format":{"kind":"int"}}
+    p, b, transport = _run(monkeypatch, [F.resp(json.dumps(bad)), F.plain()])
+    assert p == F.PLAN and b.attempts == 2
+    assert "not in enum" in transport.bodies[1]["messages"][-1]["content"]
+    assert b.log[0]["plan"] == bad and b.log[0]["validation_errors"]
+    assert all(len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()) <= L.MAX_BODY_BYTES for body in transport.bodies)

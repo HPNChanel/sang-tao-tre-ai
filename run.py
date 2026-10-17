@@ -18,7 +18,9 @@ from src import seams, llm_client, plan_validate  # noqa: E402
 PLAN_SCHEMA_FILE = Path(__file__).resolve().parent / "src" / "plan_schema.json"
 _SHEET_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm", ".xls")
 _MISS = object()
-DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_TIMEOUT_S = 90.0
+PROCESSING_LIMIT_S = 2390.0
+FINALIZE_RESERVE_S = 10.0
 DEFAULT_PRELOAD_S = 120.0
 DEFAULT_RSS_MB = 640
 _KILL_GRACE_S = 0.5
@@ -311,7 +313,7 @@ def _on_alarm(signum, frame):
 
 
 def _run_alarmed(fn, timeout):
-    """Interrupt fn on this thread. Used only for the parent-side LLM step.
+    """Interrupt parent-side review/LLM work on POSIX.
 
     This is not the no-fork fallback. That path cannot interrupt a query that
     has already started.
@@ -529,7 +531,7 @@ def _load_killable(path, timeout):
 
 
 def _load_into_parent(path, use_fork, preload_timeout):
-    """Parse outside the per-query answer limit.
+    """Parse within the remaining shared query deadline.
 
     With fork, the loader child is killed at preload_timeout. Without fork the
     parse runs to completion; it cannot be interrupted.
@@ -616,6 +618,93 @@ def _rule_answer(query, tables, fname, strict=None):
     return seams.execute(plan, tables, query) if plan else None
 
 
+# The hybrid profile keeps the legacy rule answer only where the legacy rule
+# planner resolved every operand natively (confidence 1.0, no translation or
+# coverage penalty) and the plan passes the review's deterministic checks.
+# Every other question goes to CellPlanV2 first.
+HYBRID_V2_PROFILE = 'raw'
+
+
+def _legacy_resolved(query, tables, fname):
+    from src.code_planner import plan_with_confidence
+    plan, confidence, _ = plan_with_confidence(query, tables, fname, strict=False)
+    return plan is not None and confidence >= 1.0
+
+
+def _checked_rule(query, tables, fname):
+    """The rule answer that plan_review.choose keeps when Qwen proposes nothing better.
+
+    For a natively resolved plan this is the answer the baseline review starts
+    from. The hybrid profile returns it without the Qwen proposal and
+    adjudication, whose nondeterministic disagreement vote replaced a correct
+    rule answer in a public run (p4_q016).
+    """
+    from src.plan_review import safe_rule
+    try:
+        return safe_rule(query, tables, fname)
+    except Exception as exc:  # deadlines are BaseException and still propagate
+        print(f"[warn] checked rule {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+
+def _answer_hybrid(q, path, fname, cache, budget, limit, use_fork, preload_timeout, started, whole_query):
+    """Baseline legacy rule where it resolves the question; CellPlanV2 otherwise.
+
+    The legacy stage repeats the baseline's strict rule and review gate. A
+    natively resolved question then keeps the checked rule answer, without the
+    Qwen review. A resolved plan that fails those checks, and a legacy parse or
+    planning error, do not end the question: CellPlanV2 reads the workbook
+    through its own index instead.
+    """
+    query = q["query"]
+    budget.diagnostics = {'route': 'legacy_rule'}
+    tables = rule = None
+    try:
+        hit = _MISS if whole_query or not cache.enabled else cache.lookup(path)
+        if hit is _MISS:
+            cache.make_room()
+            left = _remaining(started, limit)
+            if left is not None and left <= 0:
+                raise _QueryTimedOut()
+            parse_limit = min(preload_timeout, left) if left is not None and preload_timeout > 0 else left
+            tables = _load_into_parent(path, use_fork, parse_limit or 0)
+            if cache.enabled and not whole_query:
+                cache.store(path, tables)
+        else:
+            tables = hit
+        if limit is not None and _remaining(started, limit) <= 0:
+            raise _QueryTimedOut()
+        rule = _answer_rule(query, tables, fname, limit, use_fork, started)
+        if rule is not None:
+            from src.plan_review import needs_review
+            if not _run_alarmed(lambda: needs_review(query, tables), _remaining(started, limit)):
+                return rule
+        resolved = seams.have_executor() and _run_alarmed(lambda: _legacy_resolved(query, tables, fname),
+                                                          _remaining(started, limit))
+        if resolved:
+            # A blank checked answer goes on to CellPlanV2, like a rejected plan.
+            checked = _run_alarmed(lambda: _checked_rule(query, tables, fname), _remaining(started, limit))
+            if checked:
+                budget.diagnostics['route'] = 'legacy_checked_rule'
+                return checked
+    except Exception as exc:
+        print(f"[warn] {q.get('id')}: legacy stage {type(exc).__name__}: {exc}", file=sys.stderr)
+        budget.diagnostics['legacy_error'] = type(exc).__name__
+        tables, resolved = None, False
+    from src.cellplan_v2.planner import answer as answer_v2
+    notes = {'legacy_error': budget.diagnostics['legacy_error']} if 'legacy_error' in budget.diagnostics else {}
+    if resolved:
+        notes['legacy_checked_rule'] = 'rejected'
+    ans = _run_alarmed(lambda: answer_v2(query, path, cache, budget, HYBRID_V2_PROFILE, q.get('id', '')),
+                       _remaining(started, limit))
+    budget.diagnostics.update(route='cellplan_v2', **notes)
+    if ans is not None or tables is None or not seams.have_executor():
+        return ans if ans is not None else rule
+    # The legacy review keeps whatever call budget and time CellPlanV2 left.
+    budget.diagnostics['fallback'] = 'legacy_review'
+    return _answer_llm(q, tables, fname, budget, limit, use_fork, started)
+
+
 def _llm_then_rule(q, tables, fname, budget):
     """LLM plan, or the non-strict rule answer if the LLM fails for any reason.
 
@@ -627,20 +716,12 @@ def _llm_then_rule(q, tables, fname, budget):
     ans = None
     try:
         schema = PLAN_SCHEMA_FILE.read_text() if PLAN_SCHEMA_FILE.exists() else "{}"
-        plan = llm_client.llm_plan(query, summarize(tables), schema, budget,
-                                   validate=plan_validate.validate, qid=q.get("id", ""))
-        if plan is None:
-            print(f"[schema] {q.get('id')}: no schema-valid LLM plan "
-                  f"(attempts={budget.attempts}, cap/retries exhausted); "
-                  f"using non-strict planner",
-                  file=sys.stderr)
-        else:
-            ans = seams.execute(plan, tables, query)
+        from src.plan_review import choose
+        ans = choose(query, tables, fname, budget, schema, q.get("id", ""))
     except Exception as e:
         print(f"[warn] {q.get('id')}: LLM {type(e).__name__}: {e}", file=sys.stderr)
-        ans = None
-    if ans is None:
-        ans = _rule_answer(query, tables, fname, False)
+        from src.plan_review import safe_rule
+        ans = safe_rule(query, tables, fname)
     return ans
 
 
@@ -653,11 +734,11 @@ def _note_timeout(qid):
 def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeout=None, whole_query=False):
     """Answer one query.
 
-    With fork, a cache hit runs only the answer in a child, and the parent
-    kills that child at the query limit. A cache miss, --no-cache, or a file
-    that failed preload parses inside that same child, so parsing counts
-    toward the same limit. Without fork a query that has started runs to
-    completion; the run loop skips later queries past the deadline.
+    With fork, parsing and rule planning run in killable child phases under
+    one clock. Parent-side review and LLM calls use the remaining time. Parsed
+    tables are cached lazily, including when later rule planning times out.
+    Without POSIX process/alarm support, parsing and Python computation cannot
+    be forcibly interrupted; HTTP calls still receive the shared deadline.
     """
     if use_fork is None:
         use_fork = _want_fork(False)
@@ -673,26 +754,44 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
     ans = None
     tables = None
     started = time.monotonic()
+    budget.deadline = None if limit is None else started + limit
+    solver_profile = os.environ.get('DS2_SOLVER_PROFILE', 'legacy')
+    v2_active = solver_profile in {'direct','raw','dual'} and llm_client.enabled()
+    hybrid = solver_profile == 'hybrid' and llm_client.enabled()
     try:
+        if hybrid:
+            ans = _answer_hybrid(q, path, fname, cache, budget, limit, use_fork, preload_timeout,
+                                 started, whole_query)
+            return ("" if ans is None else str(ans)), budget
+        if v2_active:
+            from src.cellplan_v2.planner import answer as answer_v2
+            ans = _run_alarmed(lambda: answer_v2(q['query'],path,cache,budget,solver_profile,q.get('id','')),
+                               _remaining(started,limit))
+            if ans is not None:
+                return str(ans),budget
+            budget.diagnostics['fallback'] = 'deterministic_rules'
         hit = _MISS if whole_query or not cache.enabled else cache.lookup(path)
-        if use_fork and limit is not None and hit is _MISS:
-            ans = _fork_miss(
-                path, q["query"], fname, limit, cache,
-                allow_store=cache.enabled and not whole_query,
-            )
+        if hit is _MISS:
+            cache.make_room()
+            left = _remaining(started, limit)
+            if left is not None and left <= 0:
+                raise _QueryTimedOut()
+            parse_limit = min(preload_timeout, left) if left is not None and preload_timeout > 0 else left
+            tables = _load_into_parent(path, use_fork, parse_limit or 0)
             if cache.enabled and not whole_query:
-                hit = cache.lookup(path)
-                if hit is not _MISS:
-                    tables = hit
-        elif hit is not _MISS:
-            tables = hit
-            started = time.monotonic()
-            ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
+                cache.store(path, tables)
         else:
-            tables = _cached_tables(cache, path, use_fork, preload_timeout)
-            started = time.monotonic()
-            ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
-        if ans is None and llm_client.enabled() and seams.have_executor():
+            tables = hit
+        # Parsing, planning, validation and every retry use this same clock.
+        # No clock reset after a cache miss.
+        if limit is not None and _remaining(started, limit) <= 0:
+            raise _QueryTimedOut()
+        ans = _answer_rule(q["query"], tables, fname, limit, use_fork, started)
+        review = False
+        if ans is not None and tables is not None and llm_client.enabled() and not v2_active:
+            from src.plan_review import needs_review
+            review = _run_alarmed(lambda: needs_review(q["query"], tables), _remaining(started, limit))
+        if (ans is None or review) and llm_client.enabled() and seams.have_executor() and not v2_active:
             if tables is None:
                 left = _remaining(started, limit)
                 if left is not None and left <= 0:
@@ -708,6 +807,9 @@ def answer_one(q, data_dir, cache, timeout=None, *, use_fork=None, preload_timeo
     except Exception as e:  # never crash the whole run
         print(f"[warn] {q.get('id')}: {type(e).__name__}: {e}", file=sys.stderr)
         ans = None
+    finally:
+        if budget.unresolved_usd:
+            budget.halt_reason = llm_client.BILLING_HALT_REASON = 'billing_unresolved'
     return ("" if ans is None else str(ans)), budget
 
 
@@ -885,6 +987,7 @@ def _open_run_log(path):
 
 
 def main(argv=None):
+    run_started = time.monotonic()
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=None)
     ap.add_argument("--out", default=None)
@@ -896,13 +999,13 @@ def main(argv=None):
     ap.add_argument("--openrouter-base-url", default=None)
     ap.add_argument("--log", default=None, help="JSONL log (legacy default: <out dir>/run_log.jsonl)")
     ap.add_argument("--query-timeout", type=float, default=None,
-                    help="Seconds for one forked child (default 20, or DS2_QUERY_TIMEOUT). "
+                    help="Seconds for the whole query (default 90, or DS2_QUERY_TIMEOUT). "
                          "The parent sends SIGTERM at this limit, then SIGKILL. "
                          "A cache hit times only the answer. A cache miss times parse and answer together. "
                          "0 disables. Without fork this does not interrupt a running query; "
                          "queries stop being started after timeout times the query count.")
     ap.add_argument("--preload-timeout", type=float, default=None,
-                    help="Seconds to parse one workbook into the cache "
+                    help="Legacy maximum parse time inside the shared query deadline "
                          "(default 120, or DS2_PRELOAD_TIMEOUT). "
                          "With fork the loader is killed at this limit. "
                          "Without fork a parse runs to completion.")
@@ -959,11 +1062,11 @@ def main(argv=None):
     previous_term = signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         _flush_submission()
-        skipped = _preload(cache, data, byid, execution, use_fork, preload_timeout)
-        # Checked only between queries. One query already running is not stopped.
-        run_deadline = None
+        # Load each workbook on its first question. Setup and parsing count
+        # toward the 2,390-second processing window, leaving ten seconds for CSV.
+        run_deadline = run_started + PROCESSING_LIMIT_S
         if not use_fork and timeout > 0:
-            run_deadline = time.monotonic() + timeout * max(len(execution), 1)
+            run_deadline = min(run_deadline, run_started + timeout * max(len(execution), 1))
         with _open_run_log(log_path) as lf:
             for index, qid in enumerate(execution):
                 if run_deadline is not None and time.monotonic() >= run_deadline:
@@ -979,14 +1082,13 @@ def main(argv=None):
                     lf.flush()
                     _flush_submission()
                     break
-                path = _resolve_workbook(data, byid[qid].get("file_name", ""))
-                whole = _path_key(path) in skipped
                 t = time.perf_counter()
+                left = run_deadline - time.monotonic()
+                query_limit = min(timeout, left) if timeout > 0 else left
                 try:
                     ans, b = answer_one(
-                        byid[qid], data, cache, timeout=timeout,
+                        byid[qid], data, cache, timeout=query_limit,
                         use_fork=use_fork, preload_timeout=preload_timeout,
-                        whole_query=whole,
                     )
                 except KeyboardInterrupt:
                     _flush_submission()
@@ -996,7 +1098,14 @@ def main(argv=None):
                                      "completion_tokens": b.completion_tokens,
                                      "reasoning_tokens": b.reasoning_tokens,
                                      "attempts": b.log,
-                                     "cost_usd": round(b.spent, 6)}) + "\n")
+                                     "cost_usd": b.cost_usd,
+                                     "actual_cost_usd": b.actual_usd,
+                                     "unresolved_cost_usd": b.unresolved_usd,
+                                     "budget_exposure_usd": b.spent,
+                                     "solver_diagnostics": getattr(b,'diagnostics',None),
+                                     "token_usage_unknown": b.token_usage_unknown,
+                                     "decision": getattr(b, "decision", {"source": "rule"}),
+                                     "elapsed_seconds": time.perf_counter()-t}) + "\n")
                 lf.flush()
                 print(f"{qid}\t{time.perf_counter()-t:.4f}s\t{ans!r}", file=sys.stderr)
                 _RUN.pending += 1
@@ -1019,6 +1128,8 @@ def main(argv=None):
         signal.signal(signal.SIGTERM, previous_term)
         _kill_pid(_RUN.child)
         _RUN.child = None
+        from src.cellplan_v2.planner import close_cache
+        close_cache(cache)
         _restore_openrouter_cli(openrouter_saved)
     return 0
 

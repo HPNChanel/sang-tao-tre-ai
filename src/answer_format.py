@@ -18,16 +18,20 @@ class FormatSpec:
     sep: str = ", "
     order: list[str] = field(default_factory=list)
     instruction: str = ""
+    prefix: str = ""
+    suffix: str = ""
+    empty: str | None = None
 
 
 def _instr(q: str) -> str:
-    m = re.search(r"(answer (with|as)|provide|respond|give)\b[^.?!]*(\.[0-9][^.?!]*)*[.?!]?\s*$", q, re.I)
-    if m:
-        # take from the LAST sentence that starts an instruction
-        sents = re.split(r"(?<=[.?!])\s+(?=[A-Z])", q.strip())
-        tail = [s for s in sents if re.match(r"(answer|provide|respond|give|return)\b", s, re.I)]
-        if tail:
-            return " ".join(tail)
+    sents = re.split(r"(?<=[.?!])\s+(?=[A-Z])", q.strip())
+    for i, sentence in enumerate(sents):
+        if re.match(r"(?:otherwise\s+)?(answer|provide|respond|give|return|use)\b", sentence, re.I) and re.search(
+                r"\b(exactly|only|integer|decimal|number|name|label|separat\w*|join\w*)\b|[`'\"]|\banswer (with|as)\b|\byes or no\b",
+                sentence, re.I):
+            # Keep rounding/sign qualifications after the formatting sentence.
+            # They are instructions, not additional operands or row labels.
+            return " ".join(sents[i:])
     return ""
 
 
@@ -35,6 +39,22 @@ def parse_instruction(query: str) -> FormatSpec:
     ins = _instr(query)
     low = ins.lower()
     spec = FormatSpec(instruction=ins)
+    empty = re.search(r"\bif\s+(?:none(?:\s+qualify)?|no\s+row\s+qualifies)\s*,?\s*(?:use|return|output)\s+['\"]?([\w/-]+)", query, re.I)
+    if empty:
+        spec.empty = empty[1]
+    separator = (re.search(r"(?:separated\s+by|joined(?:\s+(?:by|with))?|join\s+with)\s+[`'\"]([^`'\"]*)[`'\"]", ins, re.I)
+                 or re.search(r"\buse(?:\s+exactly)?\s+[`'\"]([^`'\"]*)[`'\"]\s+(?:between|to separate)", ins, re.I))
+    if separator:
+        spec.sep = separator[1]
+    literal = re.search(r"\b(?:return|answer|give)(?:\s+exactly)?\s+['\"]([^'\"]*)<[^>]+>([^'\"]*)['\"]", ins, re.I)
+    if literal:
+        spec.prefix, spec.suffix = literal.groups()
+    elif re.search(r"(?:followed by|trailing)\s+['\"]?\s*%|\ba % sign\b", low) and not re.search(r"\bno\b[^.;]*%", low):
+        spec.suffix = "%"
+    else:
+        suffix = re.search(r"followed by\s+['\"]([^'\"]+)['\"]", ins, re.I)
+        if suffix:
+            spec.suffix = suffix[1]
     dec = re.search(r"(\d+|" + "|".join(_WORDNUM) + r") decimal", low)
     d = None if not dec else int(dec.group(1)) if dec.group(1).isdigit() else _WORDNUM[dec.group(1)]
     cnt = re.search(r"\b(two|three|four|five|six|\d+) (integers|numbers|values|names|items|\w+ names)\b", low)
@@ -43,7 +63,7 @@ def parse_instruction(query: str) -> FormatSpec:
         spec.order = [s.strip() for s in order.group(1).split(",")]
     if re.search(r"\byes or no\b|'yes' or 'no'|\"yes\" or \"no\"", low):
         spec.kind = "yesno"; return spec
-    is_list = bool(cnt) or "separated by" in low or "separating" in low or len(spec.order) > 1
+    is_list = bool(cnt) or bool(separator) or "separated by" in low or "separating" in low or "names joined" in low or len(spec.order) > 1
     if is_list:
         spec.kind = "list"
         spec.count = (int(cnt.group(1)) if cnt and cnt.group(1).isdigit() else _WORDNUM.get(cnt.group(1)) if cnt else None) or (len(spec.order) or None)
@@ -87,6 +107,8 @@ def format_answer(value, spec: FormatSpec) -> str:
         vals = list(value) if isinstance(value, (list, tuple)) else [value]
         if spec.item_kinds and len(vals) != len(spec.item_kinds):
             raise ValueError("projection result does not match requested fields")
-        return spec.sep.join(_fmt_scalar(v, spec.item_kinds[i] if spec.item_kinds else spec.item_kind, spec.decimals)
-                             for i, v in enumerate(vals))
-    return _fmt_scalar(value, spec.kind, spec.decimals)
+        result = spec.sep.join(_fmt_scalar(v, spec.item_kinds[i] if spec.item_kinds else spec.item_kind, spec.decimals)
+                               for i, v in enumerate(vals))
+    else:
+        result = _fmt_scalar(value, spec.kind, spec.decimals)
+    return spec.prefix + result + spec.suffix

@@ -210,6 +210,15 @@ def _row_kind(g, r, vmerge, ncols, lc):
         prev = next((g[k] for k in range(r - 1, -1, -1) if any(not _empty(x) for x in g[k])), None)
         prev_blank = r == 0 or all(_empty(x) for x in g[r - 1])
         prev_title = prev is not None and len({clean_text(x) for x in prev if not _empty(x)}) == 1
+        # A register can mix year headings with descriptive headings. Those
+        # years are numeric-looking cells, but do not turn a fresh header into
+        # a record. Keep the boundary requirement so year-valued body rows stay
+        # data beneath an established header.
+        if (isinstance(label, str) and (prev_blank or prev is None or prev_title)
+                and any(_is_year(v) for v in vals)
+                and any(isinstance(v, str) and not _is_value(v) for v in vals)
+                and all(_is_year(v) or (isinstance(v, str) and not _is_value(v)) for v in vals)):
+            return "header"
         if all(_is_year(v) for v in vals) and isinstance(label, str) and (len(vals) >= 2 or any(isinstance(v, str) for v in vals)) and (
                 prev_blank or prev is None or prev_title or any(isinstance(v, str) for v in vals)):
             return "header"
@@ -220,7 +229,10 @@ def _row_kind(g, r, vmerge, ncols, lc):
 def _label_col(g, ncols):
     # leftmost column with mostly text in rows that also contain numbers
     best, score = 0, -1
-    for c in range(min(ncols, 3)):
+    # Blank worksheet margins may be wider than the candidate window. Retain
+    # physical coordinates while considering the first three occupied columns.
+    occupied = [c for c in range(ncols) if any(not _empty(row[c]) for row in g)]
+    for c in occupied[:3]:
         s = sum(1 for row in g if isinstance(row[c], str) and row[c].strip()
                 and any(_is_value(v) for v in row[c + 1:]))
         if s > score:
