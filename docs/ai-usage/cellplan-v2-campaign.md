@@ -203,11 +203,15 @@ evaluated ZIP `55f9703c…`, and only `README.md` was rewritten in Vietnamese. I
 Dockerfile sets `DS2_SOLVER_PROFILE=hybrid`, `QWEN_REVIEW_POLICY=selective` and
 `QWEN_MAX_OUTPUT_TOKENS=1200`, so the round-1 note above, that the package must
 not be rebuilt from this branch head, no longer applies. The README template in
-`scripts/build_submission_package.py` still describes V2.3's route (natively
+`scripts/build_submission_package.py` still described V2.3's route (natively
 resolved questions go to the baseline Qwen review) and was not used for the
 final README. The round-1 handoff folder, which kept A, is archived unchanged as
 `deliverables/ban-giao-pdu-team-20261017-truoc-vong-2.zip`; the round-2 handoff
 replaces it in `deliverables/ban-giao-pdu-team-20261017/`, still ignored by
 Git. At 13:46 the user approved merging V2.4 into `main` through PR #65 with a
 merge commit, and closing the other open pull requests with a note while
-keeping their branches. Nothing was submitted or deployed.
+keeping their branches. At 14:26, also with the user's approval, PR #66 (merge
+commit `b9b92c9`) brought the route text in the README template and in the
+repository README in line with V2.4 and added a test; the solver code, the
+Dockerfile and `AI26C0101.zip` did not change, and the package was not
+rebuilt. Nothing was submitted or deployed.
