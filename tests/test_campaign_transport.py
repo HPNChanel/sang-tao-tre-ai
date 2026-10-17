@@ -220,7 +220,7 @@ def test_ci_accepts_the_submission_package_readme_but_no_other_extra(tmp_path, m
     monkeypatch.setattr(CI, "checked", lambda *a, **k: None)
     def docker(command, **_):
         if command[1] == "image":
-            return json.dumps([{"Id": "sha256:" + "0" * 64, "Os": "linux", "Architecture": "amd64"}])
+            return json.dumps([{"Id": "sha256:" + "0" * 64, "Os": "linux", "Architecture": "amd64", "Size": 123}])
         return "openpyxl==3.1.5\n"
     monkeypatch.setattr(CI.subprocess, "check_output", docker)
     def build(raw, work):
@@ -230,7 +230,8 @@ def test_ci_accepts_the_submission_package_readme_but_no_other_extra(tmp_path, m
     raw = archive.read_bytes()
     assert "README.md" in zipfile.ZipFile(io.BytesIO(raw)).namelist()
     (tmp_path / "accepted").mkdir()
-    assert build(raw, tmp_path / "accepted")["candidate"]["source_sha"] == receipt["source_commit"]
+    image = build(raw, tmp_path / "accepted")["candidate"]
+    assert image["source_sha"] == receipt["source_commit"] and image["size_bytes"] == 123
     with zipfile.ZipFile(io.BytesIO(raw)) as original:
         extra = zip_bytes([(name, original.read(name)) for name in original.namelist()] + [("helper.py", b"")])
     (tmp_path / "rejected").mkdir()

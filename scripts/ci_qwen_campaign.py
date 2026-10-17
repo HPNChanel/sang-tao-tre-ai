@@ -190,7 +190,8 @@ def build_images(manifest, remote, work):
         image_id = inspected["Id"]
         frozen = subprocess.check_output(["docker","run","--rm","--network=none","--entrypoint=python",image_id,"-m","pip","freeze"], text=True)
         images[label] = {"source_sha":manifest["sources"][label]["sha"], "image_id":image_id,
-            "os":inspected["Os"], "architecture":inspected["Architecture"], "pip_freeze":frozen.splitlines(),
+            "os":inspected["Os"], "architecture":inspected["Architecture"], "size_bytes":inspected["Size"],
+            "pip_freeze":frozen.splitlines(),
             "build_recipe_sha256":W.digest(recipe), "requirements_sha256":W.digest(requirements)}
     if len({tuple(x["pip_freeze"]) for x in images.values()}) != 1:
         raise ValueError("baseline and candidate dependency environments differ")
