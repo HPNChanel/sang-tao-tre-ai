@@ -42,6 +42,19 @@ def test_readme_states_the_packaged_profile_and_leads_the_repository_readme():
     assert "export DS2_SOLVER_PROFILE=legacy" in legacy and "CellPlanV2" not in legacy
 
 
+def test_hybrid_readme_keeps_the_checked_rule_answer_before_cellplan_v2():
+    from build_submission_package import submission_readme
+    readme = submission_readme({"Dockerfile": b"ENV DS2_SOLVER_PROFILE=hybrid QWEN_REVIEW_POLICY=selective "
+                                              b"QWEN_MAX_OUTPUT_TOKENS=1200\n"}).decode("utf-8")
+    route = " ".join(readme.split())
+    steps = ("needs no review is returned at once", "keeps the checked rule answer",
+             "goes to CellPlanV2", "the baseline Qwen review runs")
+    positions = [route.find(step) for step in steps]
+    assert -1 not in positions and positions == sorted(positions)
+    # V2.3 sent natively resolved questions to the Qwen review; V2.4 (7bd2b8c) keeps the rule answer.
+    assert "goes to the baseline Qwen review" not in route
+
+
 def test_dockerfile_ships_the_frozen_candidate_configuration():
     docker = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
     assert "ENV DS2_SOLVER_PROFILE=hybrid QWEN_REVIEW_POLICY=selective QWEN_MAX_OUTPUT_TOKENS=1200" in docker
