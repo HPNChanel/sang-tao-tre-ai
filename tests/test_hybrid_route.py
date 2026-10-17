@@ -39,12 +39,13 @@ def ask(path, query='How many?'):
         planner.close_cache(cache)
 
 
-def legacy(monkeypatch, rule=None, review=True, resolved=False, reviewed='reviewed'):
+def legacy(monkeypatch, rule=None, review=True, resolved=False, reviewed='reviewed', checked=None):
     calls = []
     monkeypatch.setattr(run,'_load_into_parent',lambda *a:TABLES)
     monkeypatch.setattr(run,'_answer_rule',lambda *a:(calls.append('rule'),rule)[1])
     monkeypatch.setattr(plan_review,'needs_review',lambda *a:(calls.append('needs_review'),review)[1])
     monkeypatch.setattr(run,'_legacy_resolved',lambda *a:(calls.append('resolved'),resolved)[1])
+    monkeypatch.setattr(run,'_checked_rule',lambda *a:(calls.append('checked'),checked)[1])
     monkeypatch.setattr(run,'_answer_llm',lambda q,tables,*a:(calls.append(('review',tables)),reviewed)[1])
     return calls
 
@@ -67,12 +68,45 @@ def test_rule_answer_without_review_is_returned_unchanged(workbook,monkeypatch):
     assert budget.diagnostics=={'route':'legacy_rule'} and budget.attempts==0
 
 
-def test_natively_resolved_question_keeps_the_baseline_review(workbook,monkeypatch):
-    calls = legacy(monkeypatch,rule='42',review=True,resolved=True)
+def test_natively_resolved_question_keeps_the_checked_rule_without_review(workbook,monkeypatch):
+    calls = legacy(monkeypatch,rule='42',review=True,resolved=True,checked='41')
     v2_calls = v2(monkeypatch,'never')
     result,budget = ask(workbook)
-    assert result=='reviewed' and calls==['rule','needs_review','resolved',('review',TABLES)] and v2_calls==[]
-    assert budget.diagnostics['route']=='legacy_review'
+    assert result=='41' and calls==['rule','needs_review','resolved','checked'] and v2_calls==[]
+    assert budget.diagnostics=={'route':'legacy_checked_rule'} and budget.attempts==0
+
+
+@pytest.mark.parametrize('checked',[None,''])
+def test_resolved_plan_that_fails_the_checks_goes_to_cellplan_v2(workbook,monkeypatch,checked):
+    calls = legacy(monkeypatch,rule='42',review=True,resolved=True,checked=checked)
+    v2_calls = v2(monkeypatch,'7')
+    result,budget = ask(workbook)
+    assert result=='7' and v2_calls==[run.HYBRID_V2_PROFILE]
+    assert calls==['rule','needs_review','resolved','checked']
+    assert budget.diagnostics['route']=='cellplan_v2' and budget.diagnostics['legacy_checked_rule']=='rejected'
+    assert 'fallback' not in budget.diagnostics
+
+
+def test_rejected_checked_rule_and_cellplan_v2_abstention_reach_the_review(workbook,monkeypatch):
+    calls = legacy(monkeypatch,rule='42',review=True,resolved=True,checked=None,reviewed='legacy')
+    v2(monkeypatch,None)
+    result,budget = ask(workbook)
+    assert result=='legacy' and calls[-1]==('review',TABLES)
+    assert budget.diagnostics['fallback']=='legacy_review' and budget.diagnostics['legacy_checked_rule']=='rejected'
+
+
+def test_checked_rule_error_counts_as_a_rejection(monkeypatch):
+    def broken(*a): raise KeyError('missing column')
+    monkeypatch.setattr(plan_review,'safe_rule',broken)
+    assert run._checked_rule('q',TABLES,'f.xlsx') is None
+
+
+def test_resolved_question_end_to_end_makes_no_paid_call(workbook,monkeypatch):
+    """Real parse, rule plan, checks and execution; only the review gate is forced open."""
+    monkeypatch.setattr(plan_review,'needs_review',lambda *a:True)
+    monkeypatch.setattr(planner,'answer',lambda *a:pytest.fail('CellPlanV2 must not run'))
+    result,budget = ask(workbook,'What is the Qty of b?')
+    assert result=='2' and budget.attempts==0 and budget.diagnostics=={'route':'legacy_checked_rule'}
 
 
 @pytest.mark.parametrize('rule,review',[(None,True),('42',True)])

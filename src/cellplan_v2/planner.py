@@ -172,18 +172,30 @@ def single_number(text, places, keep_percent=False):
     return format(abs(value) if value == 0 else value, 'f') + percent
 
 
+# A repair request that no longer fits the 24 KiB cap rebuilds its workbook view
+# with a smaller byte budget, at most this many times. The first request keeps
+# the full view; when it does not fit, V2 abstains as before.
+REPAIR_VIEW_SHRINKS = 3
+REPAIR_VIEW_FLOOR = 3000
+REASK_ABSTENTION = ('You abstained. WORKBOOK may omit rows, but the execution engine reads any valid range of the '
+                    'full indexed workbook. Abstain again only if a field the QUESTION needs is absent from every '
+                    'sheet; otherwise return a plan')
+
+
 def answer(query, path, cache, budget, profile='dual', qid=''):
     book = None
     budget.diagnostics = {'profile':profile,'status':'started'}
     try:
         book = get_index(path,cache,budget.deadline)
-        context = build_context(book,query,dual=profile=='dual',max_bytes=13000 if profile!='direct' else 19500)
+        view_bytes, view_regions = (13000 if profile!='direct' else 19500), None
+        context = build_context(book,query,dual=profile=='dual',max_bytes=view_bytes)
         budget.diagnostics['context_complete'] = context['complete']
         budget.diagnostics['workbook_sha256'] = book.sha256
         if profile=='direct' and not context['complete']:
             budget.diagnostics['status'] = 'direct_context_incomplete'
             return None
         feedback = None
+        shrinks, reasked = 0, False
         places = requested_number(query)
         keep_percent = places is not None and keeps_percent_sign(query)
         system = DIRECT_SYSTEM if profile=='direct' else SYSTEM
@@ -198,6 +210,17 @@ def answer(query, path, cache, budget, profile='dual', qid=''):
             reply,error = llm_client.request_json(messages,budget,qid=qid)
             if reply is None:
                 budget.diagnostics['status'] = error
+                if (error=='request_exceeds_24_kib' and feedback and profile!='direct'
+                        and shrinks<REPAIR_VIEW_SHRINKS and view_bytes>REPAIR_VIEW_FLOOR):
+                    # Nothing was sent or reserved. Make room for the feedback message.
+                    shrinks += 1
+                    view_bytes = max(REPAIR_VIEW_FLOOR,int(view_bytes*0.6))
+                    try:
+                        context = build_context(book,query,dual=profile=='dual',max_bytes=view_bytes,regions=view_regions)
+                    except WorkbookError:
+                        return None  # the sheet summary alone no longer fits
+                    budget.diagnostics['repair_view_bytes'] = view_bytes
+                    continue
                 if not budget.allow(0) or error in {'model_capability_or_price_unverified','request_exceeds_24_kib','api_unavailable'}:
                     return None
                 feedback = 'Invalid or incomplete JSON: '+str(error)
@@ -208,7 +231,13 @@ def answer(query, path, cache, budget, profile='dual', qid=''):
                 action = reply.get('action')
                 if action=='abstain':
                     budget.diagnostics['status'] = 'model_abstained'
-                    return None
+                    if reasked or profile=='direct' or not budget.allow(0):
+                        return None
+                    # One further attempt within the same three-call budget.
+                    reasked = budget.diagnostics['reasked_abstention'] = True
+                    budget.log[-1]['status'] = 'abstained'
+                    feedback = REASK_ABSTENTION
+                    continue
                 if action=='answer' and profile=='direct':
                     result = direct_answer(reply,book,context)
                     result = (single_number(result,places,keep_percent) if places is not None
@@ -218,7 +247,8 @@ def answer(query, path, cache, budget, profile='dual', qid=''):
                 if action=='inspect' and profile!='direct':
                     if set(reply)!={'version','action','regions'}:
                         raise PlanError('invalid inspect fields')
-                    context = build_context(book,query,dual=profile=='dual',max_bytes=13000,regions=reply['regions'])
+                    view_bytes, view_regions = 13000, reply['regions']
+                    context = build_context(book,query,dual=profile=='dual',max_bytes=view_bytes,regions=view_regions)
                     feedback = 'Requested inspection is now in WORKBOOK. Produce the plan using full source ranges.'
                     budget.log[-1]['status'] = 'inspected'
                     continue

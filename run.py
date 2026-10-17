@@ -618,9 +618,10 @@ def _rule_answer(query, tables, fname, strict=None):
     return seams.execute(plan, tables, query) if plan else None
 
 
-# The hybrid profile keeps the legacy review path only where the legacy rule
+# The hybrid profile keeps the legacy rule answer only where the legacy rule
 # planner resolved every operand natively (confidence 1.0, no translation or
-# coverage penalty). Every other question goes to CellPlanV2 first.
+# coverage penalty) and the plan passes the review's deterministic checks.
+# Every other question goes to CellPlanV2 first.
 HYBRID_V2_PROFILE = 'raw'
 
 
@@ -630,12 +631,30 @@ def _legacy_resolved(query, tables, fname):
     return plan is not None and confidence >= 1.0
 
 
-def _answer_hybrid(q, path, fname, cache, budget, limit, use_fork, preload_timeout, started, whole_query):
-    """Baseline legacy sequence where its rules resolve the question; CellPlanV2 otherwise.
+def _checked_rule(query, tables, fname):
+    """The rule answer that plan_review.choose keeps when Qwen proposes nothing better.
 
-    The legacy stage repeats the baseline exactly: strict rule, review gate, then
-    the adjudicated review. A legacy parse or planning error does not end the
-    question; CellPlanV2 reads the workbook through its own index instead.
+    For a natively resolved plan this is the answer the baseline review starts
+    from. The hybrid profile returns it without the Qwen proposal and
+    adjudication, whose nondeterministic disagreement vote replaced a correct
+    rule answer in a public run (p4_q016).
+    """
+    from src.plan_review import safe_rule
+    try:
+        return safe_rule(query, tables, fname)
+    except Exception as exc:  # deadlines are BaseException and still propagate
+        print(f"[warn] checked rule {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+
+def _answer_hybrid(q, path, fname, cache, budget, limit, use_fork, preload_timeout, started, whole_query):
+    """Baseline legacy rule where it resolves the question; CellPlanV2 otherwise.
+
+    The legacy stage repeats the baseline's strict rule and review gate. A
+    natively resolved question then keeps the checked rule answer, without the
+    Qwen review. A resolved plan that fails those checks, and a legacy parse or
+    planning error, do not end the question: CellPlanV2 reads the workbook
+    through its own index instead.
     """
     query = q["query"]
     budget.diagnostics = {'route': 'legacy_rule'}
@@ -662,18 +681,23 @@ def _answer_hybrid(q, path, fname, cache, budget, limit, use_fork, preload_timeo
                 return rule
         resolved = seams.have_executor() and _run_alarmed(lambda: _legacy_resolved(query, tables, fname),
                                                           _remaining(started, limit))
+        if resolved:
+            # A blank checked answer goes on to CellPlanV2, like a rejected plan.
+            checked = _run_alarmed(lambda: _checked_rule(query, tables, fname), _remaining(started, limit))
+            if checked:
+                budget.diagnostics['route'] = 'legacy_checked_rule'
+                return checked
     except Exception as exc:
         print(f"[warn] {q.get('id')}: legacy stage {type(exc).__name__}: {exc}", file=sys.stderr)
         budget.diagnostics['legacy_error'] = type(exc).__name__
         tables, resolved = None, False
-    if resolved:
-        budget.diagnostics['route'] = 'legacy_review'
-        return _answer_llm(q, tables, fname, budget, limit, use_fork, started)
     from src.cellplan_v2.planner import answer as answer_v2
-    legacy_error = budget.diagnostics.get('legacy_error')
+    notes = {'legacy_error': budget.diagnostics['legacy_error']} if 'legacy_error' in budget.diagnostics else {}
+    if resolved:
+        notes['legacy_checked_rule'] = 'rejected'
     ans = _run_alarmed(lambda: answer_v2(query, path, cache, budget, HYBRID_V2_PROFILE, q.get('id', '')),
                        _remaining(started, limit))
-    budget.diagnostics.update(route='cellplan_v2', **({'legacy_error': legacy_error} if legacy_error else {}))
+    budget.diagnostics.update(route='cellplan_v2', **notes)
     if ans is not None or tables is None or not seams.have_executor():
         return ans if ans is not None else rule
     # The legacy review keeps whatever call budget and time CellPlanV2 left.

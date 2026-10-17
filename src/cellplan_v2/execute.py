@@ -75,7 +75,8 @@ def expression(node, row, depth=0):
     if depth > 8:
         raise PlanError('expression nesting limit')
     if not isinstance(node,dict):
-        raise PlanError('expression must be an object')
+        raise PlanError(f'expression must be an object, not {str(node)[:40]!r}; write {{"col":"x"}}, '
+                        '{"literal":5} or {"op":"mul","args":[...]}')
     if node.get('op') == 'if' and set(node) == {'op','where','then','else'}:
         branch = 'then' if predicate(node['where'], row, depth+1) else 'else'
         return expression(node[branch], row, depth+1)
@@ -91,7 +92,9 @@ def expression(node, row, depth=0):
             return numeric(value)
         raise PlanError('invalid literal')
     if set(node)-{'op','args','locale'} or node.get('op') is None:
-        raise PlanError('invalid expression fields')
+        raise PlanError(f'invalid expression fields {", ".join(sorted(map(str,node)))[:80]}; an expression is '
+                        '{"col":...}, {"literal":...}, {"op":...,"args":[...]} or '
+                        '{"op":"if","where":...,"then":...,"else":...}')
     args = node.get('args',[])
     if not isinstance(args,list) or not 1 <= len(args) <= 4:
         raise PlanError('expression needs 1..4 arguments')
@@ -209,7 +212,9 @@ def predicate(spec,row,depth=0):
         values = [predicate(item,row,depth+1) for item in items]
         return all(values) if key=='all' else any(values)
     if set(spec)-{'column','cmp','value','locale','normalize'}:
-        raise PlanError('unknown filter field')
+        extra = ', '.join(sorted(map(str,set(spec)-{'column','cmp','value','locale','normalize'})))[:80]
+        raise PlanError(f'unknown filter field {extra}; a predicate takes column, cmp, value, locale, normalize, '
+                        'or one all/any list of predicates')
     if spec.get('column') not in row:
         raise PlanError(f'unknown filter column {spec.get("column")!r}; this step has {_visible(row)}')
     a, op, b = row[spec['column']],spec.get('cmp'),spec.get('value')
@@ -276,8 +281,11 @@ def validate(plan):
         sid,op = step.get('id'),step['op']
         if not isinstance(sid,str) or not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_]{0,31}',sid) or sid in depths:
             raise PlanError('step IDs must be unique simple names')
-        if set(step)-({'id','op'}|FIELDS[op]):
-            raise PlanError(f'unexpected fields for {op}')
+        extra = set(step)-({'id','op'}|FIELDS[op])
+        if extra:
+            hint = '; filter the input first or give one metric its own where' if op=='aggregate' and 'where' in extra else ''
+            raise PlanError(f'unexpected fields for {op}: {", ".join(sorted(map(str,extra)))[:80]}; {op} takes '
+                            f'id, op, {", ".join(sorted(FIELDS[op]))}{hint}')
         combined = op in {'union','join'} or (op=='derive' and 'inputs' in step)
         inputs = [] if op in {'read','cell'} else (step.get('inputs') if combined else [step.get('input')])
         if not isinstance(inputs,list) or any(not isinstance(i,str) or i not in depths for i in inputs):
@@ -286,7 +294,8 @@ def validate(plan):
                              'input:id, or inputs:[id,id] of single-row steps' if op=='derive' else
                              'one input id; combine two steps with join'))
         if op=='derive' and combined and ('input' in step or not 2<=len(inputs)<=4):
-            raise PlanError('derive takes input:id or inputs:[2..4 single-row step ids], not both')
+            raise PlanError('derive takes input:id or inputs:[2..4 single-row step ids], not both; use input for '
+                            'columns computed on each row of one step, inputs only to set single-row results side by side')
         if op=='join' and len(inputs)!=2: raise PlanError('join needs two inputs')
         if op=='union' and not 1<=len(inputs)<=3: raise PlanError('union needs 1..3 inputs')
         depth = 1+max((depths[i] for i in inputs),default=0)
@@ -424,7 +433,8 @@ def execute(plan,book,percent_request=False):
                 out = dict(zip(by,key))
                 for name,metric in metrics.items():
                     if not isinstance(metric,dict) or set(metric)-{'fn','column','locale','where','weight'}:
-                        raise PlanError('invalid metric fields')
+                        raise PlanError(f'invalid metric fields in {name!r}; a metric takes fn, column, weight, '
+                                        'where, locale')
                     fn,col,weight,locale = metric.get('fn'),metric.get('column'),metric.get('weight'),metric.get('locale','en')
                     for c in (col,weight):
                         if c is not None and any(c not in r for r in records):

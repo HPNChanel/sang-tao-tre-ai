@@ -181,6 +181,21 @@ def test_format_scale_is_rejected_with_derive_guidance(book):
     with pytest.raises(PlanError,match="unsupported format fields \\['scale'\\].*derive step"): execute(p,book)
 
 
+def test_rejections_name_the_offending_fields_and_the_allowed_form(book):
+    where={'column':'team','cmp':'eq','value':'North'}
+    p=plan(read(),dict(id='a',op='aggregate',input='r',where=where,metrics={'s':{'fn':'sum','column':'v'}}))
+    with pytest.raises(PlanError,match='unexpected fields for aggregate: where; aggregate takes id, op, '
+                                       'group_by, input, metrics; filter the input first'): execute(p,book)
+    p=plan(read(),dict(id='f',op='filter',input='r',where=dict(where,col='v')))
+    with pytest.raises(PlanError,match='unknown filter field col; a predicate takes column'): execute(p,book)
+    p=plan(read(),dict(id='d',op='derive',input='r',columns={'x':'v*2'}))
+    with pytest.raises(PlanError,match="expression must be an object, not 'v\\*2'"): execute(p,book)
+    p=plan(read(),dict(id='d',op='derive',input='r',columns={'x':{'column':'v'}}))
+    with pytest.raises(PlanError,match='invalid expression fields column; an expression is'): execute(p,book)
+    p=plan(read(),dict(id='a',op='aggregate',input='r',metrics={'s':{'fn':'sum','col':'v'}}))
+    with pytest.raises(PlanError,match="invalid metric fields in 's'; a metric takes fn, column"): execute(p,book)
+
+
 @pytest.fixture
 def side_tables(tmp_path):
     """Receipts in A:D, a titled price catalog in K:M of the same sheet (rows do not correspond)."""
@@ -438,6 +453,84 @@ def test_inspect_repair_and_execution_share_three_attempts(book,monkeypatch):
     assert budget.attempts==3 and budget.actual_usd==pytest.approx(.0003)
     assert all(len(json.dumps(b,ensure_ascii=False).encode())<=L.MAX_BODY_BYTES for b in bodies)
     assert all(b['messages'][1]['content'].endswith('\n\nQUESTION:\nWhat is the total?') for b in bodies)
+
+
+def test_an_abstention_is_asked_again_once_with_the_full_workbook_note(book,monkeypatch):
+    replies=iter([{'version':2,'action':'abstain'},plan(dict(id='c',op='cell',sheet=0,cell='C4'))])
+    bodies=[]
+    def post(body,timeout):
+        bodies.append(json.loads(body));return response(next(replies))
+    monkeypatch.setattr(L,'_post',post)
+    cache=run.TableCache();budget=L.Budget()
+    try: assert planner.answer('What is the total?',book.path,cache,budget,'raw','q')=='0.3'
+    finally: planner.close_cache(cache)
+    assert budget.attempts==2 and budget.diagnostics['status']=='executed'
+    assert budget.diagnostics['reasked_abstention'] is True
+    assert [e['status'] for e in budget.log]==['abstained','executed']
+    assert len(bodies[0]['messages'])==2 and planner.REASK_ABSTENTION in bodies[1]['messages'][2]['content']
+
+
+@pytest.mark.parametrize('profile,attempts',[('raw',2),('direct',1)])
+def test_a_repeated_abstention_ends_v2_and_leaves_the_rest_of_the_budget(book,monkeypatch,profile,attempts):
+    monkeypatch.setattr(L,'_post',lambda body,timeout:response({'version':2,'action':'abstain'}))
+    cache=run.TableCache();budget=L.Budget()
+    try: assert planner.answer('What is the total?',book.path,cache,budget,profile,'q') is None
+    finally: planner.close_cache(cache)
+    assert budget.attempts==attempts and budget.diagnostics['status']=='model_abstained' and budget.allow(0)
+
+
+@pytest.fixture
+def long_book(tmp_path):
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Rows'
+    ws.append(['Code','Region','Amount','Note'])
+    for i in range(400):
+        ws.append([f'K{i:04d}',['North','South','East'][i%3],i*7,f'entry number {i} of the long ledger'])
+    path=tmp_path/'long.xlsx';wb.save(path)
+    return path
+
+
+def test_an_oversized_repair_request_rebuilds_a_smaller_view_without_an_attempt(long_book,monkeypatch):
+    replies=iter([plan(dict(id='c',op='cell',sheet=0,cell='ZZ999')),plan(dict(id='c',op='cell',sheet=0,cell='C12'))])
+    bodies=[]
+    def post(body,timeout):
+        if not bodies:  # the first request fits; its repair with feedback does not
+            monkeypatch.setattr(L,'MAX_BODY_BYTES',len(body)+40)
+        bodies.append(body);return response(next(replies))
+    monkeypatch.setattr(L,'_post',post)
+    cache=run.TableCache();budget=L.Budget()
+    try: assert planner.answer('What is the amount in row 12?',long_book,cache,budget,'raw','q')=='70'
+    finally: planner.close_cache(cache)
+    assert budget.attempts==2 and budget.diagnostics['repair_view_bytes']==7800
+    assert len(bodies[1])<len(bodies[0])<=L.MAX_BODY_BYTES-40
+    repair=json.loads(bodies[1])['messages']
+    assert repair[1]['content'].endswith('\n\nQUESTION:\nWhat is the amount in row 12?')
+    assert repair[2]['content'].startswith('Validation feedback for your previous attempt:')
+
+
+def test_a_first_request_over_the_cap_still_ends_v2_unsent(long_book,monkeypatch):
+    monkeypatch.setattr(L,'MAX_BODY_BYTES',2000)
+    cache=run.TableCache();budget=L.Budget()
+    try: assert planner.answer('What is the amount in row 12?',long_book,cache,budget,'raw','q') is None
+    finally: planner.close_cache(cache)
+    assert budget.attempts==0 and budget.diagnostics['status']=='request_exceeds_24_kib'
+    assert 'repair_view_bytes' not in budget.diagnostics
+
+
+def test_repair_view_shrinking_is_bounded(book,monkeypatch):
+    bodies=[]
+    def post(body,timeout):
+        monkeypatch.setattr(L,'MAX_BODY_BYTES',len(body)+40)
+        bodies.append(body);return response(plan(dict(id='c',op='cell',sheet=0,cell='ZZ999')))
+    monkeypatch.setattr(L,'_post',post)
+    built=[]
+    real=planner.build_context
+    monkeypatch.setattr(planner,'build_context',lambda *a,**k:(built.append(k['max_bytes']),real(*a,**k))[1])
+    cache=run.TableCache();budget=L.Budget()
+    try: assert planner.answer('What is the total?',book.path,cache,budget,'raw','q') is None
+    finally: planner.close_cache(cache)
+    # The small workbook already fits, so a smaller view cannot make room for the feedback.
+    assert len(bodies)==1 and budget.attempts==1 and budget.diagnostics['status']=='request_exceeds_24_kib'
+    assert built==[13000,7800,4680,3000]
 
 
 def test_direct_answer_is_eligible_with_valid_evidence(book,monkeypatch):
