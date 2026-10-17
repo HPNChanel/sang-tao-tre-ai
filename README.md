@@ -70,14 +70,19 @@ risk signals. Qwen proposes a JSON plan, and Python validates references and
 executes the supported operations.
 
 The `hybrid` profile routes each question. It first runs the baseline rules: a
-strict rule answer that needs no review is returned at once, and a question
-whose operands the legacy rule planner resolves with full confidence goes to the
-baseline Qwen review. Every other question goes to CellPlanV2: Qwen reads a
-bounded description of the workbook and writes a JSON plan of reads, filters,
-joins, aggregates and derived values; Python checks the plan against the
-workbook, executes it and formats the answer. If CellPlanV2 returns no answer,
-the baseline review runs within the remaining time and call budget. A question
-makes at most three model calls in total.
+rule answer that needs no review is returned at once. Otherwise, a question
+whose operands the legacy rule planner resolves natively, with full confidence,
+keeps the checked rule answer: the rule plan must pass the baseline review's
+deterministic reference and semantic checks, and no model is called. Every
+other question goes to CellPlanV2: Qwen reads a bounded description of the
+workbook and writes a JSON plan of reads, filters, joins, aggregates and
+derived values; Python checks the plan against the workbook, executes it and
+formats the answer. If CellPlanV2 returns no answer, the baseline Qwen review
+runs within the remaining time and call budget and falls back to the checked
+rule answer. Without any of these, the answer is empty. A question makes at
+most three model calls in total. A call that ends without a reported cost, or
+reports more than the USD 0.03 reserved for it, stops model calls for the rest
+of the run.
 
 Supply credentials only at runtime. To run without API calls, replace the
 `--openrouter-key` value with an empty string (`--openrouter-key ''`). No-key
