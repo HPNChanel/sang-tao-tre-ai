@@ -126,3 +126,88 @@ be rebuilt from this branch head.
 
 The handoff folder is `deliverables/ban-giao-pdu-team-20261017/`, which is
 ignored by Git (not tracked). Nothing was merged or submitted.
+
+## Round 2 on 2026-10-17
+
+The submission deadline moved from 12:00 to 19:00, and the user approved a
+second round at 10:01 local time. The rule was written to
+`PREREGISTRATION_R2.json` at 10:03 (03:03:12Z), before any V2.4 result: V2.4
+`7bd2b8c` (hybrid, selective, 1200 output tokens) replaces A only if it passes
+five gates in order; a failed gate, or a gate without a scored execution by
+16:30, keeps A. No solver change after the pre-registration; re-runs only for
+infrastructure failures, with the same frozen bytes and configuration.
+
+V2.4 is V2.3 plus four changes designed from DEV and public results. R1 keeps
+the checked rule answer when the legacy rule planner resolves a question
+natively, instead of a Qwen adjudication (the public `p4_q016` miss). R2
+rebuilds a smaller workbook view when a repair request exceeds 24 KiB. R3 names
+the offending fields in rejection feedback. R4 asks once more after an
+abstention, within the three-call budget.
+
+- G0 DEV (at least 330/360): 338 correct, 22 wrong, 0 blank. PASS. During the
+  first execution a ledger read while the gateway was saving made the local
+  gateway refuse attempt 7866 (never sent; settlement on record), and batch 10
+  ran its remaining questions without Qwen. That batch was re-run once with the
+  same bytes; the scored folder is the 17 clean batches plus the re-run.
+- G1 public Linux (50/50 on the first halt-free execution): 50/50, run
+  38998752779, six model calls. PASS.
+- G2 portability, paired A against V2.4 in one dispatch (D at least 3 and a
+  world-bootstrap 95% lower bound above 0): V2.4 52/60, A 0/60, D +52, interval
+  [41, 60]. PASS. This was the first execution of the portability split.
+- G4 stress, a single V2.4 arm against A's frozen round-1 result (at least
+  112/120 and not below A): V2.4 116/120, A 0/120, repetition 2, run
+  39002405225. PASS. Repetition 1 (run 39001457587) stopped
+  after 3 of 6 receipts when the tunnel's single connection dropped; it was not
+  scored, its results were not opened, and the whole split was re-run as
+  repetition 2.
+- G3 MAIN, a single V2.4 arm against A's frozen round-1 result (at least
+  303/360, D at least 18 and an r3 stratified bootstrap lower bound above 0):
+  V2.4 308/360 (28 wrong, 24 blank), A 0/360, D +308, interval [295, 320] over
+  72 worlds stratified by family, run 39004742811. PASS. 42 of the 52 MAIN
+  answers that were not correct sit in two families: F03 (weighted mean) 1/30,
+  with 23 blank, and F11 (unit conversion) 17/30. The same families scored
+  29/30 and 27/30 on DEV and 10/10 each on stress. In round 1, V2.3 scored
+  314/360 on MAIN, above V2.4, with F03 5/30 and F11 19/30. The cause was not
+  examined, because that needs the MAIN questions, and no code was changed
+  after the sealed results.
+- Decision by the pre-registered rule: all five gates passed, so V2.4
+  `7bd2b8c` is the final solution and replaces A.
+- Final-bytes check, planned at 04:27:19Z before it ran: the 50 public
+  questions re-ran on GitHub Actions Linux from the exact bytes of the handoff
+  `AI26C0101.zip`, run 39009958725: 50/50, five model calls, USD 0.00064345,
+  longest invocation 21.2 s, memory peak 106,291,200 bytes, no swap, no OOM,
+  every CSV within the contract. PASS.
+- Ledger after round 2: 8,988 attempts, USD 1.122855884 actual cost plus
+  USD 0.21 retained for seven attempts with unknown billing (5331, 5903, 5906,
+  5907, 5911, 5912, 7866), exposure USD 1.332855884 against the USD 5 cap,
+  `halt_reason` null. Round 2 alone: 1,326 attempts (7663-8988), USD
+  0.199913386 actual plus the USD 0.03 retained for attempt 7866. The costliest
+  MAIN question cost USD 0.00100185, far below the USD 0.10 per-question cap.
+
+The custodian subagent of round 1 again collected and scored every sealed
+execution and returned aggregates only. G3 and G4 reuse sets on which the
+implementer had already seen V2.3's aggregates, and compare one new V2.4 arm
+with A's frozen executions, so they are not independent measurements; the
+pre-registration records this. Portability had never been run, but
+`benchmark/author.py`, outside the encrypted area, also holds its generator; the
+implementer did not open that file from 01:26 on 17/10, and for the time before,
+the record shows only the `main_question` scaffolding noted above. At 11:26 a
+`find` over the campaign folder descended into `benchmark/private/` and printed
+one file name; no file there was opened, and later searches exclude
+`benchmark/`.
+
+The final package `AI26C0101.zip` (SHA-256
+`3207bdbd089123ea2d3d52c5ea3baabea3b58e374a2f4ab882d18651cfb44cd9`, 402,840
+bytes) is built from `7bd2b8c`: 37 of its 38 members are byte-identical to the
+evaluated ZIP `55f9703c…`, and only `README.md` was rewritten in Vietnamese. Its
+Dockerfile sets `DS2_SOLVER_PROFILE=hybrid`, `QWEN_REVIEW_POLICY=selective` and
+`QWEN_MAX_OUTPUT_TOKENS=1200`, so the round-1 note above, that the package must
+not be rebuilt from this branch head, no longer applies. The README template in
+`scripts/build_submission_package.py` still describes V2.3's route (natively
+resolved questions go to the baseline Qwen review) and was not used for the
+final README. The round-1 handoff folder, which kept A, is archived unchanged as
+`deliverables/ban-giao-pdu-team-20261017-truoc-vong-2.zip`; the round-2 handoff
+replaces it in `deliverables/ban-giao-pdu-team-20261017/`, still ignored by
+Git. At 13:46 the user approved merging V2.4 into `main` through PR #65 with a
+merge commit, and closing the other open pull requests with a note while
+keeping their branches. Nothing was submitted or deployed.
